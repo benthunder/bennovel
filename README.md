@@ -1,25 +1,53 @@
-# CODING AGENTS: READ THIS FIRST
+# BenNovel
 
-This is a **handoff bundle** from Claude Design (claude.ai/design).
+A novel-reading app built with **Tauri v2** (desktop + iOS/Android) and **React + Vite + TypeScript**. It implements the Claude Design handoff in `project/BenNovel App.dc.html`. The design brief is in `chats/` and the original handoff notes are in `HANDOFF.md`.
 
-A user mocked up designs in HTML/CSS/JS using an AI design tool, then exported this bundle so a coding agent can implement the designs for real.
+## Running it
 
-## What you should do — IMPORTANT
+```bash
+npm install
+npm run dev            # frontend only, in the browser at http://localhost:1420
+npm run tauri dev      # desktop app window
+npm run tauri build    # desktop installer
 
-**Read the chat transcripts first.** There are 1 chat transcript(s) in `chats/`. The transcripts show the full back-and-forth between the user and the design assistant — they tell you **what the user actually wants** and **where they landed** after iterating. Don't skip them. The final HTML files are the output, but the chat is where the intent lives.
+# mobile (needs Android Studio / Xcode set up for Tauri)
+npm run tauri android init && npm run tauri android dev
+npm run tauri ios init && npm run tauri ios dev
+```
 
-**Read `project/BenNovel App.dc.html` in full.** The user had this file open when they triggered the handoff, so it's almost certainly the primary design they want built. Read it top to bottom — don't skim. Then **follow its imports**: open every file it pulls in (shared components, CSS, scripts) so you understand how the pieces fit together before you start implementing.
+On Linux, Tauri also needs the system WebKit packages: `libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev`.
 
-**If anything is ambiguous, ask the user to confirm before you start implementing.** It's much cheaper to clarify scope up front than to build the wrong thing.
+## What's in it
 
-## About the design files
+| Screen | Notes |
+| --- | --- |
+| Login / Register | Fits on one screen with no scrolling. Google, Facebook and iCloud sit in one row, plus an email login/register form with field checks. You can skip and browse as a guest. Auth is simulated. |
+| Home | A "Most popular" slider that you can swipe and that autoplays (it pauses for 6s after you touch it), four collection shelves, and a throttled search (400 ms). |
+| Detail | Novel info, favourite button, chapter list, "More in {category}" and "More by {author}". |
+| Reading language | The first chapter you open asks which language to read in. The pick is saved on the device (`localStorage`), so later chapters open straight in it. You can change it from Detail, the Reader (EN/VI/ES pill) or Profile. |
+| Category / Author / Collection | Throttled search, genre chips (when browsing all), a status filter and sorting (Popular / Newest / Top rated). |
+| Reader | No bottom menu. The tools sheet has a **Reading** tab (font size, background, line spacing, paragraph gap, margins, alignment; saved on the device) and an **AI tools** tab (dictionary, novel glossary, AI Translate with a target language, a style and an "Apply dictionary" checkbox). |
+| Library / Profile | Favourites grid, reading history with Resume, user card, log in / log out, default reading language and app language. |
+| Bottom nav | Home · Category · raised **Continue** (opens your last chapter) · Library · Profile. |
 
-The design medium is **HTML/CSS/JS** — these are prototypes, not production code. Your job is to **recreate them pixel-perfectly** in whatever technology makes sense for the target codebase (React, Vue, native, whatever fits). Match the visual output; don't copy the prototype's internal structure unless it happens to fit.
+The interface is in English and Vietnamese (`src/i18n/`). It follows the device language at first, and you can switch it in Profile or with the EN/VI button on Login. The font is **Be Vietnam Pro**, bundled through `@fontsource`, so Vietnamese diacritics render correctly offline.
 
-**Don't render these files in a browser or take screenshots unless the user asks you to.** Everything you need — dimensions, colors, layout rules — is spelled out in the source. Read the HTML and CSS directly; a screenshot won't tell you anything they don't.
+## Structure
 
-## Bundle contents
+```
+src/
+  data/        mock.ts (sample data), repository.ts (the data seam), types.ts
+  store/       AppStore.tsx: navigation stack, auth, favourites, history, saved language, reader prefs
+  i18n/        en.ts, vi.ts, the provider and t()
+  components/  NovelCover, BottomNav, LangDialog, ReaderTools, shared UI
+  screens/     Login, Home, Detail, List, Library, Profile, Reader
+  styles/      organic.css (the Organic design system tokens) + app.css
+src-tauri/     Tauri v2 shell (Rust)
+```
 
-- `README.md` — this file
-- `chats/` — conversation transcripts (read these!)
-- `project/` — the `Inkleaf novel app design` project files (HTML prototypes, assets, components)
+## Simulated for now
+
+- **Data**: everything comes from `src/data/mock.ts` through `src/data/repository.ts`. To connect a backend (for example a NestJS + Postgres API), you only replace that file.
+- **Auth**: social and email logins are faked with a 750 ms delay.
+- **AI Translate / Dictionary**: faked. Only EN/VI/ES sample text exists, and every novel shows the same sample chapter.
+- **Covers**: typographic placeholders until real cover art is available.
