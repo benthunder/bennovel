@@ -1,0 +1,901 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="_ds/organic-dc15eeaf-7bc1-44df-95c7-dd2952f5d882/styles.css">
+<script src="_ds/organic-dc15eeaf-7bc1-44df-95c7-dd2952f5d882/_ds_bundle.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&family=Nunito:wght@400;600;700;800;900&family=JetBrains+Mono:wght@400;500;700;800&display=swap&subset=vietnamese">
+<style>
+body{margin:0;background:var(--color-neutral-200)}
+a{color:var(--color-accent-700)}a:hover{color:var(--color-accent-800)}
+.nx-scroll{scrollbar-width:none}.nx-scroll::-webkit-scrollbar{display:none}
+input[type=range]{accent-color:var(--color-accent);width:100%}
+@keyframes nxspin{to{transform:rotate(360deg)}}
+@keyframes nxup{from{transform:translateY(40px);opacity:0}to{transform:none;opacity:1}}
+</style>
+</helmet>
+<div style="min-height:100vh;display:flex;gap:56px;align-items:flex-start;justify-content:center;padding:40px 24px;flex-wrap:wrap">
+
+<div style="max-width:300px;display:flex;flex-direction:column;gap:16px;padding-top:28px">
+<span class="tag tag-accent" style="align-self:flex-start">Interactive prototype</span>
+<h2 style="margin:0">BenNovel</h2>
+<p class="text-muted" style="margin:0;font-size:14px;text-wrap:pretty">A novel reader on the Organic system. Everything inside the phone works — or jump to a screen:</p>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+<sc-for list="{{ jumps }}" as="j" hint-placeholder-count="8">
+<button class="btn btn-secondary" style="justify-content:flex-start" onClick="{{ j.go }}">{{ j.label }}</button>
+</sc-for>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px;font-size:13px;line-height:1.5;color:var(--color-neutral-800)">
+<div><strong>Language memory</strong> — first chapter asks; the pick is saved on the device and later chapters open straight in it.</div>
+<div><strong>Search</strong> — throttled ({{ throttleMs }}ms), results refresh while you type.</div>
+<div><strong>Covers</strong> — typographic placeholders until real art arrives. AI tools are simulated.</div>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px"><div style="font-size:13px;font-weight:700">Font (Vietnamese-ready)</div><sc-for list="{{ fontOpts }}" as="f" hint-placeholder-count="3"><button class="btn btn-secondary" style="justify-content:space-between;background:{{ f.bg }};font-family:{{ f.family }};font-weight:600" onClick="{{ f.pick }}"><span>{{ f.label }}</span><span style="font-size:12px;opacity:.7">Tiếng Việt ữ ặ ỗ</span></button></sc-for></div>
+<button class="btn btn-ghost" style="align-self:flex-start" onClick="{{ clearSavedLang }}">Clear saved language ({{ savedLangLabel }})</button>
+</div>
+
+<div style="width:390px;height:844px;border-radius:56px;background:var(--color-neutral-900);padding:10px;box-shadow:var(--shadow-lg);flex:none">
+<div style="position:relative;width:100%;height:100%;border-radius:46px;overflow:hidden;background:{{ screenBg }};color:{{ screenFg }};--font-heading:{{ fontHead }};--font-body:{{ fontBody }};--font-heading-weight:{{ fontHeadW }};font-family:var(--font-body);letter-spacing:{{ fontTrack }}">
+
+<div style="position:absolute;top:0;left:0;right:0;height:48px;z-index:40;display:flex;align-items:center;justify-content:space-between;padding:0 30px;font-size:15px;font-weight:700;pointer-events:none">
+<span>9:41</span>
+<div style="position:absolute;left:50%;top:10px;transform:translateX(-50%);width:118px;height:34px;border-radius:999px;background:#000"></div>
+<div style="display:flex;gap:6px;align-items:center">
+<div style="display:flex;gap:2px;align-items:flex-end"><span style="width:3px;height:5px;border-radius:2px;background:currentColor"></span><span style="width:3px;height:7px;border-radius:2px;background:currentColor"></span><span style="width:3px;height:9px;border-radius:2px;background:currentColor"></span><span style="width:3px;height:11px;border-radius:2px;background:currentColor"></span></div>
+<div style="width:24px;height:12px;border-radius:4px;border:2px solid currentColor;padding:1px"><div style="width:70%;height:100%;border-radius:2px;background:currentColor"></div></div>
+</div>
+</div>
+
+<sc-if value="{{ isLogin }}" hint-placeholder-val="{{ true }}">
+<div ref="{{ setScroll }}" style="position:absolute;inset:0;overflow:hidden;padding:54px 24px 24px">
+<div style="position:relative;height:100%;display:flex;flex-direction:column;gap:14px">
+<div style="display:flex;align-items:center;justify-content:space-between">
+<div style="display:flex;align-items:center;gap:10px">
+<div style="width:34px;height:34px;border-radius:50%;background:var(--color-accent);display:grid;place-items:center;color:var(--color-bg)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="stroke-width:2.75;stroke-linecap:round;stroke-linejoin:round"><path d="M12 7v14"></path><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"></path></svg></div>
+<span style="font-family:var(--font-heading);font-size:20px">BenNovel</span>
+</div>
+<button class="btn btn-ghost" onClick="{{ skipLogin }}">{{ skipLabel }}</button>
+</div>
+<h1 style="margin:10px 0 0;font-size:30px;max-width:300px">A shelf that remembers where you stopped.</h1>
+<p class="text-muted" style="margin:-4px 0 0;font-size:14px;max-width:290px">Sign in to sync favourites, reading history and your language across devices.</p>
+<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin-top:4px">
+<sc-for list="{{ socials }}" as="sp" hint-placeholder-count="3">
+<button class="btn btn-secondary" style="height:48px;gap:5px;padding:0 4px;background:var(--color-neutral-100);font-size:12px;min-width:0" aria-label="{{ sp.aria }}" onClick="{{ sp.go }}">
+<sc-if value="{{ sp.idle }}"><span style="width:22px;height:22px;flex:none;border-radius:50%;background:{{ sp.bg }};color:{{ sp.fg }};display:grid;place-items:center;font-family:var(--font-body);font-weight:800;font-size:12px">{{ sp.glyph }}</span></sc-if>
+<sc-if value="{{ sp.loading }}"><span style="width:18px;height:18px;flex:none;border-radius:50%;border:3px solid var(--color-accent-200);border-top-color:var(--color-accent);animation:nxspin .8s linear infinite"></span></sc-if>
+<span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ sp.label }}</span>
+</button>
+</sc-for>
+</div>
+<div style="display:flex;align-items:center;gap:12px;font-size:12px;color:var(--color-neutral-700)"><span style="flex:1;height:2px;border-radius:2px;background:var(--color-neutral-300)"></span>or with email<span style="flex:1;height:2px;border-radius:2px;background:var(--color-neutral-300)"></span></div>
+<div class="seg" style="display:flex">
+<label class="seg-opt" style="flex:1;justify-content:center"><input type="radio" name="authmode" checked="{{ isLoginMode }}" onChange="{{ setLoginMode }}">Log in</label>
+<label class="seg-opt" style="flex:1;justify-content:center"><input type="radio" name="authmode" checked="{{ isRegisterMode }}" onChange="{{ setRegisterMode }}">Register</label>
+</div>
+<sc-if value="{{ isRegisterMode }}">
+<div class="field"><label>Your name</label><input class="input" style="height:44px" placeholder="Lina Hart" value="{{ form.name }}" onChange="{{ onName }}"><sc-if value="{{ errors.name }}"><div style="font-size:12px;color:var(--color-accent-700);margin:5px 14px 0">{{ errors.name }}</div></sc-if></div>
+</sc-if>
+<div class="field"><label>Email</label><input class="input" style="height:44px" type="email" placeholder="you@example.com" value="{{ form.email }}" onChange="{{ onEmail }}"><sc-if value="{{ errors.email }}"><div style="font-size:12px;color:var(--color-accent-700);margin:5px 14px 0">{{ errors.email }}</div></sc-if></div>
+<div class="field"><label>Password</label><input class="input" style="height:44px" type="password" placeholder="At least 6 characters" value="{{ form.pw }}" onChange="{{ onPw }}"><sc-if value="{{ errors.pw }}"><div style="font-size:12px;color:var(--color-accent-700);margin:5px 14px 0">{{ errors.pw }}</div></sc-if></div>
+<button class="btn btn-primary" style="height:50px;font-size:16px" onClick="{{ submitEmail }}">{{ submitLabel }}</button>
+<p class="text-muted" style="margin:auto 0 0;font-size:11px;text-align:center">By continuing you agree to the Terms and Privacy Policy.</p>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{ isHome }}">
+<div class="nx-scroll" ref="{{ setScroll }}" style="position:absolute;inset:0;overflow-y:auto;padding:56px 0 120px">
+<div style="display:flex;align-items:center;justify-content:space-between;padding:0 20px">
+<div><div class="text-muted" style="font-size:13px">{{ greeting }}</div><div style="font-family:var(--font-heading);font-size:26px;line-height:1.1">What’s next, {{ firstName }}?</div></div>
+<button style="width:44px;height:44px;border-radius:50%;border:none;background:var(--color-accent-2-300);color:var(--color-accent-2-900);font-family:var(--font-heading);font-size:16px;cursor:pointer" onClick="{{ goProfile }}">{{ initials }}</button>
+</div>
+<div style="padding:16px 20px 0">
+<div style="position:relative">
+<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="position:absolute;left:16px;top:14px;color:var(--color-neutral-700);stroke-width:2.75;stroke-linecap:round;stroke-linejoin:round"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></svg>
+<input class="input" style="height:46px;padding-left:44px;padding-right:44px" placeholder="Search titles, authors, genres" value="{{ searchInput }}" onChange="{{ onSearch }}">
+<sc-if value="{{ hasSearch }}"><button style="position:absolute;right:8px;top:8px;width:30px;height:30px;border-radius:50%;border:none;background:var(--color-neutral-300);display:grid;place-items:center;cursor:pointer;color:var(--color-text)" onClick="{{ clearSearch }}"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="stroke-width:2.75;stroke-linecap:round"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg></button></sc-if>
+</div>
+</div>
+
+<sc-if value="{{ hasSearch }}">
+<div style="padding:12px 20px 0;display:flex;flex-direction:column;gap:4px">
+<div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--color-neutral-700);padding:0 4px 6px">
+<sc-if value="{{ pending }}"><span style="width:12px;height:12px;border-radius:50%;border:2px solid var(--color-accent-200);border-top-color:var(--color-accent);animation:nxspin .8s linear infinite"></span></sc-if>
+<span>{{ searchHint }}</span>
+</div>
+<sc-for list="{{ searchResults }}" as="n" hint-placeholder-count="3">
+<div style="display:flex;gap:14px;padding:10px;border-radius:24px;cursor:pointer" style-hover="background:var(--color-surface)" onClick="{{ n.open }}">
+<dc-import name="NovelCover" title="{{ n.title }}" bg="{{ n.bg }}" fg="{{ n.fg }}" deco="{{ n.deco }}" fs="{{ 11 }}" style="width:64px;height:92px;flex:none" hint-size="64px,92px"></dc-import>
+<div style="min-width:0;display:flex;flex-direction:column;gap:3px">
+<div style="font-weight:700;font-size:15px;line-height:1.25">{{ n.title }}</div>
+<div class="text-muted" style="font-size:12px">{{ n.meta }}</div>
+<div style="font-size:12px;line-height:1.4;max-height:34px;overflow:hidden;color:var(--color-neutral-800)">{{ n.desc }}</div>
+<div style="display:flex;gap:10px;align-items:center;font-size:11px;color:var(--color-neutral-700);margin-top:2px"><span style="color:var(--color-accent-700);font-weight:700">★ {{ n.rating }}</span><span>{{ n.chapters }} ch</span><span>{{ n.status }}</span></div>
+</div>
+</div>
+</sc-for>
+<sc-if value="{{ searchEmpty }}"><div style="padding:30px 10px;text-align:center"><div style="font-family:var(--font-heading);font-size:20px">Nothing on the shelf</div><div class="text-muted" style="font-size:13px">Try an author name or a genre like “mystery”.</div></div></sc-if>
+</div>
+</sc-if>
+
+<sc-if value="{{ showHomeMain }}" hint-placeholder-val="{{ true }}">
+<div style="display:flex;align-items:baseline;justify-content:space-between;padding:24px 20px 12px"><h4 style="margin:0">Most popular</h4><span class="text-muted" style="font-size:12px">{{ heroCounter }}</span></div>
+<div style="overflow:hidden;touch-action:pan-y" onPointerDown="{{ heroDown }}" onPointerUp="{{ heroUp }}">
+<div style="display:flex;transition:transform .55s cubic-bezier(.2,.8,.2,1);transform:{{ heroTransform }}">
+<sc-for list="{{ heroItems }}" as="h" hint-placeholder-count="1">
+<div style="flex:0 0 100%;padding:0 20px">
+<div style="position:relative;overflow:hidden;border-radius:34px;background:var(--color-surface);padding:18px;display:flex;gap:16px;cursor:pointer;user-select:none" onClick="{{ h.open }}">
+<dc-import name="NovelCover" title="{{ h.title }}" bg="{{ h.bg }}" fg="{{ h.fg }}" deco="{{ h.deco }}" fs="{{ 17 }}" style="width:118px;height:170px;flex:none" hint-size="118px,170px"></dc-import>
+<div style="position:relative;min-width:0;display:flex;flex-direction:column;gap:6px">
+<span class="tag tag-accent" style="align-self:flex-start">{{ h.rank }}</span>
+<div style="font-family:var(--font-heading);font-size:20px;line-height:1.1">{{ h.title }}</div>
+<div class="text-muted" style="font-size:12px">{{ h.author }}</div>
+<div style="font-size:12.5px;line-height:1.45;max-height:73px;overflow:hidden;color:var(--color-neutral-800)">{{ h.desc }}</div>
+<div style="display:flex;gap:10px;font-size:11px;color:var(--color-neutral-700);margin-top:auto"><span style="color:var(--color-accent-700);font-weight:700">★ {{ h.rating }}</span><span>{{ h.readsLabel }} reads</span></div>
+</div>
+</div>
+</div>
+</sc-for>
+</div>
+</div>
+<div style="display:flex;gap:6px;padding:14px 20px 0">
+<sc-for list="{{ heroDots }}" as="d" hint-placeholder-count="5"><button aria-label="Slide" style="width:{{ d.w }};height:8px;border-radius:999px;border:none;padding:0;background:{{ d.bg }};transition:width .3s,background .3s;cursor:pointer" onClick="{{ d.go }}"></button></sc-for>
+</div>
+
+<sc-for list="{{ collections }}" as="c" hint-placeholder-count="4">
+<div style="padding-top:28px">
+<div style="display:flex;align-items:flex-end;justify-content:space-between;padding:0 20px 12px">
+<div><div style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--color-accent-2-700);font-weight:700">{{ c.kicker }}</div><h4 style="margin:0">{{ c.title }}</h4></div>
+<button class="btn btn-ghost" style="font-size:13px" onClick="{{ c.seeAll }}">See all</button>
+</div>
+<div class="nx-scroll" style="display:flex;gap:14px;overflow-x:auto;padding:0 20px 4px;scroll-snap-type:x mandatory;scroll-padding:20px">
+<sc-for list="{{ c.items }}" as="n" hint-placeholder-count="4">
+<div style="flex:none;width:112px;scroll-snap-align:start;cursor:pointer;display:flex;flex-direction:column;gap:6px" onClick="{{ n.open }}">
+<dc-import name="NovelCover" title="{{ n.title }}" bg="{{ n.bg }}" fg="{{ n.fg }}" deco="{{ n.deco }}" fs="{{ 15 }}" style="width:112px;height:160px" hint-size="112px,160px"></dc-import>
+<div style="font-weight:700;font-size:13px;line-height:1.25;max-height:33px;overflow:hidden">{{ n.title }}</div>
+<div class="text-muted" style="font-size:11px;margin-top:-4px">{{ n.author }}</div>
+</div>
+</sc-for>
+</div>
+</div>
+</sc-for>
+</sc-if>
+</div>
+</sc-if>
+
+<sc-if value="{{ isDetail }}">
+<div class="nx-scroll" ref="{{ setScroll }}" style="position:absolute;inset:0;overflow-y:auto;padding-bottom:120px">
+<div style="position:relative;overflow:hidden;background:var(--color-surface);border-radius:0 0 44px 44px;padding:58px 20px 24px">
+<div style="position:relative;display:flex;justify-content:space-between;margin-bottom:18px">
+<button class="btn btn-icon" style="width:44px;height:44px;background:var(--color-bg)" aria-label="Back" onClick="{{ back }}"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="stroke-width:2.75;stroke-linecap:round;stroke-linejoin:round"><path d="m15 18-6-6 6-6"></path></svg></button>
+<button class="btn btn-icon" style="width:44px;height:44px;background:var(--color-bg);color:{{ favColor }}" aria-label="Favourite" onClick="{{ toggleFav }}"><svg width="20" height="20" viewBox="0 0 24 24" fill="{{ favFill }}" stroke="currentColor" style="stroke-width:2.75;stroke-linecap:round;stroke-linejoin:round"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"></path></svg></button>
+</div>
+<div style="position:relative;display:flex;gap:18px;align-items:flex-end">
+<dc-import name="NovelCover" title="{{ d.title }}" bg="{{ d.bg }}" fg="{{ d.fg }}" deco="{{ d.deco }}" fs="{{ 18 }}" style="width:124px;height:178px;flex:none;box-shadow:var(--shadow-md);border-radius:16px" hint-size="124px,178px"></dc-import>
+<div style="display:flex;flex-direction:column;gap:8px;min-width:0">
+<div style="display:flex;gap:6px;flex-wrap:wrap">
+<button class="tag tag-accent-2" style="border:none;cursor:pointer;font:inherit;font-size:11px" onClick="{{ d.catOpen }}">{{ d.cat }}</button>
+<span class="tag tag-neutral">{{ d.status }}</span>
+</div>
+<h3 style="margin:0;font-size:24px">{{ d.title }}</h3>
+<button style="border:none;background:none;padding:0;font:inherit;font-size:14px;font-weight:700;color:var(--color-accent-700);cursor:pointer;text-align:left" onClick="{{ d.authorOpen }}">{{ d.author }} ›</button>
+</div>
+</div>
+<div style="position:relative;display:flex;gap:10px;margin-top:20px">
+<div style="flex:1;background:var(--color-bg);border-radius:20px;padding:10px 12px"><div style="font-family:var(--font-heading);font-size:18px">★ {{ d.rating }}</div><div class="text-muted" style="font-size:11px">Rating</div></div>
+<div style="flex:1;background:var(--color-bg);border-radius:20px;padding:10px 12px"><div style="font-family:var(--font-heading);font-size:18px">{{ d.chapters }}</div><div class="text-muted" style="font-size:11px">Chapters</div></div>
+<div style="flex:1;background:var(--color-bg);border-radius:20px;padding:10px 12px"><div style="font-family:var(--font-heading);font-size:18px">{{ d.readsLabel }}</div><div class="text-muted" style="font-size:11px">Reads</div></div>
+</div>
+</div>
+<div style="padding:20px 20px 0;display:flex;flex-direction:column;gap:20px">
+<button class="btn btn-primary" style="height:52px;font-size:16px;gap:10px" onClick="{{ startRead }}"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" style="stroke-width:2.75;stroke-linejoin:round"><polygon points="6 3 20 12 6 21 6 3"></polygon></svg>{{ startLabel }}</button>
+<div><h5 style="margin:0 0 6px;font-size:17px">Synopsis</h5><p style="margin:0;font-size:14px;line-height:1.6;color:var(--color-neutral-800);text-wrap:pretty">{{ d.desc }}</p></div>
+<div>
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+<h5 style="margin:0;font-size:17px">Chapters</h5>
+<button class="tag tag-outline" style="background:none;cursor:pointer;font:inherit;font-size:12px;gap:6px;padding:5px 12px" onClick="{{ openLangSettings }}"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="stroke-width:2.75;stroke-linecap:round;stroke-linejoin:round"><path d="m5 8 6 6"></path><path d="m4 14 6-6 2-3"></path><path d="M2 5h12"></path><path d="M7 2h1"></path><path d="m22 22-5-10-5 10"></path><path d="M14 18h6"></path></svg>{{ langLabel }}</button>
+</div>
+<div style="display:flex;flex-direction:column;gap:2px">
+<sc-for list="{{ chapterList }}" as="ch" hint-placeholder-count="6">
+<div style="display:flex;align-items:center;gap:12px;padding:10px 8px;border-radius:20px;cursor:pointer" style-hover="background:var(--color-surface)" onClick="{{ ch.open }}">
+<span style="width:36px;height:36px;flex:none;border-radius:50%;display:grid;place-items:center;font-size:12px;font-weight:700;background:{{ ch.dotBg }};color:{{ ch.dotFg }}">{{ ch.n }}</span>
+<div style="flex:1;min-width:0"><div style="font-size:14px;font-weight:600">{{ ch.title }}</div><div class="text-muted" style="font-size:11px">{{ ch.sub }}</div></div>
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="color:var(--color-neutral-500);stroke-width:2.75;stroke-linecap:round;stroke-linejoin:round"><path d="m9 18 6-6-6-6"></path></svg>
+</div>
+</sc-for>
+</div>
+<button class="btn btn-secondary btn-block" onClick="{{ toggleAllCh }}">{{ allChLabel }}</button>
+</div>
+<sc-if value="{{ hasRelated }}">
+<div>
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px"><h5 style="margin:0;font-size:17px">More in {{ d.cat }}</h5><button class="btn btn-ghost" style="font-size:13px" onClick="{{ d.catOpen }}">See all</button></div>
+<div class="nx-scroll" style="display:flex;gap:12px;overflow-x:auto;margin:0 -20px;padding:0 20px">
+<sc-for list="{{ related }}" as="n"><div style="flex:none;width:96px;cursor:pointer;display:flex;flex-direction:column;gap:6px" onClick="{{ n.open }}"><dc-import name="NovelCover" title="{{ n.title }}" bg="{{ n.bg }}" fg="{{ n.fg }}" deco="{{ n.deco }}" fs="{{ 13 }}" style="width:96px;height:138px" hint-size="96px,138px"></dc-import><div style="font-weight:700;font-size:12px;line-height:1.25">{{ n.title }}</div></div></sc-for>
+</div>
+</div>
+</sc-if>
+<sc-if value="{{ hasSameAuthor }}">
+<div>
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px"><h5 style="margin:0;font-size:17px">More by {{ d.author }}</h5><button class="btn btn-ghost" style="font-size:13px" onClick="{{ d.authorOpen }}">See all</button></div>
+<div class="nx-scroll" style="display:flex;gap:12px;overflow-x:auto;margin:0 -20px;padding:0 20px">
+<sc-for list="{{ sameAuthor }}" as="n"><div style="flex:none;width:96px;cursor:pointer;display:flex;flex-direction:column;gap:6px" onClick="{{ n.open }}"><dc-import name="NovelCover" title="{{ n.title }}" bg="{{ n.bg }}" fg="{{ n.fg }}" deco="{{ n.deco }}" fs="{{ 13 }}" style="width:96px;height:138px" hint-size="96px,138px"></dc-import><div style="font-weight:700;font-size:12px;line-height:1.25">{{ n.title }}</div></div></sc-for>
+</div>
+</div>
+</sc-if>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{ isList }}">
+<div class="nx-scroll" ref="{{ setScroll }}" style="position:absolute;inset:0;overflow-y:auto;padding:56px 0 120px">
+<div style="padding:0 20px;display:flex;flex-direction:column;gap:14px">
+<div style="display:flex;align-items:center;gap:12px">
+<sc-if value="{{ canBack }}"><button class="btn btn-icon" style="width:44px;height:44px;background:var(--color-surface);flex:none" aria-label="Back" onClick="{{ back }}"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="stroke-width:2.75;stroke-linecap:round;stroke-linejoin:round"><path d="m15 18-6-6 6-6"></path></svg></button></sc-if>
+<sc-if value="{{ isAuthorList }}"><span style="width:52px;height:52px;flex:none;border-radius:50%;background:var(--color-accent-2-300);color:var(--color-accent-2-900);display:grid;place-items:center;font-family:var(--font-heading);font-size:19px">{{ listInitials }}</span></sc-if>
+<div style="min-width:0"><div style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--color-accent-2-700);font-weight:700">{{ listKicker }}</div><h3 style="margin:0;font-size:26px">{{ listTitle }}</h3></div>
+</div>
+<div style="position:relative">
+<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="position:absolute;left:16px;top:14px;color:var(--color-neutral-700);stroke-width:2.75;stroke-linecap:round;stroke-linejoin:round"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></svg>
+<input class="input" style="height:46px;padding-left:44px;padding-right:44px" placeholder="{{ listPlaceholder }}" value="{{ searchInput }}" onChange="{{ onSearch }}">
+<sc-if value="{{ hasSearch }}"><button style="position:absolute;right:8px;top:8px;width:30px;height:30px;border-radius:50%;border:none;background:var(--color-neutral-300);display:grid;place-items:center;cursor:pointer;color:var(--color-text)" onClick="{{ clearSearch }}"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="stroke-width:2.75;stroke-linecap:round"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg></button></sc-if>
+</div>
+</div>
+<sc-if value="{{ showCatChips }}">
+<div class="nx-scroll" style="display:flex;gap:8px;overflow-x:auto;padding:14px 20px 0">
+<sc-for list="{{ catChips }}" as="cc" hint-placeholder-count="6"><button style="flex:none;height:38px;padding:0 16px;border-radius:999px;border:none;cursor:pointer;font:inherit;font-size:13px;font-weight:600;background:{{ cc.bg }};color:{{ cc.fg }}" onClick="{{ cc.pick }}">{{ cc.label }}</button></sc-for>
+</div>
+</sc-if>
+<div style="display:flex;gap:8px;padding:12px 20px 0;align-items:center;flex-wrap:wrap">
+<sc-for list="{{ statusChips }}" as="sc" hint-placeholder-count="3"><button style="height:32px;padding:0 13px;border-radius:999px;cursor:pointer;font:inherit;font-size:12px;font-weight:600;background:{{ sc.bg }};color:{{ sc.fg }};border:1.5px solid {{ sc.border }}" onClick="{{ sc.pick }}">{{ sc.label }}</button></sc-for>
+</div>
+<div style="display:flex;align-items:center;justify-content:space-between;padding:14px 20px 4px">
+<div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--color-neutral-700)"><sc-if value="{{ pending }}"><span style="width:12px;height:12px;border-radius:50%;border:2px solid var(--color-accent-200);border-top-color:var(--color-accent);animation:nxspin .8s linear infinite"></span></sc-if><span>{{ listCount }}</span></div>
+<div class="seg" style="font-size:12px">
+<sc-for list="{{ sortOpts }}" as="o" hint-placeholder-count="3"><label class="seg-opt" style="padding:6px 11px;font-size:12px"><input type="radio" name="sort" checked="{{ o.checked }}" onChange="{{ o.pick }}">{{ o.label }}</label></sc-for>
+</div>
+</div>
+<div style="padding:4px 10px 0;display:flex;flex-direction:column;gap:2px">
+<sc-for list="{{ listItems }}" as="n" hint-placeholder-count="4">
+<div style="display:flex;gap:14px;padding:10px;border-radius:24px;cursor:pointer" style-hover="background:var(--color-surface)" onClick="{{ n.open }}">
+<dc-import name="NovelCover" title="{{ n.title }}" bg="{{ n.bg }}" fg="{{ n.fg }}" deco="{{ n.deco }}" fs="{{ 11 }}" style="width:68px;height:98px;flex:none" hint-size="68px,98px"></dc-import>
+<div style="min-width:0;display:flex;flex-direction:column;gap:3px">
+<div style="font-weight:700;font-size:15px;line-height:1.25">{{ n.title }}</div>
+<div class="text-muted" style="font-size:12px">{{ n.meta }}</div>
+<div style="font-size:12px;line-height:1.4;max-height:34px;overflow:hidden;color:var(--color-neutral-800)">{{ n.desc }}</div>
+<div style="display:flex;gap:10px;align-items:center;font-size:11px;color:var(--color-neutral-700);margin-top:2px"><span style="color:var(--color-accent-700);font-weight:700">★ {{ n.rating }}</span><span>{{ n.chapters }} ch</span><span class="tag tag-neutral" style="padding:1px 8px;font-size:10px">{{ n.status }}</span></div>
+</div>
+</div>
+</sc-for>
+<sc-if value="{{ listEmpty }}"><div style="padding:40px 20px;text-align:center"><div style="font-family:var(--font-heading);font-size:20px">No novels match</div><div class="text-muted" style="font-size:13px">Loosen a filter or search something else.</div></div></sc-if>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{ isLibrary }}">
+<div class="nx-scroll" ref="{{ setScroll }}" style="position:absolute;inset:0;overflow-y:auto;padding:58px 20px 120px">
+<div style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--color-accent-2-700);font-weight:700">Your library</div>
+<h2 style="margin:0 0 4px;font-size:30px">Favourites</h2>
+<div class="text-muted" style="font-size:13px;margin-bottom:18px">{{ favCountLabel }}</div>
+<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px 12px">
+<sc-for list="{{ favItems }}" as="n" hint-placeholder-count="3">
+<div style="cursor:pointer;display:flex;flex-direction:column;gap:6px;min-width:0" onClick="{{ n.open }}">
+<dc-import name="NovelCover" title="{{ n.title }}" bg="{{ n.bg }}" fg="{{ n.fg }}" deco="{{ n.deco }}" fs="{{ 13 }}" style="width:100%;aspect-ratio:0.7" hint-size="100%,150px"></dc-import>
+<div style="font-weight:700;font-size:12px;line-height:1.25">{{ n.title }}</div>
+<div class="text-muted" style="font-size:11px;margin-top:-4px">{{ n.author }}</div>
+</div>
+</sc-for>
+</div>
+<sc-if value="{{ favEmpty }}">
+<div class="card" style="align-items:flex-start;padding:22px;margin-top:8px"><div class="card-title">Nothing saved yet</div><p class="card-body">Tap the heart on any novel to keep it here.</p><button class="btn btn-primary" onClick="{{ goCategory }}">Browse categories</button></div>
+</sc-if>
+</div>
+</sc-if>
+
+<sc-if value="{{ isProfile }}">
+<div class="nx-scroll" ref="{{ setScroll }}" style="position:absolute;inset:0;overflow-y:auto;padding:58px 20px 120px;display:flex;flex-direction:column;gap:18px">
+<sc-if value="{{ authed }}">
+<div style="position:relative;overflow:hidden;border-radius:34px;background:var(--color-surface);padding:22px;display:flex;gap:16px;align-items:center">
+<span style="position:relative;width:72px;height:72px;flex:none;border-radius:50%;background:var(--color-accent-2-300);color:var(--color-accent-2-900);display:grid;place-items:center;font-family:var(--font-heading);font-size:26px">{{ initials }}</span>
+<div style="position:relative;min-width:0"><div style="font-family:var(--font-heading);font-size:22px;line-height:1.1">{{ user.name }}</div><div class="text-muted" style="font-size:13px">{{ user.email }}</div><span class="tag tag-accent-2" style="margin-top:6px">Signed in with {{ user.provider }}</span></div>
+</div>
+</sc-if>
+<sc-if value="{{ guest }}">
+<div style="position:relative;overflow:hidden;border-radius:34px;background:var(--color-surface);padding:22px;display:flex;flex-direction:column;gap:10px;align-items:flex-start">
+<div style="position:relative;font-family:var(--font-heading);font-size:22px">Reading as a guest</div>
+<div style="position:relative;font-size:13px;color:var(--color-neutral-800)">Sign in to keep favourites and history safe across devices.</div>
+<button class="btn btn-primary" style="position:relative;height:44px;padding:0 22px" onClick="{{ goLogin }}">Log in or register</button>
+</div>
+</sc-if>
+<div class="seg" style="display:flex">
+<sc-for list="{{ profileTabs }}" as="o" hint-placeholder-count="2"><label class="seg-opt" style="flex:1;justify-content:center;padding:10px"><input type="radio" name="ptab" checked="{{ o.checked }}" onChange="{{ o.pick }}">{{ o.label }}</label></sc-for>
+</div>
+<sc-if value="{{ showHistory }}">
+<div style="display:flex;flex-direction:column;gap:4px;margin-top:-6px">
+<sc-for list="{{ historyItems }}" as="h" hint-placeholder-count="3">
+<div style="display:flex;gap:14px;align-items:center;padding:8px;border-radius:22px;cursor:pointer" style-hover="background:var(--color-surface)" onClick="{{ h.resume }}">
+<dc-import name="NovelCover" title="{{ h.title }}" bg="{{ h.bg }}" fg="{{ h.fg }}" deco="{{ h.deco }}" fs="{{ 9 }}" style="width:52px;height:74px;flex:none" hint-size="52px,74px"></dc-import>
+<div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:5px">
+<div style="font-weight:700;font-size:14px">{{ h.title }}</div>
+<div class="text-muted" style="font-size:12px">Chapter {{ h.ch }} · {{ h.when }}</div>
+<div style="height:6px;border-radius:999px;background:var(--color-neutral-300);overflow:hidden"><div style="height:100%;width:{{ h.pct }};border-radius:999px;background:var(--color-accent-2)"></div></div>
+</div>
+<span class="tag tag-accent">Resume</span>
+</div>
+</sc-for>
+</div>
+</sc-if>
+<sc-if value="{{ showFavTab }}">
+<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px 12px;margin-top:-4px">
+<sc-for list="{{ favItems }}" as="n" hint-placeholder-count="3"><div style="cursor:pointer;display:flex;flex-direction:column;gap:6px;min-width:0" onClick="{{ n.open }}"><dc-import name="NovelCover" title="{{ n.title }}" bg="{{ n.bg }}" fg="{{ n.fg }}" deco="{{ n.deco }}" fs="{{ 13 }}" style="width:100%;aspect-ratio:0.7" hint-size="100%,150px"></dc-import><div style="font-weight:700;font-size:12px;line-height:1.25">{{ n.title }}</div></div></sc-for>
+</div>
+<sc-if value="{{ favEmpty }}"><div class="text-muted" style="font-size:13px">No favourites yet.</div></sc-if>
+</sc-if>
+<div style="border-radius:28px;background:var(--color-surface);padding:6px">
+<button style="width:100%;display:flex;align-items:center;gap:12px;padding:12px 14px;border:none;background:none;border-radius:22px;font:inherit;cursor:pointer;color:var(--color-text);text-align:left" style-hover="background:var(--color-neutral-300)" onClick="{{ openLangSettings }}">
+<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="stroke-width:2.75;stroke-linecap:round;stroke-linejoin:round;color:var(--color-accent-2-700)"><path d="m5 8 6 6"></path><path d="m4 14 6-6 2-3"></path><path d="M2 5h12"></path><path d="M7 2h1"></path><path d="m22 22-5-10-5 10"></path><path d="M14 18h6"></path></svg>
+<span style="flex:1;font-size:14px;font-weight:600">Default reading language</span><span class="text-muted" style="font-size:13px">{{ langLabel }} ›</span>
+</button>
+<sc-if value="{{ authed }}">
+<button style="width:100%;display:flex;align-items:center;gap:12px;padding:12px 14px;border:none;background:none;border-radius:22px;font:inherit;cursor:pointer;color:var(--color-accent-700);text-align:left" style-hover="background:var(--color-accent-100)" onClick="{{ logout }}">
+<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="stroke-width:2.75;stroke-linecap:round;stroke-linejoin:round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" x2="9" y1="12" y2="12"></line></svg>
+<span style="flex:1;font-size:14px;font-weight:700">Log out</span>
+</button>
+</sc-if>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{ isReader }}">
+<div style="position:absolute;inset:0;display:flex;flex-direction:column">
+<div style="padding:50px 14px 8px;display:flex;align-items:center;gap:10px;background:{{ rt.bg }}">
+<button class="btn btn-icon" style="width:44px;height:44px;flex:none;color:{{ rt.fg }}" aria-label="Back" onClick="{{ back }}"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="stroke-width:2.75;stroke-linecap:round;stroke-linejoin:round"><path d="m15 18-6-6 6-6"></path></svg></button>
+<div style="flex:1;min-width:0"><div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;opacity:.65;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ rn.title }}</div><div style="font-family:var(--font-heading);font-size:16px">Chapter {{ rCh }}</div></div>
+<button style="height:34px;padding:0 12px;border-radius:999px;border:2px solid {{ rt.line }};background:none;color:{{ rt.fg }};font:inherit;font-size:12px;font-weight:700;cursor:pointer" onClick="{{ openReaderLang }}">{{ rLangCode }}</button>
+<button style="width:44px;height:44px;flex:none;border-radius:50%;border:none;background:var(--color-accent);color:var(--color-bg);display:grid;place-items:center;cursor:pointer" aria-label="Reading tools" onClick="{{ openTools }}"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="stroke-width:2.75;stroke-linecap:round;stroke-linejoin:round"><path d="M20 7h-9"></path><path d="M14 17H5"></path><circle cx="17" cy="17" r="3"></circle><circle cx="7" cy="7" r="3"></circle></svg></button>
+</div>
+<div style="height:5px;margin:0 20px;border-radius:999px;background:{{ rt.line }};overflow:hidden"><div style="height:100%;width:{{ readPct }};background:var(--color-accent);border-radius:999px"></div></div>
+<div class="nx-scroll" ref="{{ setReaderScroll }}" onScroll="{{ onReaderScroll }}" style="flex:1;overflow-y:auto;padding:22px {{ rPad }}px 40px">
+<div style="font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:{{ rt.kicker }}">Chapter {{ rCh }}</div>
+<h2 style="margin:4px 0 18px;font-size:28px;color:{{ rt.fg }}">{{ rChTitle }}</h2>
+<sc-if value="{{ translated }}">
+<div style="display:flex;gap:10px;align-items:flex-start;padding:12px 14px;border-radius:22px;background:{{ rt.banner }};margin-bottom:18px;font-size:12px;line-height:1.45">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="flex:none;margin-top:1px;stroke-width:2.75;stroke-linecap:round;stroke-linejoin:round"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"></path></svg>
+<div style="flex:1">{{ trBanner }}</div>
+<button style="border:none;background:none;font:inherit;font-size:12px;font-weight:700;text-decoration:underline;cursor:pointer;color:inherit;padding:0" onClick="{{ showOriginal }}">Original</button>
+</div>
+</sc-if>
+<sc-for list="{{ paras }}" as="p" hint-placeholder-count="5">
+<p style="margin:0 0 {{ rGap }}px;font-size:{{ fontSize }}px;line-height:{{ lineH }};text-align:{{ align }};text-wrap:pretty"><sc-for list="{{ p.segs }}" as="s"><span style="background:{{ s.bg }};border-radius:6px;padding:{{ s.pad }}">{{ s.t }}</span></sc-for></p>
+</sc-for>
+<div style="display:flex;gap:10px;margin-top:28px">
+<button class="btn btn-secondary" style="flex:1;height:48px;color:{{ rt.fg }};border-color:{{ rt.line }}" disabled="{{ noPrev }}" onClick="{{ prevCh }}">‹ Previous</button>
+<button class="btn btn-primary" style="flex:1;height:48px" disabled="{{ noNext }}" onClick="{{ nextCh }}">Next chapter ›</button>
+</div>
+</div>
+<sc-if value="{{ translating }}">
+<div style="position:absolute;inset:0;display:grid;place-items:center;background:color-mix(in srgb, var(--color-neutral-900) 35%, transparent);z-index:30">
+<div style="background:var(--color-surface);color:var(--color-text);border-radius:30px;padding:22px 26px;display:flex;align-items:center;gap:14px;box-shadow:var(--shadow-lg)"><span style="width:24px;height:24px;border-radius:50%;border:3px solid var(--color-accent-200);border-top-color:var(--color-accent);animation:nxspin .8s linear infinite"></span><div><div style="font-family:var(--font-heading);font-size:17px">Translating chapter…</div><div class="text-muted" style="font-size:12px">{{ trProgress }}</div></div></div>
+</div>
+</sc-if>
+</div>
+</sc-if>
+
+<sc-if value="{{ toolsOpen }}">
+<div style="position:absolute;inset:0;z-index:50;display:flex;flex-direction:column;justify-content:flex-end;color:var(--color-text)">
+<div style="position:absolute;inset:0;background:color-mix(in srgb, var(--color-neutral-900) 40%, transparent)" onClick="{{ closeTools }}"></div>
+<div style="position:relative;max-height:78%;display:flex;flex-direction:column;background:var(--color-bg);border-radius:36px 36px 0 0;box-shadow:var(--shadow-lg);animation:nxup .28s ease-out">
+<div style="padding:10px 20px 0"><div style="width:44px;height:5px;border-radius:999px;background:var(--color-neutral-400);margin:0 auto 14px"></div>
+<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+<div class="seg" style="display:flex;flex:1">
+<sc-for list="{{ toolTabs }}" as="o" hint-placeholder-count="2"><label class="seg-opt" style="flex:1;justify-content:center;padding:10px"><input type="radio" name="tooltab" checked="{{ o.checked }}" onChange="{{ o.pick }}">{{ o.label }}</label></sc-for>
+</div>
+<button class="btn btn-icon btn-secondary" style="width:40px;height:40px" aria-label="Close" onClick="{{ closeTools }}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="stroke-width:2.75;stroke-linecap:round"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg></button>
+</div>
+</div>
+<div class="nx-scroll" style="overflow-y:auto;padding:0 20px 30px;display:flex;flex-direction:column;gap:18px">
+
+<sc-if value="{{ isReadingTab }}">
+<div style="display:flex;flex-direction:column;gap:18px">
+<div>
+<div style="display:flex;justify-content:space-between;font-size:13px;font-weight:700;margin-bottom:8px"><span>Font size</span><span class="text-muted">{{ fontSize }}px</span></div>
+<div style="display:flex;align-items:center;gap:12px"><button class="btn btn-secondary btn-icon" style="width:40px;height:40px;font-size:13px" onClick="{{ fontDown }}">A−</button><input type="range" min="14" max="26" step="1" value="{{ fontSize }}" onChange="{{ onFontSize }}"><button class="btn btn-secondary btn-icon" style="width:40px;height:40px;font-size:18px" onClick="{{ fontUp }}">A+</button></div>
+</div>
+<div>
+<div style="font-size:13px;font-weight:700;margin-bottom:10px">Background</div>
+<div style="display:flex;gap:14px">
+<sc-for list="{{ themeOpts }}" as="t" hint-placeholder-count="4"><button style="display:flex;flex-direction:column;align-items:center;gap:6px;border:none;background:none;cursor:pointer;font:inherit;font-size:11px;color:var(--color-text)" onClick="{{ t.pick }}"><span style="width:50px;height:50px;border-radius:50%;background:{{ t.bg }};color:{{ t.fg }};display:grid;place-items:center;font-family:var(--font-heading);font-size:17px;box-shadow:0 0 0 {{ t.ring }} var(--color-accent), var(--shadow-sm)">Aa</span>{{ t.label }}</button></sc-for>
+</div>
+</div>
+<div>
+<div style="display:flex;justify-content:space-between;font-size:13px;font-weight:700;margin-bottom:8px"><span>Line spacing</span><span class="text-muted">{{ lineH }}</span></div>
+<input type="range" min="1.3" max="2.3" step="0.05" value="{{ lineH }}" onChange="{{ onLineH }}">
+</div>
+<div><div style="font-size:13px;font-weight:700;margin-bottom:8px">Paragraph gap</div><div class="seg" style="display:flex"><sc-for list="{{ gapOpts }}" as="o" hint-placeholder-count="3"><label class="seg-opt" style="flex:1;justify-content:center"><input type="radio" name="gap" checked="{{ o.checked }}" onChange="{{ o.pick }}">{{ o.label }}</label></sc-for></div></div>
+<div><div style="font-size:13px;font-weight:700;margin-bottom:8px">Page margins</div><div class="seg" style="display:flex"><sc-for list="{{ marginOpts }}" as="o" hint-placeholder-count="3"><label class="seg-opt" style="flex:1;justify-content:center"><input type="radio" name="margin" checked="{{ o.checked }}" onChange="{{ o.pick }}">{{ o.label }}</label></sc-for></div></div>
+<div><div style="font-size:13px;font-weight:700;margin-bottom:8px">Alignment</div><div class="seg" style="display:flex"><sc-for list="{{ alignOpts }}" as="o" hint-placeholder-count="2"><label class="seg-opt" style="flex:1;justify-content:center"><input type="radio" name="align" checked="{{ o.checked }}" onChange="{{ o.pick }}">{{ o.label }}</label></sc-for></div></div>
+<button class="btn btn-ghost" style="align-self:flex-start" onClick="{{ resetReading }}">Reset to defaults</button>
+</div>
+</sc-if>
+
+<sc-if value="{{ isAiTab }}">
+<div style="display:flex;flex-direction:column;gap:16px">
+<div style="border-radius:30px;background:var(--color-surface);padding:16px;display:flex;flex-direction:column;gap:12px">
+<div style="display:flex;align-items:center;gap:10px"><span style="width:34px;height:34px;border-radius:50%;background:var(--color-accent-2-300);color:var(--color-accent-2-900);display:grid;place-items:center"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="stroke-width:2.75;stroke-linecap:round;stroke-linejoin:round"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"></path></svg></span><div style="font-family:var(--font-heading);font-size:18px">Dictionary</div></div>
+<div style="display:flex;gap:8px"><input class="input" style="height:42px;background:var(--color-bg)" placeholder="Look up a word" value="{{ dictWord }}" onChange="{{ onDictWord }}"><button class="btn btn-primary" style="height:42px;flex:none" onClick="{{ lookup }}">Look up</button></div>
+<div style="display:flex;gap:6px;flex-wrap:wrap"><sc-for list="{{ dictSuggest }}" as="w" hint-placeholder-count="4"><button class="tag tag-neutral" style="border:none;cursor:pointer;font:inherit;font-size:12px" onClick="{{ w.go }}">{{ w.word }}</button></sc-for></div>
+<sc-if value="{{ dictResult }}">
+<div style="background:var(--color-bg);border-radius:22px;padding:12px 14px;display:flex;flex-direction:column;gap:4px">
+<div style="display:flex;align-items:baseline;gap:8px"><span style="font-family:var(--font-heading);font-size:18px">{{ dictResult.word }}</span><span style="font-size:12px;font-style:italic;color:var(--color-accent-2-700)">{{ dictResult.pos }}</span></div>
+<div style="font-size:13px">{{ dictResult.def }}</div>
+<div class="text-muted" style="font-size:12px;font-style:italic">{{ dictResult.ex }}</div>
+</div>
+</sc-if>
+<div style="font-size:12px;font-weight:700;margin-top:4px">Novel glossary · used by AI Translate</div>
+<sc-for list="{{ glossary }}" as="g" hint-placeholder-count="3"><div style="display:flex;justify-content:space-between;gap:10px;font-size:12px;padding:8px 12px;border-radius:16px;background:var(--color-bg)"><span style="font-weight:700">{{ g.en }}</span><span class="text-muted">{{ g.vi }} · {{ g.es }}</span></div></sc-for>
+</div>
+
+<div style="border-radius:30px;background:var(--color-surface);padding:16px;display:flex;flex-direction:column;gap:12px">
+<div style="display:flex;align-items:center;gap:10px"><span style="width:34px;height:34px;border-radius:50%;background:var(--color-accent-300);color:var(--color-accent-900);display:grid;place-items:center"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="stroke-width:2.75;stroke-linecap:round;stroke-linejoin:round"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"></path></svg></span><div style="font-family:var(--font-heading);font-size:18px">AI Translate</div></div>
+<div><div style="font-size:12px;font-weight:700;margin-bottom:6px">Translate to</div><div class="seg" style="display:flex;background:var(--color-bg)"><sc-for list="{{ trLangOpts }}" as="o" hint-placeholder-count="3"><label class="seg-opt" style="flex:1;justify-content:center"><input type="radio" name="trlang" checked="{{ o.checked }}" onChange="{{ o.pick }}">{{ o.label }}</label></sc-for></div></div>
+<div><div style="font-size:12px;font-weight:700;margin-bottom:6px">Style</div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px"><sc-for list="{{ styleOpts }}" as="o" hint-placeholder-count="4"><button style="height:38px;border-radius:999px;font:inherit;font-size:13px;font-weight:600;cursor:pointer;background:{{ o.bg }};color:{{ o.fg }};border:1.5px solid {{ o.border }}" onClick="{{ o.pick }}">{{ o.label }}</button></sc-for></div>
+<div class="text-muted" style="font-size:12px;margin-top:8px">{{ styleDesc }}</div>
+</div>
+<label style="display:flex;align-items:center;gap:12px;cursor:pointer;padding:10px 12px;border-radius:20px;background:var(--color-bg)">
+<input type="checkbox" checked="{{ applyDict }}" onChange="{{ toggleDict }}" style="position:absolute;opacity:0;width:0;height:0">
+<span style="width:24px;height:24px;flex:none;border-radius:8px;display:grid;place-items:center;background:{{ dictBoxBg }};border:2px solid {{ dictBoxBorder }};color:var(--color-bg)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="stroke-width:3.5;stroke-linecap:round;stroke-linejoin:round"><path d="M20 6 9 17l-5-5"></path></svg></span>
+<span style="flex:1"><span style="display:block;font-size:13px;font-weight:700">Apply dictionary</span><span class="text-muted" style="font-size:11px">Keep the {{ glossaryCount }} glossary names consistent</span></span>
+</label>
+<button class="btn btn-primary" style="height:48px;font-size:15px" onClick="{{ runTranslate }}">Translate this chapter</button>
+</div>
+</div>
+</sc-if>
+
+</div>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{ langDialog }}">
+<div class="dialog-backdrop" style="position:absolute;z-index:60;place-items:end stretch;padding:10px;color:var(--color-text)" onClick="{{ closeLang }}">
+<div class="dialog" style="width:100%;border-radius:36px;padding:22px;animation:nxup .28s ease-out" onClick="{{ stop }}">
+<div class="dialog-title" style="font-size:22px">{{ langTitle }}</div>
+<div class="dialog-body" style="margin-top:-6px">{{ langBody }}</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<sc-for list="{{ langOpts }}" as="l" hint-placeholder-count="3">
+<label class="radio" style="display:flex;justify-content:space-between;padding:12px 16px;border-radius:22px;background:{{ l.rowBg }}">
+<span style="display:flex;flex-direction:column;line-height:1.3"><span style="font-weight:700;font-size:15px">{{ l.native }}</span><span class="text-muted" style="font-size:12px">{{ l.name }}</span></span>
+<input type="radio" name="lang" checked="{{ l.checked }}" onChange="{{ l.pick }}"><span class="dot" style="width:20px;height:20px"></span>
+</label>
+</sc-for>
+<sc-if value="{{ showAskEach }}"><label class="radio" style="display:flex;justify-content:space-between;padding:12px 16px;border-radius:22px;background:{{ askRowBg }}"><span style="font-weight:700;font-size:15px">Ask me every time</span><input type="radio" name="lang" checked="{{ askPicked }}" onChange="{{ pickAsk }}"><span class="dot" style="width:20px;height:20px"></span></label></sc-if>
+</div>
+<sc-if value="{{ showRemember }}">
+<label style="display:flex;align-items:center;gap:12px;cursor:pointer;font-size:13px">
+<input type="checkbox" checked="{{ remember }}" onChange="{{ toggleRemember }}" style="position:absolute;opacity:0;width:0;height:0">
+<span style="width:22px;height:22px;flex:none;border-radius:8px;display:grid;place-items:center;background:{{ remBoxBg }};border:2px solid {{ remBoxBorder }};color:var(--color-bg)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="stroke-width:3.5;stroke-linecap:round;stroke-linejoin:round"><path d="M20 6 9 17l-5-5"></path></svg></span>
+Save as default on this device
+</label>
+</sc-if>
+<div class="dialog-actions"><button class="btn btn-secondary" style="height:44px;padding:0 18px" onClick="{{ closeLang }}">Cancel</button><button class="btn btn-primary" style="height:44px;padding:0 22px" onClick="{{ confirmLang }}">{{ langCta }}</button></div>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{ toast }}">
+<div style="position:absolute;left:50%;bottom:110px;transform:translateX(-50%);z-index:70;background:var(--color-neutral-900);color:var(--color-neutral-100);padding:10px 18px;border-radius:999px;font-size:13px;font-weight:600;white-space:nowrap;box-shadow:var(--shadow-md);animation:nxup .25s ease-out">{{ toast }}</div>
+</sc-if>
+
+<sc-if value="{{ showNav }}">
+<div style="position:absolute;left:0;right:0;bottom:0;z-index:20;height:88px;padding:0 10px 20px;background:var(--color-bg);border-radius:30px 30px 0 0;box-shadow:0 -4px 18px color-mix(in srgb, #2e2b25 10%, transparent);display:grid;grid-template-columns:repeat(5,1fr);align-items:center">
+<button style="border:none;background:none;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:3px;font:inherit;font-size:10px;font-weight:700;height:56px;justify-content:center;color:{{ nav.home }}" onClick="{{ goHome }}"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="stroke-width:2.75;stroke-linecap:round;stroke-linejoin:round"><path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"></path><path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg>Home</button>
+<button style="border:none;background:none;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:3px;font:inherit;font-size:10px;font-weight:700;height:56px;justify-content:center;color:{{ nav.category }}" onClick="{{ goCategory }}"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="stroke-width:2.75;stroke-linecap:round;stroke-linejoin:round"><rect width="7" height="7" x="3" y="3" rx="2"></rect><rect width="7" height="7" x="14" y="3" rx="2"></rect><rect width="7" height="7" x="14" y="14" rx="2"></rect><rect width="7" height="7" x="3" y="14" rx="2"></rect></svg>Category</button>
+<button style="border:none;background:none;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:4px;font:inherit;font-size:10px;font-weight:700;color:var(--color-accent-700);margin-top:-26px" onClick="{{ continueLast }}"><span style="width:58px;height:58px;border-radius:50%;background:var(--color-accent);color:var(--color-bg);display:grid;place-items:center;box-shadow:var(--shadow-md);border:5px solid var(--color-bg)"><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" style="stroke-width:2.75;stroke-linejoin:round;margin-left:3px"><polygon points="6 3 20 12 6 21 6 3"></polygon></svg></span>Continue</button>
+<button style="border:none;background:none;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:3px;font:inherit;font-size:10px;font-weight:700;height:56px;justify-content:center;color:{{ nav.library }}" onClick="{{ goLibrary }}"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="stroke-width:2.75;stroke-linecap:round;stroke-linejoin:round"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"></path></svg>Library</button>
+<button style="border:none;background:none;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:3px;font:inherit;font-size:10px;font-weight:700;height:56px;justify-content:center;color:{{ nav.profile }}" onClick="{{ goProfile }}"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="stroke-width:2.75;stroke-linecap:round;stroke-linejoin:round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>Profile</button>
+</div>
+</sc-if>
+
+</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;font&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;vietnam&quot;,&quot;nunito&quot;,&quot;mono&quot;],&quot;default&quot;:&quot;vietnam&quot;,&quot;tsType&quot;:&quot;'vietnam'|'nunito'|'mono'&quot;,&quot;section&quot;:&quot;Type&quot;},&quot;startScreen&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;login&quot;,&quot;home&quot;],&quot;default&quot;:&quot;login&quot;,&quot;tsType&quot;:&quot;'login'|'home'&quot;,&quot;section&quot;:&quot;Prototype&quot;},&quot;autoplay&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Prototype&quot;},&quot;throttleMs&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:400,&quot;min&quot;:100,&quot;max&quot;:1500,&quot;step&quot;:50,&quot;unit&quot;:&quot;ms&quot;,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Prototype&quot;}}">
+class Component extends DCLogic {
+  static PAL = [
+    ['var(--color-accent-300)', 'var(--color-accent-900)', 'var(--color-accent-500)'],
+    ['var(--color-accent-2-300)', 'var(--color-accent-2-900)', 'var(--color-accent-2-500)'],
+    ['var(--color-neutral-800)', 'var(--color-neutral-100)', 'var(--color-accent-600)'],
+    ['var(--color-accent-600)', 'var(--color-accent-100)', 'var(--color-accent-400)'],
+    ['var(--color-accent-2-700)', 'var(--color-accent-2-100)', 'var(--color-accent-2-500)'],
+    ['var(--color-neutral-300)', 'var(--color-neutral-900)', 'var(--color-accent-300)']
+  ];
+  static NOVELS = [
+    [1,'Ashvale Chronicles','Tran Linh','Wuxia','Ongoing',412,4.8,2400,2023,'Stripped of his sword and his rank, a disgraced disciple sweeps the courtyard of the sect that cast him out — until the old janitor starts teaching him forms no elder remembers.'],
+    [2,'The Salt Orchard','Mira Okafor','Fantasy','Completed',128,4.7,1100,2021,'On an island where trees grow salt instead of fruit, a young harvester discovers the orchard is slowly remembering the sea it came from.'],
+    [3,'Lanterns Over Kestrel Bay','Hana Seo','Romance','Ongoing',86,4.6,980,2025,'Two rival lantern-makers are forced to share one workshop for a single festival season. Neither plans on falling for the other.'],
+    [4,'The Quiet Engine','Elias Moreau','Sci-Fi','Completed',64,4.5,640,2022,'The last engineer on a drifting generation ship hears the engine start to speak — and it wants to turn around.'],
+    [5,'Nine Doors of Morrow Street','Jun Takeda','Mystery','Ongoing',150,4.7,1300,2024,'A locksmith inherits nine keys and a list of nine doors. Behind each one is a crime the city chose to forget.'],
+    [6,'Moss & Mortar','Mira Okafor','Slice of Life','Completed',42,4.4,320,2024,'A retired stonemason restores a crumbling village wall one stone, one neighbour and one long lunch at a time.'],
+    [7,'Heir of the Ninth Peak','Tran Linh','Wuxia','Ongoing',238,4.6,1600,2023,'The youngest heir of a fallen mountain clan climbs back to the summit his family lost, one duel at a time.'],
+    [8,'Small Hours Bakery','Hana Seo','Slice of Life','Ongoing',57,4.8,410,2026,'A bakery that only opens from 2 to 5 a.m. feeds night-shift strangers who slowly become a family.'],
+    [9,'Starfall Cartography','Elias Moreau','Sci-Fi','Ongoing',95,4.5,720,2025,'A mapmaker charts the craters left by falling stars and finds they spell out coordinates.'],
+    [10,'The Glass Heron','Mira Okafor','Fantasy','Completed',110,4.6,880,2020,'A glassblower’s apprentice breathes life into a heron that will grant one wish — to whoever can catch it.'],
+    [11,'Red Thread, Cold River','Tran Linh','Wuxia','Completed',176,4.9,1900,2022,'A swordswoman and the assassin sent to kill her are bound by a red thread neither can cut.'],
+    [12,'The Ledger of Small Crimes','Jun Takeda','Mystery','Ongoing',33,4.3,150,2026,'A small-town accountant keeps a secret ledger of every petty crime — until one entry turns into murder.']
+  ];
+  static CATS = ['Wuxia','Fantasy','Romance','Mystery','Sci-Fi','Slice of Life'];
+  static POPULAR = [1, 11, 7, 5, 2];
+  static COLLECTIONS = [
+    { key: 'trend', kicker: 'This week', title: 'Trending now', ids: [1, 7, 9, 5, 3, 10] },
+    { key: 'new', kicker: 'Fresh ink', title: 'New releases', ids: [8, 12, 3, 9, 6, 5] },
+    { key: 'done', kicker: 'Binge-ready', title: 'Completed sagas', ids: [2, 11, 10, 4, 6] },
+    { key: 'picks', kicker: 'From the editors', title: 'Quiet favourites', ids: [6, 8, 2, 4, 12] }
+  ];
+  static LANGS = [
+    { code: 'en', name: 'English', native: 'English' },
+    { code: 'vi', name: 'Vietnamese', native: 'Tiếng Việt' },
+    { code: 'es', name: 'Spanish', native: 'Español' }
+  ];
+  static GLOSS = {
+    sect: { en: 'Cinder Sect', vi: 'Hỏa Tẫn Tông', es: 'Secta Ceniza' },
+    wen: { en: 'Wen Yu', vi: 'Văn Vũ', es: 'Wen Yu' },
+    ash: { en: 'Ashvale', vi: 'Tro Cốc', es: 'Valceniza' }
+  };
+  static TEXT = {
+    en: [
+      'The bell of the [[sect]] rang three times before dawn, and [[wen]] was already awake, counting the cracks in the ceiling of the woodshed they had given him instead of a room.',
+      'Six months ago he had been the sect’s brightest disciple. Now his sword hung on the wall of the elders’ hall, wrapped in white cloth like something that had died.',
+      'He dressed in the dark, tied back his sleeves and stepped into the yard. Frost had silvered the training stones. Somewhere beyond the wall, the river that gave [[ash]] its name was grinding ice against the old mill wheel.',
+      '“You’re early,” said a voice from the gate. Old Master Qiao leaned on his broom as if it were the only thing holding up the morning. “Or you never slept.”',
+      '“Both,” said [[wen]].',
+      'The old man laughed, a dry sound like paper tearing. “Then sweep. A man who cannot hold a sword can still hold a broom — and a broom, boy, has taught more than one fool how to stand.”',
+      '[[wen]] took the broom. It was heavier than it looked.'
+    ],
+    vi: [
+      'Chuông của [[sect]] vang ba hồi trước lúc rạng đông, và [[wen]] đã thức từ lâu, đếm những vết nứt trên trần căn kho củi mà người ta cho hắn ở thay cho một gian phòng.',
+      'Sáu tháng trước, hắn là đệ tử sáng giá nhất của tông môn. Giờ đây thanh kiếm của hắn treo trên vách đại sảnh trưởng lão, bọc trong vải trắng như một thứ đã chết.',
+      'Hắn mặc áo trong bóng tối, buộc gọn tay áo rồi bước ra sân. Sương giá đã phủ bạc những phiến đá luyện công. Đâu đó sau bức tường, con sông đã đặt tên cho [[ash]] đang nghiến băng vào chiếc guồng nước cũ.',
+      '“Ngươi dậy sớm,” một giọng nói vang lên từ cổng. Lão Kiều chống chổi như thể đó là thứ duy nhất giữ cho buổi sáng đứng vững. “Hay là ngươi chẳng hề ngủ.”',
+      '“Cả hai,” [[wen]] đáp.',
+      'Lão già bật cười, tiếng cười khô khốc như giấy rách. “Vậy thì quét đi. Kẻ không cầm nổi kiếm vẫn cầm được chổi — mà cái chổi, nhóc à, đã dạy không ít kẻ ngốc cách đứng vững.”',
+      '[[wen]] cầm lấy cây chổi. Nó nặng hơn vẻ ngoài.'
+    ],
+    es: [
+      'La campana de la [[sect]] sonó tres veces antes del alba, y [[wen]] ya estaba despierto, contando las grietas del techo de la leñera que le habían dado en lugar de una habitación.',
+      'Hace seis meses había sido el discípulo más brillante de la secta. Ahora su espada colgaba en la pared del salón de los ancianos, envuelta en tela blanca como algo que hubiera muerto.',
+      'Se vistió a oscuras, se ató las mangas y salió al patio. La escarcha había plateado las piedras de entrenamiento. Más allá del muro, el río que daba nombre a [[ash]] arrastraba hielo contra la vieja rueda del molino.',
+      '—Llegas temprano —dijo una voz desde la puerta. El viejo maestro Qiao se apoyaba en su escoba como si fuera lo único que sostenía la mañana—. O no has dormido.',
+      '—Las dos cosas —dijo [[wen]].',
+      'El viejo rió, un sonido seco como papel que se rasga. —Entonces barre. Quien no puede sostener una espada aún puede sostener una escoba, y una escoba, muchacho, ha enseñado a más de un tonto a mantenerse en pie.',
+      '[[wen]] tomó la escoba. Pesaba más de lo que parecía.'
+    ]
+  };
+  static CH_TITLES = ['The Bell Before Dawn','A Broom Heavier Than Steel','Frost on the Training Stones','The Elders’ Hall','What the River Remembers','Ash in the Rice Bowl','A Sword in White Cloth','The Mill Wheel Turns','Old Master Qiao','Lessons in Standing','Smoke Over the Eastern Ridge','The First Cut','Night Market','A Debt of Salt','Paper Lanterns','The Second Bell','Snow Without Sound','Iron and Patience','Borrowed Names','Where the Road Bends'];
+  static DICT = {
+    silvered: { pos: 'verb · past', def: 'Covered with a shiny grey-white surface, like silver.', ex: 'Frost had silvered the training stones.' },
+    disciple: { pos: 'noun', def: 'A follower or student of a teacher, school or sect.', ex: 'the sect’s brightest disciple' },
+    woodshed: { pos: 'noun', def: 'A small outbuilding used for storing firewood.', ex: 'the woodshed they had given him' },
+    grinding: { pos: 'verb', def: 'Rubbing or pressing hard against something with a harsh noise.', ex: 'grinding ice against the old mill wheel' },
+    sect: { pos: 'noun', def: 'In wuxia stories, a martial school with its own rules, elders and techniques.', ex: 'The bell of the Cinder Sect rang' }
+  };
+  static STYLES = {
+    Literal: 'Stays close to the source wording and sentence order.',
+    Natural: 'Reads smoothly, the way a native writer would phrase it.',
+    Literary: 'Richer, more lyrical prose that keeps the mood.',
+    Casual: 'Plain, modern and easy-going.'
+  };
+  static KEY = 'bennovel.defaultLang';
+
+  state = (() => {
+    let lang = null;
+    try { lang = localStorage.getItem(Component.KEY); } catch (e) {}
+    const start = this.props.startScreen ?? 'login';
+    const authed = start !== 'login';
+    return {
+      authed, user: authed ? { name: 'Lina Hart', email: 'lina.hart@gmail.com', provider: 'Google' } : null,
+      authMode: 'login', form: { name: '', email: '', pw: '' }, errors: {}, authLoading: null,
+      tab: authed ? 'home' : null, stack: [authed ? { s: 'home' } : { s: 'login' }],
+      heroIdx: 0, searchInput: '', query: '',
+      listStatus: 'All', listSort: 'Popular', listCat: 'All', allCh: false,
+      lang, langDialog: null, langPick: 'en', remember: true,
+      favs: [2, 11, 8], history: [{ id: 1, ch: 12, when: '2h ago' }, { id: 3, ch: 4, when: 'Yesterday' }, { id: 5, ch: 27, when: '3 days ago' }],
+      last: { id: 1, ch: 12 },
+      toolsOpen: false, toolTab: 'reading', fontSize: 18, theme: 'cream', lineH: 1.75, gap: 'normal', margin: 'normal', align: 'left',
+      translating: false, translated: null, trLang: 'vi', trStyle: 'Natural', applyDict: true, trStep: 0,
+      dictWord: '', dictResult: null, toast: null, profileTab: 'history', readPct: 0
+    };
+  })();
+
+  setScroll = (el) => { if (el) this.scrollEl = el; };
+  setReaderScroll = (el) => { if (el) this.readerEl = el; };
+  lastFire = 0;
+
+  componentDidMount() {
+    this.heroTimer = setInterval(() => {
+      if (!(this.props.autoplay ?? true)) return;
+      const top = this.state.stack[this.state.stack.length - 1];
+      if (top.s !== 'home' || this.state.searchInput || Date.now() - (this.heroTouched || 0) < 6000) return;
+      this.setState(s => ({ heroIdx: (s.heroIdx + 1) % Component.POPULAR.length }));
+    }, 4200);
+  }
+  componentWillUnmount() { clearInterval(this.heroTimer); clearTimeout(this.thr); clearTimeout(this.toastT); }
+
+  resetScroll = () => setTimeout(() => { if (this.scrollEl) this.scrollEl.scrollTop = 0; if (this.readerEl) this.readerEl.scrollTop = 0; }, 0);
+  toastMsg(msg) { clearTimeout(this.toastT); this.setState({ toast: msg }); this.toastT = setTimeout(() => this.setState({ toast: null }), 2200); }
+  top() { return this.state.stack[this.state.stack.length - 1]; }
+  push(entry) { this.setState(s => ({ stack: [...s.stack, entry], searchInput: '', query: '', allCh: false, listStatus: 'All', listSort: 'Popular', listCat: 'All' }), this.resetScroll); }
+  replaceTop(entry) { this.setState(s => ({ stack: [...s.stack.slice(0, -1), entry] }), this.resetScroll); }
+  back = () => this.setState(s => ({ stack: s.stack.length > 1 ? s.stack.slice(0, -1) : s.stack, toolsOpen: false, translated: null, searchInput: '', query: '' }), this.resetScroll);
+  switchTab(t) {
+    const entry = t === 'category' ? { s: 'list', type: 'all', title: 'Categories' } : { s: t };
+    this.setState({ tab: t, stack: [entry], searchInput: '', query: '', listStatus: 'All', listSort: 'Popular', listCat: 'All', toolsOpen: false, translated: null }, this.resetScroll);
+  }
+  openDetail(id) { this.push({ s: 'detail', id }); }
+  openCategory(cat) { this.push({ s: 'list', type: 'category', value: cat, title: cat }); }
+  openAuthor(a) { this.push({ s: 'list', type: 'author', value: a, title: a }); }
+
+  openChapter(id, ch) {
+    if (this.state.lang) this.goReader(id, ch, this.state.lang);
+    else this.setState({ langDialog: { mode: 'chapter', id, ch }, langPick: 'en', remember: true });
+  }
+  goReader(id, ch, lang) {
+    const entry = { s: 'reader', id, ch, lang };
+    this.setState(s => {
+      const history = [{ id, ch, when: 'Just now' }, ...s.history.filter(h => h.id !== id)];
+      const stack = s.stack[s.stack.length - 1].s === 'reader' ? [...s.stack.slice(0, -1), entry] : [...s.stack, entry];
+      return { stack, history, last: { id, ch }, translated: null, toolsOpen: false, readPct: 0 };
+    }, this.resetScroll);
+  }
+  saveLang(code) {
+    try { if (code) localStorage.setItem(Component.KEY, code); else localStorage.removeItem(Component.KEY); } catch (e) {}
+    this.setState({ lang: code });
+  }
+  confirmLang = () => {
+    const d = this.state.langDialog, code = this.state.langPick;
+    if (d.mode === 'settings') { this.saveLang(code === 'ask' ? null : code); this.toastMsg(code === 'ask' ? 'Will ask on each new chapter' : 'Default language saved'); }
+    else if (d.mode === 'reader') { if (this.state.remember) this.saveLang(code); const t = this.top(); this.replaceTop({ ...t, lang: code }); this.setState({ translated: null }); }
+    else { if (this.state.remember) this.saveLang(code); this.goReader(d.id, d.ch, code); }
+    this.setState({ langDialog: null });
+  };
+
+  login(provider, name, email) {
+    this.setState({ authLoading: provider });
+    setTimeout(() => {
+      this.setState(s => {
+        const base = { authed: true, authLoading: null, user: { name, email, provider }, errors: {} };
+        if (s.stack.length > 1) return { ...base, stack: s.stack.slice(0, -1) };
+        return { ...base, stack: [{ s: 'home' }], tab: 'home' };
+      });
+      this.toastMsg(`Welcome, ${name.split(' ')[0]}`);
+    }, 750);
+  }
+  submitEmail = () => {
+    const f = this.state.form, reg = this.state.authMode === 'register', e = {};
+    if (reg && !f.name.trim()) e.name = 'Tell us what to call you';
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(f.email)) e.email = 'Enter a valid email address';
+    if (f.pw.length < 6) e.pw = 'Password needs at least 6 characters';
+    this.setState({ errors: e });
+    if (Object.keys(e).length) return;
+    const nm = reg ? f.name.trim() : f.email.split('@')[0].replace(/[._]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    this.login('email', nm, f.email);
+  };
+
+  throttleQuery(v) {
+    const wait = this.props.throttleMs ?? 400, now = Date.now();
+    clearTimeout(this.thr);
+    if (now - this.lastFire >= wait) { this.lastFire = now; this.setState({ query: v }); }
+    else this.thr = setTimeout(() => { this.lastFire = Date.now(); this.setState(s => ({ query: s.searchInput })); }, wait - (now - this.lastFire));
+  }
+
+  renderVals() {
+    const S = this.state, C = Component, cur = this.top(), scr = cur.s;
+    if (!this._nv) {
+      this._nv = C.NOVELS.map(([id, title, author, cat, status, chapters, rating, reads, year, desc], i) => {
+        const p = C.PAL[i % 6];
+        return { id, title, author, cat, status, chapters, rating, reads, year, desc, bg: p[0], fg: p[1], deco: p[2],
+          readsLabel: reads >= 1000 ? (reads / 1000).toFixed(1) + 'M' : reads + 'K', meta: `${author} · ${cat}`,
+          open: () => this.openDetail(id), catOpen: () => this.openCategory(cat), authorOpen: () => this.openAuthor(author) };
+      });
+      this._by = Object.fromEntries(this._nv.map(n => [n.id, n]));
+    }
+    const N = this._nv, by = this._by;
+    const langName = c => (C.LANGS.find(l => l.code === c) || {}).native || 'Ask each time';
+    const q = S.query.trim().toLowerCase();
+    const match = n => !q || (n.title + ' ' + n.author + ' ' + n.cat).toLowerCase().includes(q);
+    const pending = S.searchInput !== S.query;
+    const firstName = S.user ? S.user.name.split(' ')[0] : 'reader';
+    const initials = S.user ? S.user.name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase() : 'G';
+    const hr = new Date().getHours();
+    const segOpts = (opts, val, key) => opts.map(o => { const [label, v] = Array.isArray(o) ? o : [o, o]; return { label, checked: val === v, pick: () => this.setState({ [key]: v }) }; });
+    const pill = (active) => ({ bg: active ? 'var(--color-accent)' : 'var(--color-surface)', fg: active ? 'var(--color-bg)' : 'var(--color-text)', border: active ? 'var(--color-accent)' : 'var(--color-divider)' });
+
+    const heroItems = C.POPULAR.map((id, i) => ({ ...by[id], rank: `#${i + 1} this week`, open: () => { if (!this.suppress) this.openDetail(id); } }));
+    const searchResults = q ? N.filter(match) : [];
+
+    // detail
+    const d = scr === 'detail' ? by[cur.id] : N[0];
+    const readUpTo = (S.history.find(h => h.id === d.id) || {}).ch || 0;
+    const shown = S.allCh ? Math.min(20, d.chapters) : 6;
+    const chapterList = Array.from({ length: shown }, (_, i) => {
+      const n = i + 1, read = n <= readUpTo;
+      return { n, title: C.CH_TITLES[i % 20], sub: read ? (n === readUpTo ? 'Last read' : 'Read') : `${8 + (n * 7) % 9} min read`,
+        dotBg: read ? 'var(--color-accent-2-200)' : 'var(--color-surface)', dotFg: read ? 'var(--color-accent-2-800)' : 'var(--color-text)', open: () => this.openChapter(d.id, n) };
+    });
+    const isFav = S.favs.includes(d.id);
+
+    // list
+    let base = N;
+    if (cur.type === 'category') base = N.filter(n => n.cat === cur.value);
+    else if (cur.type === 'author') base = N.filter(n => n.author === cur.value);
+    else if (cur.type === 'collection') { const c = C.COLLECTIONS.find(c => c.key === cur.value); base = c.ids.map(id => by[id]); }
+    else if (S.listCat !== 'All') base = N.filter(n => n.cat === S.listCat);
+    let listItems = base.filter(n => (S.listStatus === 'All' || n.status === S.listStatus) && match(n));
+    const sorter = { Popular: (a, b) => b.reads - a.reads, Newest: (a, b) => b.year - a.year, Rating: (a, b) => b.rating - a.rating }[S.listSort];
+    listItems = [...listItems].sort(sorter);
+    const kicker = { category: 'Category', author: 'Author', collection: 'Collection', all: 'Browse' }[cur.type] || '';
+
+    // reader
+    const themes = { cream: ['Cream', 'var(--color-bg)', 'var(--color-text)'], paper: ['Paper', 'var(--color-neutral-100)', 'var(--color-text)'], sage: ['Sage', 'var(--color-accent-2-200)', 'var(--color-accent-2-900)'], night: ['Night', 'var(--color-neutral-900)', 'var(--color-neutral-200)'] };
+    const th = themes[S.theme], night = S.theme === 'night';
+    const rt = { bg: th[1], fg: th[2], line: night ? 'var(--color-neutral-700)' : 'color-mix(in srgb, currentColor 14%, transparent)', kicker: night ? 'var(--color-accent-400)' : 'var(--color-accent-700)', banner: night ? 'var(--color-neutral-800)' : 'var(--color-accent-100)' };
+    const tr = S.translated, baseLang = cur.lang || 'en', dispLang = tr ? tr.lang : baseLang;
+    const paras = scr === 'reader' ? C.TEXT[dispLang].map(p => ({
+      segs: p.split(/\[\[(\w+)\]\]/).map((t, i) => {
+        if (i % 2 === 0) return { t, bg: 'transparent', pad: '0' };
+        const g = C.GLOSS[t], useDict = !tr || tr.dict, hl = tr && tr.dict;
+        return { t: useDict ? g[dispLang] : g[baseLang], bg: hl ? (night ? 'var(--color-accent-800)' : 'var(--color-accent-200)') : 'transparent', pad: hl ? '0 3px' : '0' };
+      })
+    })) : [];
+    const rn = scr === 'reader' ? by[cur.id] : N[0];
+    const rCh = cur.ch || 1;
+    const gloss = Object.values(C.GLOSS);
+
+    const dlg = S.langDialog;
+    const langOpts = C.LANGS.map(l => ({ ...l, checked: S.langPick === l.code, rowBg: S.langPick === l.code ? 'var(--color-accent-100)' : 'var(--color-bg)', pick: () => this.setState({ langPick: l.code }) }));
+
+    const go = (fn) => () => { this.setState({ langDialog: null, toolsOpen: false }); fn(); };
+    const jumps = [
+      ['Login', () => this.setState({ stack: [{ s: 'login' }], tab: null })],
+      ['Home', () => this.switchTab('home')],
+      ['Detail', () => { this.switchTab('home'); setTimeout(() => this.openDetail(1)); }],
+      ['Category', () => this.switchTab('category')],
+      ['Author', () => { this.switchTab('home'); setTimeout(() => this.openAuthor('Mira Okafor')); }],
+      ['Reader', () => { this.switchTab('home'); setTimeout(() => this.goReader(1, 12, this.state.lang || 'en')); }],
+      ['Library', () => this.switchTab('library')],
+      ['Profile', () => this.switchTab('profile')]
+    ].map(([label, f]) => ({ label, go: go(f) }));
+
+    const navC = t => (S.tab === t ? 'var(--color-accent)' : 'var(--color-neutral-700)');
+
+    const FONTS = {
+      vietnam: ['Be Vietnam Pro', '"Be Vietnam Pro", system-ui, sans-serif', 800, '-0.005em'],
+      nunito: ['Nunito (rounded)', '"Nunito", system-ui, sans-serif', 900, '0'],
+      mono: ['JetBrains Mono', '"JetBrains Mono", ui-monospace, monospace', 800, '-0.02em']
+    };
+    const fk = S.font || this.props.font || 'vietnam', F = FONTS[fk] || FONTS.vietnam;
+    return {
+      fontHead: F[1], fontBody: F[1], fontHeadW: F[2], fontTrack: F[3],
+      fontOpts: Object.entries(FONTS).map(([k, f]) => ({ label: f[0], family: f[1], bg: k === fk ? 'var(--color-accent-200)' : 'transparent', pick: () => this.setState({ font: k }) })),
+      jumps, throttleMs: this.props.throttleMs ?? 400, savedLangLabel: S.lang ? langName(S.lang) : 'none',
+      clearSavedLang: () => { this.saveLang(null); this.toastMsg('Saved language cleared'); },
+      screenBg: scr === 'reader' ? rt.bg : 'var(--color-bg)', screenFg: scr === 'reader' ? rt.fg : 'var(--color-text)',
+      isLogin: scr === 'login', isHome: scr === 'home', isDetail: scr === 'detail', isList: scr === 'list', isReader: scr === 'reader', isProfile: scr === 'profile', isLibrary: scr === 'library',
+      showNav: scr !== 'reader' && scr !== 'login', canBack: S.stack.length > 1, back: this.back,
+      setScroll: this.setScroll, setReaderScroll: this.setReaderScroll,
+      // auth
+      skipLabel: S.stack.length > 1 ? 'Not now' : 'Skip for now',
+      skipLogin: () => (S.stack.length > 1 ? this.back() : this.switchTab('home')),
+      socials: [['Google', 'G', 'var(--color-accent-200)', 'var(--color-accent-800)', 'lina.hart@gmail.com'], ['Facebook', 'f', 'var(--color-accent-2-200)', 'var(--color-accent-2-800)', 'lina.hart@facebook.com'], ['iCloud', '☁', 'var(--color-neutral-300)', 'var(--color-neutral-900)', 'lina.hart@icloud.com']].map(([p, glyph, bg, fg, email]) => ({
+        label: p, aria: `Continue with ${p}`, glyph, bg, fg, loading: S.authLoading === p, idle: S.authLoading !== p, go: () => this.login(p, 'Lina Hart', email) })),
+      isLoginMode: S.authMode === 'login', isRegisterMode: S.authMode === 'register',
+      setLoginMode: () => this.setState({ authMode: 'login', errors: {} }), setRegisterMode: () => this.setState({ authMode: 'register', errors: {} }),
+      form: S.form, errors: S.errors,
+      onName: e => this.setState({ form: { ...S.form, name: e.target.value } }),
+      onEmail: e => this.setState({ form: { ...S.form, email: e.target.value } }),
+      onPw: e => this.setState({ form: { ...S.form, pw: e.target.value } }),
+      submitEmail: this.submitEmail,
+      submitLabel: S.authLoading === 'email' ? 'Signing in…' : S.authMode === 'login' ? 'Log in' : 'Create account',
+      // home
+      greeting: hr < 12 ? 'Good morning' : hr < 18 ? 'Good afternoon' : 'Good evening', firstName, initials,
+      searchInput: S.searchInput, hasSearch: !!S.searchInput, pending,
+      onSearch: e => { const v = e.target.value; this.setState({ searchInput: v }); this.throttleQuery(v); },
+      clearSearch: () => { clearTimeout(this.thr); this.setState({ searchInput: '', query: '' }); },
+      searchHint: pending ? 'Searching…' : `${searchResults.length} result${searchResults.length === 1 ? '' : 's'} for “${S.query}”`,
+      searchResults, searchEmpty: !!q && !pending && searchResults.length === 0, showHomeMain: !S.searchInput,
+      heroItems, heroTransform: `translateX(-${S.heroIdx * 100}%)`, heroCounter: `${S.heroIdx + 1} / ${heroItems.length}`,
+      heroDots: heroItems.map((_, i) => ({ w: i === S.heroIdx ? '24px' : '8px', bg: i === S.heroIdx ? 'var(--color-accent)' : 'var(--color-neutral-400)', go: () => { this.heroTouched = Date.now(); this.setState({ heroIdx: i }); } })),
+      heroDown: e => { this.dragX = e.clientX; },
+      heroUp: e => { const dx = e.clientX - (this.dragX ?? e.clientX); if (Math.abs(dx) > 40) { this.heroTouched = Date.now(); this.suppress = true; setTimeout(() => (this.suppress = false), 50); const n = heroItems.length; this.setState(s => ({ heroIdx: (s.heroIdx + (dx < 0 ? 1 : -1) + n) % n })); } },
+      collections: C.COLLECTIONS.map(c => ({ ...c, items: c.ids.map(id => by[id]), seeAll: () => this.push({ s: 'list', type: 'collection', value: c.key, title: c.title }) })),
+      // detail
+      d, chapterList, favColor: isFav ? 'var(--color-accent)' : 'var(--color-text)', favFill: isFav ? 'currentColor' : 'none',
+      toggleFav: () => { this.setState(s => ({ favs: isFav ? s.favs.filter(x => x !== d.id) : [...s.favs, d.id] })); this.toastMsg(isFav ? 'Removed from Library' : 'Saved to Library'); },
+      startLabel: readUpTo ? `Continue · Chapter ${readUpTo}` : 'Start reading', startRead: () => this.openChapter(d.id, readUpTo || 1),
+      toggleAllCh: () => this.setState(s => ({ allCh: !s.allCh })), allChLabel: S.allCh ? 'Show fewer' : `Show more · ${d.chapters} chapters`,
+      related: N.filter(n => n.cat === d.cat && n.id !== d.id), sameAuthor: N.filter(n => n.author === d.author && n.id !== d.id),
+      hasRelated: N.some(n => n.cat === d.cat && n.id !== d.id), hasSameAuthor: N.some(n => n.author === d.author && n.id !== d.id),
+      langLabel: S.lang ? langName(S.lang) : 'Ask each time',
+      openLangSettings: () => this.setState({ langDialog: { mode: 'settings' }, langPick: S.lang || 'ask' }),
+      // list
+      listTitle: cur.title || '', listKicker: kicker, isAuthorList: cur.type === 'author',
+      listInitials: (cur.value || '').split(' ').map(w => w[0]).join(''),
+      listPlaceholder: cur.type === 'author' ? `Search ${cur.value}’s novels` : cur.type === 'category' ? `Search in ${cur.value}` : 'Search all novels',
+      showCatChips: cur.type === 'all',
+      catChips: ['All', ...C.CATS].map(c => ({ label: c, ...pill(S.listCat === c), pick: () => this.setState({ listCat: c }) })),
+      statusChips: ['All', 'Ongoing', 'Completed'].map(c => ({ label: c === 'All' ? 'Any status' : c, ...pill(S.listStatus === c), bg: S.listStatus === c ? 'var(--color-accent-2-200)' : 'transparent', fg: S.listStatus === c ? 'var(--color-accent-2-900)' : 'var(--color-text)', border: S.listStatus === c ? 'var(--color-accent-2)' : 'var(--color-divider)', pick: () => this.setState({ listStatus: c }) })),
+      sortOpts: segOpts([['Popular', 'Popular'], ['Newest', 'Newest'], ['Top rated', 'Rating']], S.listSort, 'listSort'),
+      listItems, listEmpty: listItems.length === 0 && !pending,
+      listCount: pending ? 'Searching…' : `${listItems.length} novel${listItems.length === 1 ? '' : 's'}`,
+      // library / profile
+      favItems: S.favs.map(id => by[id]), favEmpty: S.favs.length === 0, favCountLabel: `${S.favs.length} saved novel${S.favs.length === 1 ? '' : 's'}`,
+      authed: S.authed, guest: !S.authed, user: S.user || { name: '', email: '', provider: '' },
+      goLogin: () => this.push({ s: 'login' }),
+      logout: () => { this.setState({ authed: false, user: null }); this.toastMsg('You’ve been logged out'); },
+      profileTabs: segOpts([['History', 'history'], ['Favourites', 'favs']], S.profileTab, 'profileTab'),
+      showHistory: S.profileTab === 'history', showFavTab: S.profileTab === 'favs',
+      historyItems: S.history.map(h => { const n = by[h.id]; return { ...n, ch: h.ch, when: h.when, pct: Math.max(4, Math.round((h.ch / n.chapters) * 100)) + '%', resume: () => this.openChapter(h.id, h.ch) }; }),
+      // reader
+      rt, rn, rCh, rChTitle: C.CH_TITLES[(rCh - 1) % 20], rLangCode: dispLang.toUpperCase(), paras,
+      fontSize: S.fontSize, lineH: S.lineH, align: S.align === 'justify' ? 'justify' : 'left',
+      rGap: { tight: 6, normal: 16, airy: 28 }[S.gap], rPad: { narrow: 16, normal: 24, wide: 36 }[S.margin],
+      readPct: Math.round(S.readPct * 100) + '%',
+      onReaderScroll: e => { const el = e.currentTarget, m = el.scrollHeight - el.clientHeight; this.setState({ readPct: m > 0 ? el.scrollTop / m : 1 }); },
+      openReaderLang: () => this.setState({ langDialog: { mode: 'reader' }, langPick: baseLang, remember: true }),
+      noPrev: rCh <= 1, noNext: rCh >= rn.chapters,
+      prevCh: () => this.goReader(cur.id, rCh - 1, baseLang), nextCh: () => this.goReader(cur.id, rCh + 1, baseLang),
+      translated: !!tr, translating: S.translating,
+      trProgress: ['Reading the chapter', 'Matching glossary terms', 'Polishing the style'][S.trStep] || '',
+      trBanner: tr ? `AI translated to ${langName(tr.lang)} · ${tr.style} style · ${tr.dict ? `${gloss.length} dictionary terms kept` : 'dictionary off'}` : '',
+      showOriginal: () => this.setState({ translated: null }),
+      toolsOpen: S.toolsOpen && scr === 'reader', openTools: () => this.setState({ toolsOpen: true }), closeTools: () => this.setState({ toolsOpen: false }),
+      toolTabs: segOpts([['Reading', 'reading'], ['AI tools', 'ai']], S.toolTab, 'toolTab'),
+      isReadingTab: S.toolTab === 'reading', isAiTab: S.toolTab === 'ai',
+      fontDown: () => this.setState(s => ({ fontSize: Math.max(14, s.fontSize - 1) })), fontUp: () => this.setState(s => ({ fontSize: Math.min(26, s.fontSize + 1) })),
+      onFontSize: e => this.setState({ fontSize: +e.target.value }), onLineH: e => this.setState({ lineH: +(+e.target.value).toFixed(2) }),
+      themeOpts: Object.entries(themes).map(([k, [label, bg, fg]]) => ({ label, bg, fg, ring: S.theme === k ? '3px' : '0px', pick: () => this.setState({ theme: k }) })),
+      gapOpts: segOpts([['Tight', 'tight'], ['Normal', 'normal'], ['Airy', 'airy']], S.gap, 'gap'),
+      marginOpts: segOpts([['Narrow', 'narrow'], ['Normal', 'normal'], ['Wide', 'wide']], S.margin, 'margin'),
+      alignOpts: segOpts([['Left', 'left'], ['Justify', 'justify']], S.align, 'align'),
+      resetReading: () => this.setState({ fontSize: 18, theme: 'cream', lineH: 1.75, gap: 'normal', margin: 'normal', align: 'left' }),
+      dictWord: S.dictWord, dictResult: S.dictResult,
+      onDictWord: e => this.setState({ dictWord: e.target.value }),
+      lookup: () => { const w = S.dictWord.trim().toLowerCase(); if (!w) return; this.setState({ dictResult: { word: w, ...(C.DICT[w] || { pos: 'AI · in context', def: `In this chapter, “${w}” is used in its everyday sense. Full AI explanations appear here in the live app.`, ex: 'Tip: try silvered, disciple or woodshed.' }) } }); },
+      dictSuggest: ['silvered', 'disciple', 'woodshed', 'grinding'].map(w => ({ word: w, go: () => this.setState({ dictWord: w, dictResult: { word: w, ...C.DICT[w] } }) })),
+      glossary: Object.values(C.GLOSS), glossaryCount: gloss.length,
+      trLangOpts: segOpts(C.LANGS.map(l => [l.native, l.code]), S.trLang, 'trLang'),
+      styleOpts: Object.keys(C.STYLES).map(k => ({ label: k, ...pill(S.trStyle === k), pick: () => this.setState({ trStyle: k }) })),
+      styleDesc: C.STYLES[S.trStyle], applyDict: S.applyDict, toggleDict: () => this.setState(s => ({ applyDict: !s.applyDict })),
+      dictBoxBg: S.applyDict ? 'var(--color-accent)' : 'transparent', dictBoxBorder: S.applyDict ? 'var(--color-accent)' : 'var(--color-neutral-500)',
+      runTranslate: () => {
+        this.setState({ translating: true, toolsOpen: false, trStep: 0 });
+        setTimeout(() => this.setState({ trStep: 1 }), 550); setTimeout(() => this.setState({ trStep: 2 }), 1100);
+        setTimeout(() => { this.setState(s => ({ translating: false, translated: { lang: s.trLang, style: s.trStyle, dict: s.applyDict } })); this.resetScroll(); }, 1650);
+      },
+      // language dialog
+      langDialog: !!dlg, langOpts, showAskEach: !!dlg && dlg.mode === 'settings', askPicked: S.langPick === 'ask',
+      askRowBg: S.langPick === 'ask' ? 'var(--color-accent-100)' : 'var(--color-bg)', pickAsk: () => this.setState({ langPick: 'ask' }),
+      langTitle: !dlg ? '' : dlg.mode === 'settings' ? 'Default reading language' : dlg.mode === 'reader' ? 'Switch chapter language' : 'Read in which language?',
+      langBody: !dlg ? '' : dlg.mode === 'settings' ? 'New chapters open straight in this language.' : 'We’ll remember it, so the next chapters load in this language automatically.',
+      showRemember: !!dlg && dlg.mode !== 'settings', remember: S.remember, toggleRemember: () => this.setState(s => ({ remember: !s.remember })),
+      remBoxBg: S.remember ? 'var(--color-accent)' : 'transparent', remBoxBorder: S.remember ? 'var(--color-accent)' : 'var(--color-neutral-500)',
+      langCta: !dlg ? '' : dlg.mode === 'chapter' ? 'Start reading' : 'Save',
+      closeLang: () => this.setState({ langDialog: null }), stop: e => e.stopPropagation(), confirmLang: this.confirmLang,
+      toast: S.toast,
+      // nav
+      nav: { home: navC('home'), category: navC('category'), library: navC('library'), profile: navC('profile') },
+      goHome: () => this.switchTab('home'), goCategory: () => this.switchTab('category'), goLibrary: () => this.switchTab('library'), goProfile: () => this.switchTab('profile'),
+      continueLast: () => (S.last ? this.openChapter(S.last.id, S.last.ch) : this.toastMsg('Nothing to continue yet'))
+    };
+  }
+}
+</script>
+</body>
+</html>
