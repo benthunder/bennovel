@@ -12,6 +12,7 @@ export const getNovel = (id: number): Novel => {
 };
 
 export const getPopular = () => POPULAR_IDS.map(getNovel);
+export const getTopRated = (n: number) => [...NOVELS].sort((a, b) => b.rating - a.rating).slice(0, n);
 export const getCollections = () => COLLECTIONS.map(c => ({ key: c.key, items: c.ids.map(getNovel) }));
 export const getCollection = (key: CollectionKey) => (COLLECTIONS.find(c => c.key === key)?.ids ?? []).map(getNovel);
 export const getCategories = () => CATEGORIES;

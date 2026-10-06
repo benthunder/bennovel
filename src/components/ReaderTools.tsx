@@ -5,22 +5,30 @@ import { useI18n } from '../i18n';
 import { DEFAULT_READER_PREFS, READER_THEMES, useApp, type ReaderPrefs } from '../store/AppStore';
 import { BookIcon, SparklesIcon, XIcon } from './Icons';
 import { Checkbox, Segmented } from './ui';
+import { useLayout } from '../lib/useLayout';
 
 export interface Translation { lang: ContentLang; style: TranslateStyle; dict: boolean }
 
 const FONT_MIN = 14, FONT_MAX = 26;
 
-/** Bottom sheet with reading settings and the (simulated) AI dictionary / translator. */
+/**
+ * Reading settings and the (simulated) AI dictionary / translator.
+ * Phone: bottom sheet over the chapter. Tablet and desktop: a side panel the chapter makes room for.
+ */
 export function ReaderTools({ onClose, onTranslate }: { onClose: () => void; onTranslate: (t: Translation) => void }) {
   const { t } = useI18n();
+  const lay = useLayout();
   const [tab, setTab] = useState<'reading' | 'ai'>('reading');
 
   return (
-    <div style={{ position: 'absolute', inset: 0, zIndex: 50, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', color: 'var(--color-text)' }}>
-      <div className="scrim" onClick={onClose} />
-      <div className="sheet" role="dialog" aria-modal="true" aria-label={t('reader.tools')}>
-        <div style={{ padding: '10px 20px 0' }}>
-          <div className="sheet__grip" />
+    <div style={{
+      position: 'absolute', top: 0, right: 0, bottom: 0, left: lay.wide ? 'auto' : 0, width: lay.wide ? lay.toolsW : 'auto',
+      zIndex: 50, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', color: 'var(--color-text)'
+    }}>
+      {lay.isPhone && <div className="scrim" onClick={onClose} />}
+      <div className={`sheet${lay.wide ? ' sheet--side' : ''}`} role="dialog" aria-modal={lay.isPhone} aria-label={t('reader.tools')}>
+        <div style={{ padding: `${lay.v('10px', 'calc(env(safe-area-inset-top, 0px) + 42px)', '22px')} 20px 0` }}>
+          {lay.isPhone && <div className="sheet__grip" />}
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
             <Segmented value={tab} onChange={setTab} style={{ flex: 1 }} optStyle={{ padding: 10 }}
               options={[{ label: t('tools.reading'), value: 'reading' }, { label: t('tools.ai'), value: 'ai' }]} />

@@ -90,12 +90,14 @@ export function ShelfItem({ novel, onOpen, w, h, fs, showAuthor = true, titleSiz
   );
 }
 
-export function CoverGrid({ novels, onOpen, showAuthor = true }: { novels: Novel[]; onOpen: (id: number) => void; showAuthor?: boolean }) {
+export function CoverGrid({ novels, onOpen, showAuthor = true, cols, gap, fs = 13 }: {
+  novels: Novel[]; onOpen: (id: number) => void; showAuthor?: boolean; cols?: string; gap?: string; fs?: number;
+}) {
   return (
-    <div className="cover-grid">
+    <div className="cover-grid" style={{ gridTemplateColumns: cols, gap }}>
       {novels.map(n => (
         <button key={n.id} className="shelf-item" style={{ minWidth: 0 }} onClick={() => onOpen(n.id)}>
-          <NovelCover novel={n} w="100%" h="auto" fs={13} style={{ aspectRatio: 0.7 }} />
+          <NovelCover novel={n} w="100%" h="auto" fs={fs} style={{ aspectRatio: 0.7 }} />
           <div className="shelf-item__title" style={{ fontSize: 12 }}>{n.title}</div>
           {showAuthor && <div className="shelf-item__author muted">{n.author}</div>}
         </button>

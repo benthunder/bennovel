@@ -27,8 +27,8 @@ export function UiLangDialog({ onClose }: { onClose: () => void }) {
   };
 
   const sheet = (
-    <div className="dialog-backdrop" style={{ position: 'absolute', zIndex: 60, placeItems: 'end stretch', padding: 10, paddingBottom: 'calc(env(safe-area-inset-bottom) + 10px)', color: 'var(--color-text)' }} onClick={onClose}>
-      <div className="dialog" role="dialog" aria-modal="true" aria-label={t('uiLang.title')} style={{ width: '100%', borderRadius: 36, padding: 22, animation: 'nxup .28s ease-out' }} onClick={e => e.stopPropagation()}>
+    <div className="dialog-backdrop dialog-backdrop--sheet" onClick={onClose}>
+      <div className="dialog dialog--sheet" role="dialog" aria-modal="true" aria-label={t('uiLang.title')} onClick={e => e.stopPropagation()}>
         <div className="dialog-title" style={{ fontSize: 22 }}>{t('uiLang.title')}</div>
         <div className="dialog-body" style={{ marginTop: -6 }}>{t('uiLang.body')}</div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>

@@ -46,8 +46,8 @@ export function LangDialog({ dialog }: { dialog: Dialog }) {
   const title = dialog.mode === 'settings' ? t('lang.titleSettings') : dialog.mode === 'reader' ? t('lang.titleReader') : t('lang.titleChapter');
 
   return (
-    <div className="dialog-backdrop" style={{ position: 'absolute', zIndex: 60, placeItems: 'end stretch', padding: 10, paddingBottom: 'calc(env(safe-area-inset-bottom) + 10px)', color: 'var(--color-text)' }} onClick={close}>
-      <div className="dialog" role="dialog" aria-modal="true" aria-label={title} style={{ width: '100%', borderRadius: 36, padding: 22, animation: 'nxup .28s ease-out' }} onClick={e => e.stopPropagation()}>
+    <div className="dialog-backdrop dialog-backdrop--sheet" onClick={close}>
+      <div className="dialog dialog--sheet" role="dialog" aria-modal="true" aria-label={title} onClick={e => e.stopPropagation()}>
         <div className="dialog-title" style={{ fontSize: 22 }}>{title}</div>
         <div className="dialog-body" style={{ marginTop: -6 }}>{dialog.mode === 'settings' ? t('lang.bodySettings') : t('lang.bodyChapter')}</div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
