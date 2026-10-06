@@ -79,7 +79,7 @@ jobs:
       - name: Install NDK
         run: |
           SDKMANAGER="$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager | sort -V | tail -1)"
-          yes | "$SDKMANAGER" --install "ndk;${NDK_VERSION}" > /dev/null
+          (yes || true) | "$SDKMANAGER" --install "ndk;${NDK_VERSION}" > /dev/null
           echo "NDK_HOME=$ANDROID_HOME/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
 
       - uses: dtolnay/rust-toolchain@stable
