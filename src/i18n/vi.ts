@@ -13,13 +13,9 @@ export const vi: Record<MessageKey, string> = {
   'common.chapter': 'Chương {n}',
   'status.Ongoing': 'Đang ra',
   'status.Completed': 'Hoàn thành',
-  'cat.Wuxia': 'Kiếm hiệp',
-  'cat.Fantasy': 'Kỳ ảo',
-  'cat.Romance': 'Lãng mạn',
-  'cat.Mystery': 'Trinh thám',
-  'cat.Sci-Fi': 'Khoa học viễn tưởng',
-  'cat.Slice of Life': 'Đời thường',
   'uiLang.label': 'Ngôn ngữ ứng dụng',
+  'uiLang.title': 'Ngôn ngữ ứng dụng',
+  'uiLang.body': 'Menu, nút bấm, thể loại và bộ sưu tập sẽ hiển thị bằng ngôn ngữ này.',
 
   // auth
   'auth.skip': 'Bỏ qua',
@@ -56,14 +52,6 @@ export const vi: Record<MessageKey, string> = {
   'home.emptyBody': 'Thử tên tác giả hoặc thể loại như “mystery”.',
   'home.popular': 'Phổ biến nhất',
   'home.rank': '#{n} tuần này',
-  'coll.trend.kicker': 'Tuần này',
-  'coll.trend.title': 'Đang thịnh hành',
-  'coll.new.kicker': 'Mới ra lò',
-  'coll.new.title': 'Truyện mới',
-  'coll.done.kicker': 'Đọc một lèo',
-  'coll.done.title': 'Truyện đã hoàn thành',
-  'coll.picks.kicker': 'Biên tập chọn',
-  'coll.picks.title': 'Những cuốn dịu dàng',
 
   // detail
   'detail.favourite': 'Yêu thích',

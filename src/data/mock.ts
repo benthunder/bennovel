@@ -1,4 +1,4 @@
-import type { Category, Collection, ContentLang, DictEntry, GlossaryTerm, Novel, NovelStatus, TranslateStyle } from './types';
+import type { Category, Collection, CollectionKey, ContentLang, DictEntry, GlossaryTerm, Novel, NovelStatus, TranslateStyle, UiLang } from './types';
 
 const PAL: Novel['cover'][] = [
   { bg: 'var(--color-accent-300)', fg: 'var(--color-accent-900)', deco: 'var(--color-accent-500)' },
@@ -55,6 +55,23 @@ export const NOVELS: Novel[] = ROWS.map(([id, title, author, cat, status, chapte
 }));
 
 export const CATEGORIES: Category[] = ['Wuxia', 'Fantasy', 'Romance', 'Mystery', 'Sci-Fi', 'Slice of Life'];
+
+// Interface-language names, mirroring category_translations / collection_translations in Supabase.
+export const CATEGORY_NAMES: Record<Category, Record<UiLang, string>> = {
+  Wuxia: { en: 'Wuxia', vi: 'Kiếm hiệp' },
+  Fantasy: { en: 'Fantasy', vi: 'Kỳ ảo' },
+  Romance: { en: 'Romance', vi: 'Lãng mạn' },
+  Mystery: { en: 'Mystery', vi: 'Trinh thám' },
+  'Sci-Fi': { en: 'Sci-Fi', vi: 'Khoa học viễn tưởng' },
+  'Slice of Life': { en: 'Slice of Life', vi: 'Đời thường' }
+};
+
+export const COLLECTION_NAMES: Record<CollectionKey, Record<UiLang, { kicker: string; title: string }>> = {
+  trend: { en: { kicker: 'This week', title: 'Trending now' }, vi: { kicker: 'Tuần này', title: 'Đang thịnh hành' } },
+  new: { en: { kicker: 'Fresh ink', title: 'New releases' }, vi: { kicker: 'Mới ra lò', title: 'Truyện mới' } },
+  done: { en: { kicker: 'Binge-ready', title: 'Completed sagas' }, vi: { kicker: 'Đọc một lèo', title: 'Truyện đã hoàn thành' } },
+  picks: { en: { kicker: 'From the editors', title: 'Quiet favourites' }, vi: { kicker: 'Biên tập chọn', title: 'Những cuốn dịu dàng' } }
+};
 
 export const POPULAR_IDS = [1, 11, 7, 5, 2];
 

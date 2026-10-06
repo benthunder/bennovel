@@ -5,6 +5,7 @@ import { getCollections, getPopular, searchNovels } from '../data/repository';
 import { useI18n } from '../i18n';
 import { useThrottledValue } from '../lib/useThrottledValue';
 import { SEARCH_THROTTLE_MS, useApp } from '../store/AppStore';
+import { useCatalogNames } from '../data/useCatalogNames';
 
 const AUTOPLAY_MS = 4200;
 /** Autoplay pauses this long after the user swipes or taps a dot. */
@@ -15,6 +16,7 @@ const collections = getCollections();
 
 export function HomeScreen() {
   const { t } = useI18n();
+  const names = useCatalogNames();
   const app = useApp();
   const [input, setInput] = useState('');
   const query = useThrottledValue(input, SEARCH_THROTTLE_MS);
@@ -60,8 +62,8 @@ export function HomeScreen() {
             <section key={c.key} style={{ paddingTop: 28 }}>
               <div className="section-head pad-x" style={{ paddingBottom: 12 }}>
                 <div>
-                  <div className="kicker">{t(`coll.${c.key}.kicker`)}</div>
-                  <h4 style={{ margin: 0 }}>{t(`coll.${c.key}.title`)}</h4>
+                  <div className="kicker">{names.coll(c.key).kicker}</div>
+                  <h4 style={{ margin: 0 }}>{names.coll(c.key).title}</h4>
                 </div>
                 <button className="btn btn-ghost" style={{ fontSize: 13 }} onClick={() => app.openCollection(c.key)}>{t('common.seeAll')}</button>
               </div>

@@ -11,13 +11,9 @@ export const en = {
   'common.chapter': 'Chapter {n}',
   'status.Ongoing': 'Ongoing',
   'status.Completed': 'Completed',
-  'cat.Wuxia': 'Wuxia',
-  'cat.Fantasy': 'Fantasy',
-  'cat.Romance': 'Romance',
-  'cat.Mystery': 'Mystery',
-  'cat.Sci-Fi': 'Sci-Fi',
-  'cat.Slice of Life': 'Slice of Life',
   'uiLang.label': 'App language',
+  'uiLang.title': 'App language',
+  'uiLang.body': 'Menus, buttons, categories and collections will show in this language.',
 
   // auth
   'auth.skip': 'Skip for now',
@@ -54,14 +50,6 @@ export const en = {
   'home.emptyBody': 'Try an author name or a genre like “mystery”.',
   'home.popular': 'Most popular',
   'home.rank': '#{n} this week',
-  'coll.trend.kicker': 'This week',
-  'coll.trend.title': 'Trending now',
-  'coll.new.kicker': 'Fresh ink',
-  'coll.new.title': 'New releases',
-  'coll.done.kicker': 'Binge-ready',
-  'coll.done.title': 'Completed sagas',
-  'coll.picks.kicker': 'From the editors',
-  'coll.picks.title': 'Quiet favourites',
 
   // detail
   'detail.favourite': 'Favourite',

@@ -4,6 +4,7 @@ import { useI18n } from '../i18n';
 import type { Novel } from '../data/types';
 import { CheckIcon, SearchIcon, XIcon } from './Icons';
 import { NovelCover } from './NovelCover';
+import { useCatalogNames } from '../data/useCatalogNames';
 
 export const Spinner = ({ size = 12, width = 2 }: { size?: number; width?: number }) => (
   <span className="spinner" style={{ width: size, height: size, borderWidth: width }} />
@@ -57,12 +58,13 @@ export function NovelRow({ novel, onOpen, statusAsTag, coverW = 64, coverH = 92 
   novel: Novel; onOpen: () => void; statusAsTag?: boolean; coverW?: number; coverH?: number;
 }) {
   const { t, uiLang } = useI18n();
+  const names = useCatalogNames();
   return (
     <button className="novel-row" onClick={onOpen}>
       <NovelCover novel={novel} w={coverW} h={coverH} fs={11} />
       <div className="novel-row__body">
         <div className="novel-row__title">{novel.title}</div>
-        <div className="muted" style={{ fontSize: 12 }}>{novel.author} · {t(`cat.${novel.cat}`)}</div>
+        <div className="muted" style={{ fontSize: 12 }}>{novel.author} · {names.cat(novel.cat)}</div>
         <div className="novel-row__desc clamp-2">{novel.desc[uiLang]}</div>
         <div className="novel-row__meta">
           <span className="rating">★ {novel.rating}</span>

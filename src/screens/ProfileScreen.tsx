@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { GlobeIcon, LanguagesIcon, LogOutIcon } from '../components/Icons';
 import { NovelCover } from '../components/NovelCover';
+import { UiLangDialog, uiLangLabel } from '../components/UiLangDialog';
 import { CoverGrid, Segmented } from '../components/ui';
 import { CONTENT_LANGS } from '../data/mock';
 import { getNovel } from '../data/repository';
@@ -8,9 +9,10 @@ import { relativeTime, useI18n } from '../i18n';
 import { useApp } from '../store/AppStore';
 
 export function ProfileScreen() {
-  const { t, uiLang, setUiLang } = useI18n();
+  const { t, uiLang } = useI18n();
   const app = useApp();
   const [tab, setTab] = useState<'history' | 'favs'>('history');
+  const [uiLangOpen, setUiLangOpen] = useState(false);
   const user = app.user;
   const initials = user ? user.name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase() : 'G';
   const langLabel = CONTENT_LANGS.find(l => l.code === app.contentLang)?.native ?? t('lang.askEach');
@@ -71,10 +73,10 @@ export function ProfileScreen() {
           <span style={{ flex: 1, fontSize: 14, fontWeight: 600 }}>{t('profile.defaultLang')}</span>
           <span className="muted" style={{ fontSize: 13 }}>{langLabel} ›</span>
         </button>
-        <button className="menu-row" onClick={() => setUiLang(uiLang === 'en' ? 'vi' : 'en')}>
+        <button className="menu-row" onClick={() => setUiLangOpen(true)}>
           <GlobeIcon style={{ color: 'var(--color-accent-2-700)' }} />
           <span style={{ flex: 1, fontSize: 14, fontWeight: 600 }}>{t('uiLang.label')}</span>
-          <span className="muted" style={{ fontSize: 13 }}>{uiLang === 'en' ? 'English' : 'Tiếng Việt'} ›</span>
+          <span className="muted" style={{ fontSize: 13 }}>{uiLangLabel(uiLang)} ›</span>
         </button>
         {user && (
           <button className="menu-row menu-row--danger" onClick={() => { app.logout(); app.showToast(t('auth.loggedOut')); }}>
@@ -83,6 +85,7 @@ export function ProfileScreen() {
           </button>
         )}
       </div>
+      {uiLangOpen && <UiLangDialog onClose={() => setUiLangOpen(false)} />}
     </div>
   );
 }

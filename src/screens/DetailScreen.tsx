@@ -7,12 +7,14 @@ import { getNovel, sameAuthor, sameCategory } from '../data/repository';
 import type { Novel } from '../data/types';
 import { useI18n } from '../i18n';
 import { useApp } from '../store/AppStore';
+import { useCatalogNames } from '../data/useCatalogNames';
 
 const PREVIEW_CHAPTERS = 6;
 const MAX_LISTED_CHAPTERS = 20;
 
 export function DetailScreen({ id }: { id: number }) {
   const { t, uiLang } = useI18n();
+  const names = useCatalogNames();
   const app = useApp();
   const d = getNovel(id);
   const [allCh, setAllCh] = useState(false);
@@ -40,7 +42,7 @@ export function DetailScreen({ id }: { id: number }) {
           <NovelCover novel={d} w={124} h={178} fs={18} style={{ boxShadow: 'var(--shadow-md)' }} />
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 }}>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-              <button className="tag tag-accent-2" style={{ border: 'none', cursor: 'pointer', font: 'inherit', fontSize: 11 }} onClick={() => app.openCategory(d.cat)}>{t(`cat.${d.cat}`)}</button>
+              <button className="tag tag-accent-2" style={{ border: 'none', cursor: 'pointer', font: 'inherit', fontSize: 11 }} onClick={() => app.openCategory(d.cat)}>{names.cat(d.cat)}</button>
               <span className="tag tag-neutral">{t(`status.${d.status}`)}</span>
             </div>
             <h3 style={{ margin: 0, fontSize: 24 }}>{d.title}</h3>
@@ -96,7 +98,7 @@ export function DetailScreen({ id }: { id: number }) {
           )}
         </div>
 
-        <RelatedShelf title={t('detail.moreIn', { cat: t(`cat.${d.cat}`) })} novels={related} onSeeAll={() => app.openCategory(d.cat)} />
+        <RelatedShelf title={t('detail.moreIn', { cat: names.cat(d.cat) })} novels={related} onSeeAll={() => app.openCategory(d.cat)} />
         <RelatedShelf title={t('detail.moreBy', { author: d.author })} novels={byAuthor} onSeeAll={() => app.openAuthor(d.author)} />
       </div>
     </div>

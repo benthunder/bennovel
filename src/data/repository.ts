@@ -1,7 +1,7 @@
 // Data access seam. Everything screens need from "the server" goes through here,
 // so swapping the mock data for a real API later touches only this file.
-import { CATEGORIES, COLLECTIONS, NOVELS, POPULAR_IDS } from './mock';
-import type { Category, CollectionKey, Novel, NovelStatus } from './types';
+import { CATEGORIES, CATEGORY_NAMES, COLLECTIONS, COLLECTION_NAMES, NOVELS, POPULAR_IDS } from './mock';
+import type { Category, CollectionKey, Novel, NovelStatus, UiLang } from './types';
 
 const byId = new Map(NOVELS.map(n => [n.id, n]));
 
@@ -15,10 +15,12 @@ export const getPopular = () => POPULAR_IDS.map(getNovel);
 export const getCollections = () => COLLECTIONS.map(c => ({ key: c.key, items: c.ids.map(getNovel) }));
 export const getCollection = (key: CollectionKey) => (COLLECTIONS.find(c => c.key === key)?.ids ?? []).map(getNovel);
 export const getCategories = () => CATEGORIES;
+export const categoryName = (cat: Category, lang: UiLang) => CATEGORY_NAMES[cat][lang];
+export const collectionName = (key: CollectionKey, lang: UiLang) => COLLECTION_NAMES[key][lang];
 
 export const matchesQuery = (n: Novel, q: string) => {
   const s = q.trim().toLowerCase();
-  return !s || `${n.title} ${n.author} ${n.cat}`.toLowerCase().includes(s);
+  return !s || `${n.title} ${n.author} ${Object.values(CATEGORY_NAMES[n.cat]).join(' ')}`.toLowerCase().includes(s);
 };
 
 export const searchNovels = (q: string) => (q.trim() ? NOVELS.filter(n => matchesQuery(n, q)) : []);

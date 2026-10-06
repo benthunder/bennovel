@@ -6,12 +6,14 @@ import type { Category, NovelStatus } from '../data/types';
 import { useI18n } from '../i18n';
 import { useThrottledValue } from '../lib/useThrottledValue';
 import { SEARCH_THROTTLE_MS, useApp } from '../store/AppStore';
+import { useCatalogNames } from '../data/useCatalogNames';
 
 const SORTS: SortKey[] = ['Popular', 'Newest', 'Rating'];
 const STATUSES: ('All' | NovelStatus)[] = ['All', 'Ongoing', 'Completed'];
 
 export function ListScreen({ src }: { src: ListSource }) {
   const { t } = useI18n();
+  const names = useCatalogNames();
   const app = useApp();
   const [input, setInput] = useState('');
   const query = useThrottledValue(input, SEARCH_THROTTLE_MS);
@@ -23,11 +25,11 @@ export function ListScreen({ src }: { src: ListSource }) {
   const items = listNovels(src, { query, status, sort, cat });
 
   const title = src.type === 'all' ? t('list.categories')
-    : src.type === 'category' ? t(`cat.${src.value}`)
-    : src.type === 'collection' ? t(`coll.${src.value}.title`)
+    : src.type === 'category' ? names.cat(src.value)
+    : src.type === 'collection' ? names.coll(src.value).title
     : src.value;
   const placeholder = src.type === 'author' ? t('list.searchAuthor', { v: src.value })
-    : src.type === 'category' ? t('list.searchIn', { v: t(`cat.${src.value}`) })
+    : src.type === 'category' ? t('list.searchIn', { v: names.cat(src.value) })
     : t('list.searchAll');
 
   return (
@@ -52,7 +54,7 @@ export function ListScreen({ src }: { src: ListSource }) {
         <div className="nx-scroll" style={{ display: 'flex', gap: 8, overflowX: 'auto', padding: '14px 20px 0' }}>
           {(['All', ...getCategories()] as const).map(c => (
             <button key={c} className={`chip${cat === c ? ' chip--active' : ''}`} aria-pressed={cat === c} onClick={() => setCat(c)}>
-              {c === 'All' ? t('list.all') : t(`cat.${c}`)}
+              {c === 'All' ? t('list.all') : names.cat(c)}
             </button>
           ))}
         </div>
