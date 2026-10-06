@@ -51,3 +51,18 @@ src-tauri/     Tauri v2 shell (Rust)
 - **Auth**: social and email logins are faked with a 750 ms delay.
 - **AI Translate / Dictionary**: faked. Only EN/VI/ES sample text exists, and every novel shows the same sample chapter.
 - **Covers**: typographic placeholders until real cover art is available.
+
+## Releases (Linux + Android)
+
+`.github/workflows/release.yml` builds a Linux AppImage/.deb and an Android APK.
+Push a version tag (matching `version` in `src-tauri/tauri.conf.json`) to publish a GitHub Release:
+
+```sh
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+Or, without git: Actions → **Build & Release** → **Run workflow** on `main`, with `version` set to e.g. `v0.1.0`.
+
+Android signing: set repo secrets `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`
+to sign with your own key. Without them the APK is signed with a temporary test key, so a newer build
+cannot update an installed one in place (uninstall first).
