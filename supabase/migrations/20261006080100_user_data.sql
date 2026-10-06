@@ -43,7 +43,7 @@ $$;
 
 revoke execute on function public.handle_new_user() from public, anon, authenticated;
 
-create trigger on_auth_user_created
+create trigger on_auth_user_created_profile
 after insert on auth.users
 for each row execute function public.handle_new_user();
 
