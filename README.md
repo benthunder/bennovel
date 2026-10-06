@@ -61,6 +61,8 @@ Push a version tag (matching `version` in `src-tauri/tauri.conf.json`) to publis
 git tag v0.1.0 && git push origin v0.1.0
 ```
 
+Or, without git: Actions → **Build & Release** → **Run workflow** on `main`, with `version` set to e.g. `v0.1.0`.
+
 Android signing: set repo secrets `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`
 to sign with your own key. Without them the APK is signed with a temporary test key, so a newer build
 cannot update an installed one in place (uninstall first).
