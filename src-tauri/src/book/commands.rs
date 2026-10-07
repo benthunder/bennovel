@@ -23,7 +23,7 @@ impl Books {
         info
     }
 
-    fn get(&self, id: u32) -> Result<Arc<OpenBook>, BookError> {
+    pub(crate) fn get(&self, id: u32) -> Result<Arc<OpenBook>, BookError> {
         self.open
             .lock()
             .unwrap()
@@ -34,7 +34,7 @@ impl Books {
 }
 
 /// Folders searched for the Pdfium library before the system one.
-fn pdfium_dirs<R: Runtime>(app: &AppHandle<R>) -> Vec<PathBuf> {
+pub(crate) fn pdfium_dirs<R: Runtime>(app: &AppHandle<R>) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
@@ -114,4 +114,41 @@ pub async fn book_section(
 #[tauri::command]
 pub fn book_close(books: State<'_, Books>, id: u32) {
     books.open.lock().unwrap().remove(&id);
+}
+
+/// Serves pictures to the webview through the `bookimg:` scheme, so they load only
+/// when shown (`<img loading="lazy">`) and never pass through the IPC as base64.
+/// Paths (URL-encoded as a whole by `convertFileSrc`): `{book}/i/{key}` for a
+/// picture in the text, `{book}/p/{page}/{width}` for a whole page.
+pub fn serve_image<R: Runtime>(app: &AppHandle<R>, path: &str) -> tauri::http::Response<Vec<u8>> {
+    let path = super::image::percent_decode(path.trim_start_matches('/'));
+    let result = (|| {
+        let mut parts = path.splitn(3, '/');
+        let id: u32 = parts
+            .next()
+            .and_then(|p| p.parse().ok())
+            .ok_or(BookError::NotOpen(0))?;
+        let book = app.state::<Books>().get(id)?;
+        match (parts.next(), parts.next()) {
+            (Some("i"), Some(key)) => book.image(key),
+            (Some("p"), Some(rest)) => {
+                let (page, width) = rest.split_once('/').unwrap_or((rest, "1200"));
+                let page = page.parse().map_err(|_| BookError::NoImage(path.clone()))?;
+                book.render_page(page, width.parse().unwrap_or(1200))
+            }
+            _ => Err(BookError::NoImage(path.clone())),
+        }
+    })();
+    let builder = tauri::http::Response::builder().header("Access-Control-Allow-Origin", "*");
+    match result {
+        Ok(img) => builder
+            .header("Content-Type", img.mime)
+            .header("Cache-Control", "max-age=3600")
+            .body(img.bytes),
+        Err(e) => builder
+            .status(404)
+            .header("Content-Type", "text/plain")
+            .body(e.to_string().into_bytes()),
+    }
+    .unwrap_or_default()
 }

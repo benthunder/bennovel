@@ -240,7 +240,10 @@ export const en = {
   'book.prev': '‹ Previous part',
   'book.next': 'Next part ›',
   'book.loading': 'Loading…',
-  'book.empty': 'This part has no text.'
+  'book.empty': 'This part has no text.',
+  'book.viewPages': 'Pages',
+  'book.viewText': 'Text',
+  'book.page': 'Page {n}',
 };
 
 export type MessageKey = keyof typeof en;

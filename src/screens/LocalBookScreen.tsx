@@ -1,14 +1,27 @@
 import { useEffect, useRef, useState } from 'react';
 import { ChevronLeftIcon } from '../components/Icons';
-import { Spinner } from '../components/ui';
+import { Segmented, Spinner } from '../components/ui';
 import { useT } from '../i18n';
-import { closeLocalBook, getLocalSection, saveLibraryProgress, type LibraryPlace, type LocalBook } from '../lib/localBook';
+import { bookImageUrl, bookPageUrl, closeLocalBook, getLocalSection, imageKey, saveLibraryProgress, type LibraryPlace, type LocalBook } from '../lib/localBook';
 import { useAsync } from '../lib/useAsync';
 import { useLayout } from '../lib/useLayout';
 import { READER_THEMES, useApp } from '../store/AppStore';
 
 const GAP_PX = { tight: 6, normal: 16, airy: 28 };
 const MARGIN_PX = { narrow: 16, normal: 24, wide: 36 };
+
+type View = 'pages' | 'text';
+const VIEW_KEY = 'bennovel.bookView';
+function loadView(): View {
+  try {
+    return localStorage.getItem(VIEW_KEY) === 'text' ? 'text' : 'pages';
+  } catch {
+    return 'pages';
+  }
+}
+
+/** Page pictures are drawn at the screen's pixel width (in steps, so the cache hits). */
+const PAGE_WIDTH = Math.min(2400, Math.ceil((window.innerWidth * (window.devicePixelRatio || 1)) / 400) * 400);
 
 /**
  * Reads a book file opened from the device, or a book from the on-device library
@@ -25,6 +38,13 @@ export function LocalBookScreen({ book, place }: { book: LocalBook; place?: Libr
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const [index, setIndex] = useState(place?.index ?? 0);
+  // PDF/DjVu: the original pages as pictures, or the extracted text.
+  const [view, setViewState] = useState<View>(() => (book.pageImages ? loadView() : 'text'));
+  const setView = (v: View) => {
+    setViewState(v);
+    try { localStorage.setItem(VIEW_KEY, v); } catch { /* private mode */ }
+  };
+  const showPages = book.pageImages && view === 'pages';
   const total = book.sections.length;
   const meta = book.sections[index];
   const sectionQ = useAsync(() => getLocalSection(book.id, index), [book.id, index]);
@@ -71,6 +91,10 @@ export function LocalBookScreen({ book, place }: { book: LocalBook; place?: Libr
           <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', opacity: .65, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{book.title ?? t('book.untitled')}</div>
           <div className="display" style={{ fontSize: 16 }}>{t('book.part', { n: index + 1, total })}</div>
         </div>
+        {book.pageImages && (
+          <Segmented<View> value={view} onChange={setView} style={{ flex: '0 0 auto' }} optStyle={{ padding: '6px 10px', fontSize: 13 }}
+            options={[{ value: 'pages', label: t('book.viewPages') }, { value: 'text', label: t('book.viewText') }]} />
+        )}
       </div>
       <div style={{ height: 5, margin: `0 ${lay.readerBarPx}px`, borderRadius: 999, background: line, overflow: 'hidden' }}>
         <div style={{ height: '100%', width: `${Math.round(((index + 1) / Math.max(total, 1)) * 100)}%`, background: 'var(--color-accent)', borderRadius: 999 }} />
@@ -80,14 +104,27 @@ export function LocalBookScreen({ book, place }: { book: LocalBook; place?: Libr
         style={{ flex: 1, overflowY: 'auto', padding: `${lay.readerPadTop}px ${MARGIN_PX[p.margin]}px calc(env(safe-area-inset-bottom) + 40px)` }}>
         <div style={{ maxWidth: lay.readerMax, margin: '0 auto' }}>
           <h2 style={{ margin: '4px 0 18px', fontSize: lay.readerH, color: theme.fg }}>{heading}</h2>
-          {sectionQ.status === 'loading' && (
+          {showPages && meta?.pages && pageRange(meta.pages).map(n => (
+            <img key={n} src={bookPageUrl(book.id, n, PAGE_WIDTH)} alt={t('book.page', { n })} loading="lazy" decoding="async"
+              onLoad={e => { const i = e.currentTarget; i.style.aspectRatio = `${i.naturalWidth} / ${i.naturalHeight}`; }}
+              style={{ display: 'block', width: '100%', aspectRatio: '1 / 1.414', margin: `0 0 ${GAP_PX[p.gap]}px`, background: '#fff', borderRadius: 4, boxShadow: `0 0 0 1px ${line}`, filter: night ? 'brightness(.82)' : undefined }} />
+          ))}
+          {!showPages && sectionQ.status === 'loading' && (
             <div role="status" style={{ display: 'flex', alignItems: 'center', gap: 10, opacity: .75 }}><Spinner size={16} />{t('book.loading')}</div>
           )}
-          {sectionQ.status === 'failed' && <p role="alert">{String(sectionQ.error)}</p>}
-          {sectionQ.status === 'ready' && sectionQ.data.paragraphs.length === 0 && <p style={{ opacity: .7 }}>{t('book.empty')}</p>}
-          {sectionQ.status === 'ready' && sectionQ.data.paragraphs.map((para, i) => (
-            <p key={i} style={{ margin: `0 0 ${GAP_PX[p.gap]}px`, fontSize: p.fontSize, lineHeight: p.lineH, textAlign: p.align, textWrap: 'pretty' }}>{para}</p>
-          ))}
+          {!showPages && sectionQ.status === 'failed' && <p role="alert">{String(sectionQ.error)}</p>}
+          {!showPages && sectionQ.status === 'ready' && sectionQ.data.paragraphs.length === 0 && <p style={{ opacity: .7 }}>{t('book.empty')}</p>}
+          {!showPages && sectionQ.status === 'ready' && sectionQ.data.paragraphs.map((para, i) => {
+            const key = imageKey(para);
+            return key !== null ? (
+              // A picture the book can't provide just disappears.
+              <img key={i} src={bookImageUrl(book.id, key)} alt="" loading="lazy" decoding="async"
+                onError={e => { e.currentTarget.style.display = 'none'; }}
+                style={{ display: 'block', maxWidth: '100%', height: 'auto', margin: `0 auto ${GAP_PX[p.gap]}px`, borderRadius: 4 }} />
+            ) : (
+              <p key={i} style={{ margin: `0 0 ${GAP_PX[p.gap]}px`, fontSize: p.fontSize, lineHeight: p.lineH, textAlign: p.align, textWrap: 'pretty' }}>{para}</p>
+            );
+          })}
 
           <div style={{ display: 'flex', gap: 10, marginTop: 28 }}>
             <button className="btn btn-secondary" style={{ flex: 1, height: 48, color: theme.fg, borderColor: line }} disabled={index <= 0} onClick={() => setIndex(i => i - 1)}>{t('book.prev')}</button>
@@ -103,4 +140,8 @@ function currentProgress(el: HTMLElement | null) {
   if (!el) return 0;
   const max = el.scrollHeight - el.clientHeight;
   return max > 0 ? Math.min(1, Math.max(0, el.scrollTop / max)) : 0;
+}
+
+function pageRange([from, to]: [number, number]) {
+  return Array.from({ length: Math.max(0, to - from + 1) }, (_, i) => from + i);
 }

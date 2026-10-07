@@ -5,10 +5,24 @@ use super::BookError;
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 
+/// Ends the current paragraph, then adds the pictures it contained.
+fn flush(sink: &mut Sink, para: &mut String, imgs: &mut Vec<String>) -> Result<(), BookError> {
+    sink.paragraph(para)?;
+    para.clear();
+    for src in imgs.drain(..) {
+        match super::image::data_uri(&src) {
+            Some(bytes) => sink.picture(&format!("data:{}", bytes.len()), &bytes)?,
+            None => sink.image(&src)?,
+        }
+    }
+    Ok(())
+}
+
 pub fn extract_markdown(
     r: impl Read,
     cache_dir: &Path,
     title: Option<String>,
+    base: Option<&Path>,
 ) -> Result<ExtractedBook, BookError> {
     let mut sink = Sink::new(cache_dir)?;
     sink.title = title;
@@ -17,6 +31,7 @@ pub fn extract_markdown(
     let mut para = String::new();
     let mut in_code = false;
     let mut first = true;
+    let mut imgs = Vec::new();
 
     loop {
         raw.clear();
@@ -32,8 +47,7 @@ pub fn extract_markdown(
         let t = line.trim_start();
 
         if t.starts_with("```") || t.starts_with("~~~") {
-            sink.paragraph(&para)?;
-            para.clear();
+            flush(&mut sink, &mut para, &mut imgs)?;
             in_code = !in_code;
             continue;
         }
@@ -42,15 +56,13 @@ pub fn extract_markdown(
             continue;
         }
         if t.is_empty() || is_rule(t) {
-            sink.paragraph(&para)?;
-            para.clear();
+            flush(&mut sink, &mut para, &mut imgs)?;
             continue;
         }
         let hashes = t.chars().take_while(|&c| c == '#').count();
         if (1..=6).contains(&hashes) && t[hashes..].starts_with(' ') {
-            sink.paragraph(&para)?;
-            para.clear();
-            let text = inline(t[hashes..].trim().trim_end_matches('#').trim());
+            flush(&mut sink, &mut para, &mut imgs)?;
+            let text = inline(t[hashes..].trim().trim_end_matches('#').trim(), &mut imgs);
             if hashes <= 2 {
                 sink.chapter(&text)?;
             } else {
@@ -61,8 +73,7 @@ pub fn extract_markdown(
         // A list item or quote starts its own paragraph.
         let (item, body) = list_item(t);
         if item || t.starts_with('>') {
-            sink.paragraph(&para)?;
-            para.clear();
+            flush(&mut sink, &mut para, &mut imgs)?;
         }
         let body = body.trim_start_matches('>').trim_start();
         if item {
@@ -70,9 +81,12 @@ pub fn extract_markdown(
         } else if !para.is_empty() {
             para.push(' ');
         }
-        para.push_str(&inline(body));
+        para.push_str(&inline(body, &mut imgs));
     }
-    sink.paragraph(&para)?;
+    flush(&mut sink, &mut para, &mut imgs)?;
+    if let Some(base) = base {
+        sink.load_linked_images(base)?;
+    }
     sink.finish()
 }
 
@@ -103,8 +117,9 @@ fn list_item(t: &str) -> (bool, &str) {
     (false, t)
 }
 
-/// Removes inline markup: images, links (keeping their text), emphasis and code marks.
-fn inline(s: &str) -> String {
+/// Removes inline markup: links (keeping their text), emphasis and code marks.
+/// Pictures (`![alt](src)`, `<img src>`) are taken out and their links added to `imgs`.
+fn inline(s: &str, imgs: &mut Vec<String>) -> String {
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
     while let Some(i) = rest.find(['[', '!', '*', '_', '`', '<']) {
@@ -115,7 +130,16 @@ fn inline(s: &str) -> String {
             let open = if image { 2 } else { 1 };
             if let Some(close) = rest.find("](") {
                 if let Some(end) = rest[close..].find(')') {
-                    out.push_str(&rest[open..close]);
+                    if image {
+                        let target = rest[close + 2..close + end].trim();
+                        let src = target.split_whitespace().next().unwrap_or_default();
+                        let src = src.trim_start_matches('<').trim_end_matches('>');
+                        if !src.is_empty() {
+                            imgs.push(src.to_string());
+                        }
+                    } else {
+                        out.push_str(&rest[open..close]);
+                    }
                     rest = &rest[close + end + 1..];
                     continue;
                 }
@@ -128,6 +152,15 @@ fn inline(s: &str) -> String {
             rest = &rest[1..];
         } else if rest.starts_with('<') {
             // Inline HTML tags such as <br> or <span>.
+            if let Some(end) = rest.find('>') {
+                if rest[1..].to_ascii_lowercase().starts_with("img") {
+                    if let Some(src) = super::image::attr(&rest[1..end], "src") {
+                        imgs.push(src);
+                    }
+                    rest = &rest[end + 1..];
+                    continue;
+                }
+            }
             match rest.find('>') {
                 Some(end)
                     if rest[1..end]
@@ -161,8 +194,16 @@ mod tests {
     #[test]
     fn markdown_becomes_chapters_and_paragraphs() {
         let md = "Mở đầu **đậm** và `mã`.\n\n# Chương 1\n\nDòng một\nnối tiếp [liên kết](http://x) ![ảnh](a.png)\n\n- mục a\n- mục b\n\n> trích dẫn\n\n---\n\n```\nlet x = 1;\n```\n\n## Chương 2 ##\n### Mục nhỏ\nsnake_case giữ nguyên\n";
-        let mut book =
-            extract_markdown(Cursor::new(md.as_bytes().to_vec()), &test_dir(), None).unwrap();
+        let base = test_dir().join(format!("md-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(base.join("a.png"), b"\x89PNG data").unwrap();
+        let mut book = extract_markdown(
+            Cursor::new(md.as_bytes().to_vec()),
+            &test_dir(),
+            None,
+            Some(&base),
+        )
+        .unwrap();
         let labels: Vec<_> = book.sections().into_iter().map(|s| s.label).collect();
         assert_eq!(
             labels,
@@ -173,7 +214,8 @@ mod tests {
             book.load(1).unwrap().paragraphs,
             vec![
                 "Chương 1",
-                "Dòng một nối tiếp liên kết ảnh",
+                "Dòng một nối tiếp liên kết",
+                "\u{FFFC}a.png",
                 "• mục a",
                 "• mục b",
                 "trích dẫn",
@@ -184,5 +226,7 @@ mod tests {
             book.load(2).unwrap().paragraphs,
             vec!["Chương 2", "Mục nhỏ", "snake_case giữ nguyên"]
         );
+        assert_eq!(book.image("a.png").unwrap().mime, "image/png");
+        assert!(book.image("b.png").is_err());
     }
 }

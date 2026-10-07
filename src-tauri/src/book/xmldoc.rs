@@ -76,7 +76,7 @@ fn walk(r: impl BufRead, mut on: impl FnMut(Ev) -> Result<(), BookError>) -> Res
     Ok(())
 }
 
-/// FictionBook 2: `<section><title>` names chapters; `<binary>` (images) is skipped.
+/// FictionBook 2: `<section><title>` names chapters; `<binary>` holds the pictures.
 pub fn extract_fb2(
     r: impl Read,
     cache_dir: &Path,
@@ -87,6 +87,9 @@ pub fn extract_fb2(
     let mut para = String::new();
     let mut title_parts: Vec<String> = Vec::new();
     let mut book_title = String::new();
+    // Pictures are <binary id="…"> elements (base64) after the body, linked by
+    // <image l:href="#id"/>; the cover is linked from <coverpage>.
+    let mut binary: Option<(String, String)> = None;
 
     walk(BufReader::new(r), |ev| {
         match ev {
@@ -95,7 +98,24 @@ pub fn extract_fb2(
                 if matches!(name.as_str(), "p" | "v" | "subtitle" | "text-author") {
                     para.clear();
                 }
+                if name == "image" {
+                    let in_cover = stack.iter().any(|n| n == "coverpage");
+                    let in_body = !stack.iter().any(|n| n == "description");
+                    if let Some(href) = attr(e, "href").filter(|_| in_cover || in_body) {
+                        sink.paragraph(&para)?;
+                        para.clear();
+                        sink.image(href.trim_start_matches('#'))?;
+                    }
+                }
+                if name == "binary" {
+                    binary = attr(e, "id").map(|id| (id, String::new()));
+                }
                 stack.push(name);
+            }
+            Ev::Text(t) if stack.last().is_some_and(|n| n == "binary") => {
+                if let Some((_, data)) = &mut binary {
+                    data.push_str(t);
+                }
             }
             Ev::Text(t) => {
                 let skip = stack.iter().any(|n| n == "binary");
@@ -109,6 +129,13 @@ pub fn extract_fb2(
             Ev::End(name) => {
                 stack.pop();
                 let in_title = stack.iter().any(|n| n == "title");
+                if name == "binary" {
+                    if let Some((id, data)) = binary.take() {
+                        if let Some(bytes) = super::image::base64(&data) {
+                            sink.save_image(&id, &bytes)?;
+                        }
+                    }
+                }
                 match name {
                     "p" | "v" | "subtitle" | "text-author" if in_title => {
                         title_parts.push(std::mem::take(&mut para));
@@ -168,10 +195,13 @@ pub fn extract_docx<R: Read + Seek>(
     let mut zip = open_zip(r)?;
     let mut sink = Sink::new(cache_dir)?;
     sink.title = zip_entry_title(&mut zip, "docProps/core.xml").or(fallback_title);
+    let rels = docx_relationships(&mut zip);
     let doc = zip.by_name("word/document.xml").map_err(xml_err)?;
     let mut para = String::new();
     let mut heading = false;
     let mut in_text = false;
+    // Pictures in the paragraph, as paths in the ZIP; added after its text.
+    let mut pics: Vec<String> = Vec::new();
     // Text inside deleted revisions, field codes, footnote references is not shown.
     let mut hidden = 0usize;
 
@@ -193,6 +223,13 @@ pub fn extract_docx<R: Read + Seek>(
                     );
                 }
                 "t" => in_text = true,
+                // DrawingML <a:blip r:embed="rId5"/> or VML <v:imagedata r:id="rId5"/>.
+                "blip" | "imagedata" if hidden == 0 => {
+                    let id = attr(e, "embed").or_else(|| attr(e, "id"));
+                    if let Some(target) = id.and_then(|id| rels.get(&id)) {
+                        pics.push(target.clone());
+                    }
+                }
                 "tab" if hidden == 0 => para.push(' '),
                 "br" | "cr" if hidden == 0 => para.push(' '),
                 "del" | "instrText" | "delText" if !empty => hidden += 1,
@@ -209,6 +246,9 @@ pub fn extract_docx<R: Read + Seek>(
                         sink.paragraph(&para)?;
                     }
                     para.clear();
+                    for pic in pics.drain(..) {
+                        sink.image(&pic)?;
+                    }
                 }
                 _ => {}
             },
@@ -216,7 +256,53 @@ pub fn extract_docx<R: Read + Seek>(
         }
         Ok(())
     })?;
+    save_zip_images(&mut zip, &mut sink)?;
     sink.finish()
+}
+
+/// Picture relationships of `word/document.xml`: id → path in the ZIP.
+fn docx_relationships<R: Read + Seek>(
+    zip: &mut zip::ZipArchive<R>,
+) -> std::collections::HashMap<String, String> {
+    let mut rels = std::collections::HashMap::new();
+    let Ok(entry) = zip.by_name("word/_rels/document.xml.rels") else {
+        return rels;
+    };
+    let _ = walk(BufReader::new(entry), |ev| {
+        if let Ev::Start(e, _) = ev {
+            if e.local_name().as_ref() == "Relationship" {
+                let external = attr(e, "TargetMode").is_some_and(|m| m == "External");
+                if let (Some(id), Some(target), false) =
+                    (attr(e, "Id"), attr(e, "Target"), external)
+                {
+                    rels.insert(id, super::image::resolve("word/document.xml", &target));
+                }
+            }
+        }
+        Ok(())
+    });
+    rels
+}
+
+/// Copies the pictures that image paragraphs link to (paths in the ZIP) out of it.
+fn save_zip_images<R: Read + Seek>(
+    zip: &mut zip::ZipArchive<R>,
+    sink: &mut Sink,
+) -> Result<(), BookError> {
+    for key in sink.missing_images() {
+        let Ok(entry) = zip.by_name(&key) else {
+            continue;
+        };
+        if entry.size() > super::extract::MAX_IMAGE {
+            continue;
+        }
+        let mut bytes = Vec::with_capacity(entry.size() as usize);
+        entry
+            .take(super::extract::MAX_IMAGE)
+            .read_to_end(&mut bytes)?;
+        sink.save_image(&key, &bytes)?;
+    }
+    Ok(())
 }
 
 /// OpenDocument text: `text:h` (outline level 1-2) starts chapters; notes are skipped.
@@ -234,6 +320,7 @@ pub fn extract_odt<R: Read + Seek>(
     let mut heading_level: Option<u32> = None;
     let mut skip = 0usize;
     let mut in_body = false;
+    let mut pics: Vec<String> = Vec::new();
 
     walk(BufReader::new(content), |ev| {
         match ev {
@@ -256,6 +343,17 @@ pub fn extract_odt<R: Read + Seek>(
                     para.push_str(&" ".repeat(n));
                 }
                 "tab" | "line-break" if skip == 0 => para.push(' '),
+                // <draw:image xlink:href="Pictures/x.png"/> inside a frame.
+                "image" if skip == 0 && in_body => {
+                    if let Some(href) = attr(e, "href").filter(|h| !h.contains("://")) {
+                        let path = super::image::resolve("content.xml", &href);
+                        if depth == 0 {
+                            sink.image(&path)?;
+                        } else {
+                            pics.push(path);
+                        }
+                    }
+                }
                 _ => {}
             },
             Ev::Text(t) if skip == 0 && depth > 0 && in_body => para.push_str(t),
@@ -269,6 +367,9 @@ pub fn extract_odt<R: Read + Seek>(
                             _ => sink.paragraph(&para)?,
                         }
                         para.clear();
+                        for pic in pics.drain(..) {
+                            sink.image(&pic)?;
+                        }
                     }
                 }
                 _ => {}
@@ -277,6 +378,7 @@ pub fn extract_odt<R: Read + Seek>(
         }
         Ok(())
     })?;
+    save_zip_images(&mut zip, &mut sink)?;
     sink.finish()
 }
 
@@ -353,5 +455,47 @@ mod tests {
         assert_eq!(book.title().as_deref(), Some("tên file"));
         assert_eq!(labels(&book), vec![Some("Phần A".into())]);
         assert_eq!(texts(&mut book), vec!["Phần A", "Một hai ba", "Mục nhỏ"]);
+    }
+
+    #[test]
+    fn fb2_pictures_from_binaries() {
+        let xml = r##"<?xml version="1.0" encoding="utf-8"?>
+<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0" xmlns:l="http://www.w3.org/1999/xlink"><description><title-info><coverpage><image l:href="#cover.png"/></coverpage></title-info></description>
+<body><section><p>Một</p><image l:href="#pic.jpg"/><p>Hai</p></section></body>
+<binary id="cover.png" content-type="image/png">iVBORw==</binary><binary id="pic.jpg" content-type="image/jpeg">/9g=</binary></FictionBook>"##;
+        let mut book = extract_fb2(Cursor::new(xml.as_bytes().to_vec()), &test_dir(), None).unwrap();
+        assert_eq!(
+            texts(&mut book),
+            vec!["\u{FFFC}cover.png", "Một", "\u{FFFC}pic.jpg", "Hai"]
+        );
+        assert_eq!(book.image("cover.png").unwrap().mime, "image/png");
+        assert_eq!(book.image("pic.jpg").unwrap().mime, "image/jpeg");
+    }
+
+    #[test]
+    fn docx_and_odt_pictures_from_the_zip() {
+        let doc = r#"<w:document xmlns:w="w" xmlns:a="a" xmlns:r="r"><w:body>
+<w:p><w:r><w:t>Hình dưới</w:t></w:r><w:r><w:drawing><a:blip r:embed="rId7"/></w:drawing></w:r></w:p>
+</w:body></w:document>"#;
+        let rels = r#"<Relationships xmlns="x"><Relationship Id="rId7" Type="image" Target="media/image1.png"/><Relationship Id="rId8" Target="http://x" TargetMode="External"/></Relationships>"#;
+        let data = zip_of(&[
+            ("word/document.xml", doc),
+            ("word/_rels/document.xml.rels", rels),
+            ("word/media/image1.png", "\u{89}PNG"),
+        ]);
+        let mut book = extract_docx(Cursor::new(data), &test_dir(), None).unwrap();
+        assert_eq!(
+            texts(&mut book),
+            vec!["Hình dưới", "\u{FFFC}word/media/image1.png"]
+        );
+        assert!(book.image("word/media/image1.png").is_ok());
+
+        let content = r#"<office:document-content xmlns:office="o" xmlns:text="t" xmlns:draw="d" xmlns:xlink="x"><office:body><office:text>
+<text:p>Ảnh<draw:frame><draw:image xlink:href="Pictures/a.jpg"/></draw:frame></text:p>
+</office:text></office:body></office:document-content>"#;
+        let data = zip_of(&[("content.xml", content), ("Pictures/a.jpg", "jpg")]);
+        let mut book = extract_odt(Cursor::new(data), &test_dir(), None).unwrap();
+        assert_eq!(texts(&mut book), vec!["Ảnh", "\u{FFFC}Pictures/a.jpg"]);
+        assert_eq!(book.image("Pictures/a.jpg").unwrap().bytes, b"jpg");
     }
 }

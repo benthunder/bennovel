@@ -65,6 +65,16 @@ impl ChmBook {
     }
 }
 
+/// Archive path of a picture linked from page `page` (`/dir/page.htm`); links of the
+/// form `ms-its:book.chm::/img/a.gif` name the path after `::`.
+fn chm_link(page: &str, src: &str) -> String {
+    let src = src.rsplit_once("::").map_or(src, |(_, p)| p);
+    format!(
+        "/{}",
+        super::image::resolve(page.trim_start_matches('/'), src)
+    )
+}
+
 /// (path, title) of each `<param name="Local">` in the TOC, in order, without repeats.
 fn toc_pages(toc: &str) -> Vec<(String, Option<String>)> {
     let mut pages: Vec<(String, Option<String>)> = Vec::new();
@@ -132,12 +142,23 @@ impl BookSource for ChmBook {
             .collect()
     }
 
+    fn image(&mut self, key: &str) -> Result<super::image::Image, BookError> {
+        let bytes = self
+            .chm
+            .read_path(key)
+            .map_err(|_| BookError::NoImage(key.to_string()))?;
+        Ok(super::image::Image::sniff(bytes))
+    }
+
     fn load(&mut self, index: usize) -> Result<Section, BookError> {
         let (path, _) = self.pages.get(index).ok_or(BookError::NoSection(index))?;
         let bytes = self.chm.read_path(path).map_err(err)?;
         Ok(Section {
             index,
-            paragraphs: html_to_paragraphs(&decode(&bytes)),
+            paragraphs: html_to_paragraphs(&decode(&bytes), |src| {
+                (!src.contains("://") || src.starts_with("ms-its:") || src.starts_with("mk:"))
+                    .then(|| chm_link(path, src))
+            }),
         })
     }
 }

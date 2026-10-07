@@ -20,6 +20,7 @@ epub = "2.1.5"
 tauri-plugin-dialog = "2.8.1"
 tauri-plugin-fs = "2.6.0"
 pdfium-render = { version = "0.9.4", default-features = false, features = ["thread_safe", "pdfium_latest"] }
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
 thiserror = "2.0.21"
 encoding_rs = "0.8.42"
 quick-xml = { version = "0.42.0", features = ["encoding"] }

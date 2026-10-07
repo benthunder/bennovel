@@ -75,7 +75,8 @@ export function layoutFor(w: number, h: number) {
     readerTop: v('calc(var(--safe-top) + 4px)', 'calc(env(safe-area-inset-top, 0px) + 36px)', '16px'),
     readerPx: v(14, 24, 32),
     readerBarPx: v(20, 32, 40),
-    readerMax: v('none', '680px', '720px'),
+    // Desktop: wide screens use most of the width instead of a narrow column.
+    readerMax: v('none', '680px', '88%'),
     readerPadTop: v(22, 36, 44),
     readerH: v(28, 34, 38),
     toolsW: 380

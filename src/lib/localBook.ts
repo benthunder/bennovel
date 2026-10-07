@@ -1,4 +1,4 @@
-import { invoke, isTauri } from '@tauri-apps/api/core';
+import { convertFileSrc, invoke, isTauri } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 
 /** Opening local files needs the native app; the web build hides the option. */
@@ -16,6 +16,8 @@ export interface LocalBook {
   format: 'epub' | 'pdf' | 'txt' | 'html' | 'mht' | 'markdown' | 'fb2' | 'docx' | 'odt' | 'rtf' | 'mobi' | 'chm' | 'djvu';
   title: string | null;
   sections: LocalSectionMeta[];
+  /** Whole pages can be shown as pictures (PDF, DjVu). */
+  pageImages: boolean;
 }
 
 export interface LocalSection {
@@ -35,6 +37,20 @@ export async function pickLocalBook(): Promise<LocalBook | null> {
   if (!path) return null;
   return invoke<LocalBook>('book_open', { path });
 }
+
+/** A paragraph that is this character followed by a key stands for a picture. */
+export const IMAGE_MARK = '\uFFFC';
+
+export const imageKey = (paragraph: string) => (paragraph.startsWith(IMAGE_MARK) ? paragraph.slice(1) : null);
+
+/**
+ * Pictures are served by the app's `bookimg:` scheme and read from the book only when
+ * the <img> is about to be shown, so they never sit in memory with the text.
+ */
+export const bookImageUrl = (id: number, key: string) => convertFileSrc(`${id}/i/${key}`, 'bookimg');
+
+/** Page `page` (1-based) of a PDF/DjVu drawn `width` pixels wide. */
+export const bookPageUrl = (id: number, page: number, width: number) => convertFileSrc(`${id}/p/${page}/${width}`, 'bookimg');
 
 /** Text of one section; the app keeps only the sections around it in memory. */
 export const getLocalSection = (id: number, index: number) => invoke<LocalSection>('book_section', { id, index });

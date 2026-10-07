@@ -1,3 +1,4 @@
+use super::image::{self, Image};
 use super::text::pdf_text_to_paragraphs;
 use super::{BookError, BookSource, Section, SectionMeta};
 use pdfium_render::prelude::*;
@@ -85,6 +86,33 @@ impl BookSource for PdfBook {
         }
         Ok(Section { index, paragraphs })
     }
+
+    fn page_images(&self) -> bool {
+        true
+    }
+
+    fn render_page(&mut self, page: u32, width: u32) -> Result<Image, BookError> {
+        if page == 0 || page > self.pages {
+            return Err(BookError::NoImage(format!("page {page}")));
+        }
+        let page = self
+            .doc
+            .pages()
+            .get((page - 1) as PdfPageIndex)
+            .map_err(|e| BookError::Parse(e.to_string()))?;
+        let config = PdfRenderConfig::new()
+            .set_target_width(width.clamp(200, 3000) as Pixels)
+            .render_form_data(true)
+            .render_annotations(true);
+        let bitmap = page
+            .render_with_config(&config)
+            .map_err(|e| BookError::Parse(e.to_string()))?;
+        image::encode_jpeg(
+            bitmap.width() as u32,
+            bitmap.height() as u32,
+            &bitmap.as_rgba_bytes(),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -160,6 +188,9 @@ mod tests {
             (21..=25).map(|n| format!("Page {n}.")).collect::<Vec<_>>()
         );
         assert!(matches!(book.load(3), Err(BookError::NoSection(3))));
+        let page = book.render_page(25, 600).unwrap();
+        assert_eq!(image::mime_of(&page.bytes), "image/jpeg");
+        assert!(book.render_page(26, 600).is_err());
         std::fs::remove_file(path).unwrap();
     }
 }
