@@ -13,7 +13,7 @@ export interface LocalSectionMeta {
 
 export interface LocalBook {
   id: number;
-  format: 'epub' | 'pdf' | 'txt';
+  format: 'epub' | 'pdf' | 'txt' | 'html' | 'mht' | 'markdown' | 'fb2' | 'docx' | 'odt' | 'rtf' | 'mobi' | 'chm' | 'djvu';
   title: string | null;
   sections: LocalSectionMeta[];
 }
@@ -23,9 +23,15 @@ export interface LocalSection {
   paragraphs: string[];
 }
 
-/** Asks for an EPUB/PDF/TXT file and opens it. Resolves to null when the user cancels. */
+/** File types the reader opens (UMD is listed so the app can say it is not supported yet). */
+export const BOOK_EXTENSIONS = [
+  'epub', 'pdf', 'txt', 'mobi', 'azw3', 'azw', 'prc', 'fb2', 'djvu', 'chm', 'umd',
+  'docx', 'odt', 'rtf', 'html', 'htm', 'xhtml', 'mht', 'mhtml', 'md', 'markdown'
+];
+
+/** Asks for a book file and opens it. Resolves to null when the user cancels. */
 export async function pickLocalBook(): Promise<LocalBook | null> {
-  const path = await open({ multiple: false, filters: [{ name: 'EPUB / PDF / TXT', extensions: ['epub', 'pdf', 'txt'] }] });
+  const path = await open({ multiple: false, filters: [{ name: 'Books', extensions: BOOK_EXTENSIONS }] });
   if (!path) return null;
   return invoke<LocalBook>('book_open', { path });
 }

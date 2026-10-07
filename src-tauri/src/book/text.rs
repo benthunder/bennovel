@@ -24,26 +24,86 @@ const BLOCK_TAGS: &[&str] = &[
 ];
 const SKIPPED_TAGS: &[&str] = &["head", "script", "style", "svg"];
 
+/// A paragraph of text found in HTML; headings are flagged so they can start chapters.
+#[derive(Debug, PartialEq)]
+pub enum Block {
+    Text(String),
+    /// Text of an `<h1>`–`<h3>`.
+    Heading(String),
+}
+
 /// Paragraph texts of an (X)HTML document, ignoring markup, scripts and styles.
 pub fn html_to_paragraphs(html: &str) -> Vec<String> {
     let mut out = Vec::new();
-    let mut cur = String::new();
-    let mut skip_until: Option<String> = None;
-    let mut rest = html;
+    let mut parser = HtmlText::default();
+    let mut push = |b: Block| match b {
+        Block::Text(t) | Block::Heading(t) => out.push(t),
+    };
+    parser.feed(html, &mut push);
+    parser.finish(&mut push);
+    out
+}
 
-    while let Some(lt) = rest.find('<') {
-        if skip_until.is_none() {
-            push_text(&mut cur, &rest[..lt]);
-        }
-        rest = &rest[lt..];
-        if let Some(after) = rest.strip_prefix("<!--") {
-            rest = after.find("-->").map_or("", |e| &after[e + 3..]);
-            continue;
-        }
-        let Some(gt) = rest.find('>') else { break };
-        let tag = &rest[1..gt];
-        rest = &rest[gt + 1..];
+/// Streaming HTML-to-text: feed it the document piece by piece (any split, even
+/// inside a tag) and it emits paragraphs as soon as they end.
+#[derive(Default)]
+pub struct HtmlText {
+    pending: String,
+    cur: String,
+    skip_until: Option<String>,
+    in_heading: bool,
+}
 
+impl HtmlText {
+    pub fn feed(&mut self, chunk: &str, out: &mut impl FnMut(Block)) {
+        self.pending.push_str(chunk);
+        let mut consumed = 0;
+        loop {
+            let rest = &self.pending[consumed..];
+            let Some(lt) = rest.find('<') else {
+                // Hold back a possibly unfinished entity such as "&am".
+                let keep = rest
+                    .rfind('&')
+                    .filter(|&a| !rest[a..].contains(';') && rest.len() - a < 12);
+                let text_end = keep.unwrap_or(rest.len());
+                if self.skip_until.is_none() {
+                    push_text(&mut self.cur, &rest[..text_end]);
+                }
+                consumed += text_end;
+                break;
+            };
+            if self.skip_until.is_none() {
+                push_text(&mut self.cur, &rest[..lt]);
+            }
+            let tag_start = &rest[lt..];
+            let tag_end = if tag_start.starts_with("<!--") {
+                tag_start.find("-->").map(|e| e + 3)
+            } else {
+                tag_start.find('>').map(|e| e + 1)
+            };
+            let Some(tag_end) = tag_end else {
+                // The tag continues in the next chunk.
+                consumed += lt;
+                break;
+            };
+            let tag = tag_start[..tag_end].to_string();
+            consumed += lt + tag_end;
+            if !tag.starts_with("<!--") {
+                self.tag(&tag[1..tag.len() - 1], out);
+            }
+        }
+        self.pending.drain(..consumed);
+    }
+
+    pub fn finish(&mut self, out: &mut impl FnMut(Block)) {
+        let rest = std::mem::take(&mut self.pending);
+        if self.skip_until.is_none() && !rest.starts_with('<') {
+            push_text(&mut self.cur, &rest);
+        }
+        self.flush(out);
+    }
+
+    fn tag(&mut self, tag: &str, out: &mut impl FnMut(Block)) {
         let closing = tag.starts_with('/');
         let name = tag
             .trim_start_matches('/')
@@ -54,25 +114,35 @@ pub fn html_to_paragraphs(html: &str) -> Vec<String> {
         // Namespaced tags such as <svg:svg> count by their local name.
         let name = name.rsplit(':').next().unwrap_or("").to_string();
 
-        if let Some(skipped) = &skip_until {
+        if let Some(skipped) = &self.skip_until {
             if closing && *skipped == name {
-                skip_until = None;
+                self.skip_until = None;
             }
-            continue;
+            return;
         }
         if !closing && !tag.ends_with('/') && SKIPPED_TAGS.contains(&name.as_str()) {
-            skip_until = Some(name);
-            continue;
+            self.skip_until = Some(name);
+            return;
         }
-        if BLOCK_TAGS.contains(&name.as_str()) {
-            flush(&mut out, &mut cur);
+        if BLOCK_TAGS.contains(&name.as_str()) || name == "pagebreak" {
+            self.flush(out);
+            self.in_heading = !closing && matches!(name.as_str(), "h1" | "h2" | "h3");
         }
     }
-    if skip_until.is_none() {
-        push_text(&mut cur, rest);
+
+    fn flush(&mut self, out: &mut impl FnMut(Block)) {
+        let p = self.cur.trim();
+        if !p.is_empty() {
+            let p = p.to_string();
+            out(if self.in_heading {
+                Block::Heading(p)
+            } else {
+                Block::Text(p)
+            });
+        }
+        self.cur.clear();
+        self.in_heading = false;
     }
-    flush(&mut out, &mut cur);
-    out
 }
 
 /// Splits page text from a PDF into paragraphs: a line ending a sentence ends the
@@ -97,17 +167,17 @@ pub fn pdf_text_to_paragraphs(text: &str) -> Vec<String> {
     out
 }
 
+/// Appends text with runs of whitespace collapsed to one space. Words split across
+/// two calls stay joined.
 fn push_text(cur: &mut String, raw: &str) {
-    let decoded = decode_entities(raw);
-    for word in decoded.split_whitespace() {
-        if !cur.is_empty() && !cur.ends_with(' ') {
-            cur.push(' ');
+    for c in decode_entities(raw).chars() {
+        if c.is_whitespace() {
+            if !cur.is_empty() && !cur.ends_with(' ') {
+                cur.push(' ');
+            }
+        } else {
+            cur.push(c);
         }
-        cur.push_str(word);
-    }
-    // Keep a separating space when the text ends in whitespace before an inline tag.
-    if decoded.ends_with(char::is_whitespace) && !cur.is_empty() && !cur.ends_with(' ') {
-        cur.push(' ');
     }
 }
 
@@ -181,6 +251,35 @@ mod tests {
             html_to_paragraphs(html),
             vec!["Chương 1", "Xin chào thế giới.", "A&B 中 中 x", "tail"]
         );
+    }
+
+    #[test]
+    fn streaming_matches_whole_document_at_any_split() {
+        let html = "<html><head><style>x{}</style></head><body><h2>Tiêu đề</h2><p>A &amp; B<!-- c --> c</p><p>dài</p></body></html>";
+        let whole = html_to_paragraphs(html);
+        for size in 1..html.len() {
+            let mut parser = HtmlText::default();
+            let mut got = Vec::new();
+            let mut push = |b: Block| got.push(b);
+            let mut rest = html;
+            while !rest.is_empty() {
+                let mut cut = size.min(rest.len());
+                while !rest.is_char_boundary(cut) {
+                    cut += 1;
+                }
+                parser.feed(&rest[..cut], &mut push);
+                rest = &rest[cut..];
+            }
+            parser.finish(&mut push);
+            assert_eq!(got[0], Block::Heading("Tiêu đề".into()), "split {size}");
+            let texts: Vec<String> = got
+                .into_iter()
+                .map(|b| match b {
+                    Block::Text(t) | Block::Heading(t) => t,
+                })
+                .collect();
+            assert_eq!(texts, whole, "split {size}");
+        }
     }
 
     #[test]

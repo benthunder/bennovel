@@ -220,8 +220,8 @@ export const vi: Record<MessageKey, string> = {
   'load.retry': 'Thử lại',
   'reader.loading': 'Đang tải chương…',
   'reader.missing': 'Chương này chưa có bản ở ngôn ngữ này.',
-  // local EPUB/PDF/TXT files
-  'book.open': 'Mở file EPUB / PDF / TXT',
+  // local book files
+  'book.open': 'Mở file sách (EPUB, PDF, MOBI, TXT…)',
   'book.openFailed': 'Không mở được file này.',
   'book.untitled': 'Sách chưa có tên',
   'book.part': 'Phần {n} / {total}',

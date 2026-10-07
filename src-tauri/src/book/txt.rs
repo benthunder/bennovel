@@ -40,7 +40,7 @@ impl<R: Read + Seek + Send> TxtBook<R> {
 
 /// Byte order mark first; otherwise UTF-8 when the start of the file is valid
 /// UTF-8, else GB18030 (a superset of GBK, common for Chinese novels).
-fn detect_encoding(head: &[u8]) -> (&'static Encoding, u64) {
+pub(super) fn detect_encoding(head: &[u8]) -> (&'static Encoding, u64) {
     if let Some((enc, bom)) = Encoding::for_bom(head) {
         return (enc, bom as u64);
     }

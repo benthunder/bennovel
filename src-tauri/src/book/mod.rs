@@ -1,15 +1,25 @@
-//! Offline EPUB/PDF reading that keeps only the part being read in memory.
+//! Offline book reading that keeps only the part being read in memory.
 //!
-//! A book is split into sections (EPUB: one spine item, PDF: a few pages). The file
-//! stays on disk; a section is read from it only when the reader reaches it or is
-//! about to, and dropped again once the reader has moved away.
+//! A book is split into sections (EPUB: one spine item, PDF/DjVu: a few pages, TXT:
+//! ~64 KB, CHM: one page). The file stays on disk; a section is read from it only
+//! when the reader reaches it or is about to, and dropped again once the reader has
+//! moved away. Formats whose text is compressed or wrapped in markup (MOBI, FB2,
+//! DOCX, …) are first extracted, streaming, to a plain text file in the cache folder.
 
+mod chm;
 pub mod commands;
+mod djvu;
 mod epub;
+mod extract;
+mod html;
+mod markdown;
+mod mobi;
 mod pdf;
+mod rtf;
 mod text;
 mod txt;
 mod window;
+mod xmldoc;
 
 use serde::Serialize;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -23,8 +33,8 @@ pub const KEEP_AHEAD: usize = 2;
 
 #[derive(Debug, thiserror::Error)]
 pub enum BookError {
-    #[error("unsupported file type")]
-    Unsupported,
+    #[error("{0} files are not supported yet")]
+    NotYet(&'static str),
     #[error("cannot open file: {0}")]
     Io(#[from] std::io::Error),
     #[error("cannot read book: {0}")]
@@ -49,6 +59,16 @@ pub enum BookFormat {
     Epub,
     Pdf,
     Txt,
+    Html,
+    Mht,
+    Markdown,
+    Fb2,
+    Docx,
+    Odt,
+    Rtf,
+    Mobi,
+    Chm,
+    Djvu,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -165,45 +185,168 @@ impl OpenBook {
     }
 }
 
-/// Opens an EPUB, PDF or TXT by its extension (or, for content URIs, by its leading bytes).
+/// Where a book comes from and where it may put cache files.
+pub struct OpenCtx {
+    /// The path or URI as picked, used for the extension and the fallback title.
+    pub name: String,
+    /// A real file path, when there is one (not for Android content URIs).
+    pub path: Option<std::path::PathBuf>,
+    pub cache_dir: std::path::PathBuf,
+    pub pdfium_dirs: Vec<std::path::PathBuf>,
+}
+
+impl OpenCtx {
+    /// File name without extension, for books that carry no title.
+    fn file_title(&self) -> Option<String> {
+        if self.name.starts_with("content://") {
+            return None;
+        }
+        let file = self.name.rsplit(['/', '\\']).next()?;
+        let stem = file.rsplit_once('.').map_or(file, |(s, _)| s);
+        (!stem.is_empty()).then(|| stem.to_string())
+    }
+
+    fn extension(&self) -> String {
+        let file = self.name.rsplit(['/', '\\']).next().unwrap_or_default();
+        file.rsplit_once('.')
+            .map(|(_, e)| e.to_ascii_lowercase())
+            .unwrap_or_default()
+    }
+}
+
+/// Picks the format from the extension, or from the first bytes when there is none.
+pub fn detect(ext: &str, head: &[u8]) -> Result<BookFormat, BookError> {
+    use BookFormat::*;
+    let by_ext = match ext {
+        "epub" => Some(Epub),
+        "pdf" => Some(Pdf),
+        "txt" | "text" => Some(Txt),
+        "html" | "htm" | "xhtml" => Some(Html),
+        "mht" | "mhtml" => Some(Mht),
+        "md" | "markdown" => Some(Markdown),
+        "fb2" => Some(Fb2),
+        "docx" => Some(Docx),
+        "odt" => Some(Odt),
+        "rtf" => Some(Rtf),
+        "mobi" | "azw" | "azw3" | "prc" | "pdb" => Some(Mobi),
+        "chm" => Some(Chm),
+        "djvu" | "djv" => Some(Djvu),
+        "umd" => return Err(BookError::NotYet("UMD")),
+        _ => None,
+    };
+    if let Some(f) = by_ext {
+        return Ok(f);
+    }
+    let lower = String::from_utf8_lossy(&head[..head.len().min(2048)]).to_ascii_lowercase();
+    Ok(if head.starts_with(b"%PDF-") {
+        Pdf
+    } else if head.starts_with(b"PK") {
+        zip_kind(head)
+    } else if head
+        .get(60..68)
+        .is_some_and(|k| k == b"BOOKMOBI" || k == b"TEXtREAd")
+    {
+        Mobi
+    } else if head.starts_with(b"ITSF") {
+        Chm
+    } else if head.starts_with(b"AT&TFORM") {
+        Djvu
+    } else if head.starts_with(&[0x89, 0x9B, 0x9A, 0xDE]) {
+        return Err(BookError::NotYet("UMD"));
+    } else if head.starts_with(b"{\\rtf") {
+        Rtf
+    } else if lower.contains("<fictionbook") {
+        Fb2
+    } else if lower.contains("multipart/related") || lower.starts_with("mime-version:") {
+        Mht
+    } else if lower.contains("<html") || lower.contains("<!doctype html") {
+        Html
+    } else {
+        Txt
+    })
+}
+
+/// EPUB and ODT start with a stored `mimetype` entry; DOCX has `word/`.
+fn zip_kind(head: &[u8]) -> BookFormat {
+    let name_len = head
+        .get(26..28)
+        .map_or(0, |b| u16::from_le_bytes([b[0], b[1]]) as usize);
+    let extra_len = head
+        .get(28..30)
+        .map_or(0, |b| u16::from_le_bytes([b[0], b[1]]) as usize);
+    if head.get(30..30 + name_len) == Some(b"mimetype") {
+        let at = 30 + name_len + extra_len;
+        if head
+            .get(at..)
+            .is_some_and(|m| m.starts_with(b"application/vnd.oasis.opendocument.text"))
+        {
+            return BookFormat::Odt;
+        }
+        return BookFormat::Epub;
+    }
+    if head.windows(5).any(|w| w == b"word/")
+        || head.windows(19).any(|w| w == b"[Content_Types].xml")
+    {
+        return BookFormat::Docx;
+    }
+    BookFormat::Epub
+}
+
+/// Opens a book in any supported format.
 pub fn open_source(
     file: std::fs::File,
-    name_hint: &str,
-    pdfium_dirs: &[std::path::PathBuf],
+    ctx: &OpenCtx,
 ) -> Result<(BookFormat, Box<dyn BookSource>), BookError> {
-    use std::io::{Read, Seek, SeekFrom};
+    use std::io::{BufReader, Read, Seek, SeekFrom};
     let mut file = file;
-    let mut magic = [0u8; 5];
-    let n = file.read(&mut magic)?;
-    file.seek(SeekFrom::Start(0))?;
-    let lower = name_hint.to_ascii_lowercase();
-
-    if lower.ends_with(".pdf") || magic[..n].starts_with(b"%PDF-") {
-        Ok((
-            BookFormat::Pdf,
-            Box::new(pdf::PdfBook::open(file, pdfium_dirs)?),
-        ))
-    } else if lower.ends_with(".epub") || magic[..n].starts_with(b"PK") {
-        Ok((
-            BookFormat::Epub,
-            Box::new(epub::EpubBook::open(std::io::BufReader::new(file))?),
-        ))
-    } else if lower.ends_with(".txt") || lower.starts_with("content://") {
-        // Android content URIs carry no file name; anything that is not PDF/EPUB is read as text.
-        let title = Some(name_hint)
-            .filter(|n| !n.starts_with("content://"))
-            .and_then(|n| n.rsplit(['/', '\\']).next())
-            .map(|n| {
-                n.strip_suffix(".txt")
-                    .or(n.strip_suffix(".TXT"))
-                    .unwrap_or(n)
-                    .to_string()
-            })
-            .filter(|n| !n.is_empty());
-        Ok((BookFormat::Txt, Box::new(txt::TxtBook::open(file, title)?)))
-    } else {
-        Err(BookError::Unsupported)
+    let mut head = vec![0u8; 4096];
+    let mut n = 0;
+    while n < head.len() {
+        match file.read(&mut head[n..])? {
+            0 => break,
+            k => n += k,
+        }
     }
+    head.truncate(n);
+    file.seek(SeekFrom::Start(0))?;
+
+    let format = detect(&ctx.extension(), &head)?;
+    let title = ctx.file_title();
+    let cache = &ctx.cache_dir;
+    // CHM and DjVu readers need a file path; content URIs are copied to the cache first.
+    let local = |file: std::fs::File,
+                 ext: &str|
+     -> Result<(std::path::PathBuf, Option<extract::TempCopy>), BookError> {
+        match &ctx.path {
+            Some(p) => Ok((p.clone(), None)),
+            None => {
+                let copy = extract::TempCopy::of(file, cache, ext)?;
+                Ok((copy.0.clone(), Some(copy)))
+            }
+        }
+    };
+    let source: Box<dyn BookSource> = match format {
+        BookFormat::Pdf => Box::new(pdf::PdfBook::open(file, &ctx.pdfium_dirs)?),
+        BookFormat::Epub => Box::new(epub::EpubBook::open(BufReader::new(file))?),
+        BookFormat::Txt => Box::new(txt::TxtBook::open(file, title)?),
+        BookFormat::Html => Box::new(html::extract_html(file, cache, title)?),
+        BookFormat::Mht => Box::new(html::extract_mht(file, cache, title)?),
+        BookFormat::Markdown => Box::new(markdown::extract_markdown(file, cache, title)?),
+        BookFormat::Fb2 => Box::new(xmldoc::extract_fb2(file, cache, title)?),
+        BookFormat::Docx => Box::new(xmldoc::extract_docx(BufReader::new(file), cache, title)?),
+        BookFormat::Odt => Box::new(xmldoc::extract_odt(BufReader::new(file), cache, title)?),
+        BookFormat::Rtf => Box::new(rtf::extract_rtf(file, cache, title)?),
+        BookFormat::Mobi => Box::new(mobi::extract_mobi(BufReader::new(file), cache, title)?),
+        BookFormat::Chm => {
+            let (path, copy) = local(file, "chm")?;
+            Box::new(chm::ChmBook::open(&path, copy, title)?)
+        }
+        BookFormat::Djvu => {
+            let (path, copy) = local(file, "djvu")?;
+            Box::new(djvu::DjvuBook::open(&path, copy, title)?)
+        }
+    };
+    Ok((format, source))
 }
 
 #[cfg(test)]
@@ -277,6 +420,33 @@ mod tests {
         // Jumping far away drops everything from before.
         book.section(8).unwrap();
         wait_for(&book, vec![7, 8, 9]);
+    }
+
+    #[test]
+    fn detects_format_by_extension_then_content() {
+        use BookFormat::*;
+        assert_eq!(detect("azw3", b"").unwrap(), Mobi);
+        assert_eq!(detect("htm", b"").unwrap(), Html);
+        assert!(matches!(detect("umd", b""), Err(BookError::NotYet("UMD"))));
+        // Content URIs have no extension: sniff the first bytes.
+        assert_eq!(detect("", b"%PDF-1.7").unwrap(), Pdf);
+        assert_eq!(detect("", b"AT&TFORM\0\0").unwrap(), Djvu);
+        assert_eq!(detect("", b"ITSF\x03").unwrap(), Chm);
+        assert_eq!(detect("", b"{\\rtf1\\ansi").unwrap(), Rtf);
+        assert_eq!(
+            detect("", b"<?xml version=\"1.0\"?><FictionBook>").unwrap(),
+            Fb2
+        );
+        assert_eq!(detect("", b"<!DOCTYPE html><html>").unwrap(), Html);
+        assert_eq!(detect("", "Chương 1\nNội dung".as_bytes()).unwrap(), Txt);
+        let mut mobi = vec![0u8; 78];
+        mobi[60..68].copy_from_slice(b"BOOKMOBI");
+        assert_eq!(detect("", &mobi).unwrap(), Mobi);
+        let mut odt = b"PK\x03\x04".to_vec();
+        odt.resize(26, 0);
+        odt.extend_from_slice(&[8, 0, 0, 0]);
+        odt.extend_from_slice(b"mimetypeapplication/vnd.oasis.opendocument.text");
+        assert_eq!(detect("", &odt).unwrap(), Odt);
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use super::{open_source, BookError, BookInfo, OpenBook, Section};
+use super::{open_source, BookError, BookInfo, OpenBook, OpenCtx, Section};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -40,7 +40,8 @@ fn pdfium_dirs<R: Runtime>(app: &AppHandle<R>) -> Vec<PathBuf> {
 }
 
 /// Opens a book picked by the user (a path, or a `content://` URI on Android).
-/// Only the TOC is read here; text is read per section by `book_section`.
+/// Only the table of contents is read here (or, for compressed formats, the text is
+/// extracted to the cache folder); text is read per section by `book_section`.
 #[tauri::command]
 pub async fn book_open<R: Runtime>(
     app: AppHandle<R>,
@@ -48,14 +49,27 @@ pub async fn book_open<R: Runtime>(
     path: FilePath,
 ) -> Result<BookInfo, BookError> {
     let name = path.to_string();
+    let local_path = match &path {
+        FilePath::Path(p) => Some(p.clone()),
+        FilePath::Url(u) => u.to_file_path().ok(),
+    };
     let mut opts = OpenOptions::new();
     opts.read(true);
     let file = app.fs().open(path, opts)?;
-    let dirs = pdfium_dirs(&app);
+    let ctx = OpenCtx {
+        name,
+        path: local_path,
+        cache_dir: app
+            .path()
+            .app_cache_dir()
+            .unwrap_or_else(|_| std::env::temp_dir())
+            .join("books"),
+        pdfium_dirs: pdfium_dirs(&app),
+    };
     let id = books.next_id.fetch_add(1, Ordering::SeqCst) + 1;
 
     let book = tauri::async_runtime::spawn_blocking(move || {
-        let (format, source) = open_source(file, &name, &dirs)?;
+        let (format, source) = open_source(file, &ctx)?;
         Ok::<_, BookError>(OpenBook::new(id, format, source))
     })
     .await

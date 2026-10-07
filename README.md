@@ -69,17 +69,24 @@ npx supabase db push     # apply migrations to the linked remote project
 
 Catalog writes, chapter imports and the translation worker use the service role key, which bypasses RLS. The worker claims work with `claim_translation_job()`.
 
-## Offline EPUB / PDF / TXT files
+## Offline book files
 
-In the native app, Library → **Open EPUB / PDF / TXT file** opens a book from the device (`src-tauri/src/book`).
-The file stays on disk and is read in sections (EPUB: one chapter, PDF: 10 pages, TXT: about 64 KB
-ending at a line break; the encoding is detected from the BOM, else UTF-8, else GB18030/GBK). Only the current
-section, the 2 after it and the 1 before it are kept in memory; the next ones are read in the background
-and sections further away are freed (`KEEP_AHEAD` / `KEEP_BEHIND` in `book/mod.rs`).
+In the native app, Library → **Open a book file** opens a book from the device (`src-tauri/src/book`).
+Only the current section, the 2 after it and the 1 before it are kept in memory; the next ones are read in the
+background and sections further away are freed (`KEEP_AHEAD` / `KEEP_BEHIND` in `book/mod.rs`).
+
+| Format | How it is read |
+| --- | --- |
+| EPUB | One chapter per section, read from the ZIP on demand |
+| PDF, DjVu | 10 pages per section; PDF via Pdfium, DjVu via its text layer (scans without OCR have no text) |
+| TXT | ~64 KB per section ending at a line break; encoding from the BOM, else UTF-8, else GB18030/GBK |
+| CHM | One page of the table of contents per section, decompressed on demand |
+| MOBI, AZW3, PRC, FB2, DOCX, ODT, RTF, HTML, MHT/MHTML, Markdown | Text extracted once, streaming, to a plain file in the cache folder (deleted on close), then read in sections; headings start chapters |
+| UMD | Not supported yet |
 
 PDF text comes from [Pdfium](https://github.com/bblanchon/pdfium-binaries), loaded at runtime from next to
-the app, its resources folder (`pdfium/`) or the system. Without it EPUB still works and opening a PDF shows
-an error. To run the PDF test: `PDFIUM_DIR=/path/to/pdfium/lib cargo test` in `src-tauri`.
+the app, its resources folder (`pdfium/`) or the system. The release workflow ships it with the Linux and
+Android builds. To run the PDF test: `PDFIUM_DIR=/path/to/pdfium/lib cargo test` in `src-tauri`.
 
 ## Simulated for now
 

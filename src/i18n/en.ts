@@ -218,8 +218,8 @@ export const en = {
   'load.retry': 'Try again',
   'reader.loading': 'Loading chapter…',
   'reader.missing': 'This chapter is not available in this language yet.',
-  // local EPUB/PDF/TXT files
-  'book.open': 'Open EPUB / PDF / TXT file',
+  // local book files
+  'book.open': 'Open a book file (EPUB, PDF, MOBI, TXT…)',
   'book.openFailed': 'Could not open this file.',
   'book.untitled': 'Untitled book',
   'book.part': 'Part {n} of {total}',
