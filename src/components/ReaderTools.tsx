@@ -1,26 +1,35 @@
 import { useState } from 'react';
-import { CONTENT_LANGS, DICTIONARY, DICT_SUGGEST, GLOSSARY, TRANSLATE_STYLES } from '../data/mock';
-import type { ContentLang, DictEntry, TranslateStyle } from '../data/types';
+import { DICTIONARY, DICT_SUGGEST, TRANSLATE_STYLES } from '../data/mock';
+import { getContentLangs } from '../data/repository';
+import type { ContentLang, DictEntry, GlossaryTerm, TranslateStyle } from '../data/types';
 import { useI18n } from '../i18n';
 import { DEFAULT_READER_PREFS, READER_THEMES, useApp, type ReaderPrefs } from '../store/AppStore';
 import { BookIcon, SparklesIcon, XIcon } from './Icons';
 import { Checkbox, Segmented } from './ui';
+import { useLayout } from '../lib/useLayout';
 
 export interface Translation { lang: ContentLang; style: TranslateStyle; dict: boolean }
 
 const FONT_MIN = 14, FONT_MAX = 26;
 
-/** Bottom sheet with reading settings and the (simulated) AI dictionary / translator. */
-export function ReaderTools({ onClose, onTranslate }: { onClose: () => void; onTranslate: (t: Translation) => void }) {
+/**
+ * Reading settings and the (simulated) AI dictionary / translator.
+ * Phone: bottom sheet over the chapter. Tablet and desktop: a side panel the chapter makes room for.
+ */
+export function ReaderTools({ glossary, onClose, onTranslate }: { glossary: Record<string, GlossaryTerm>; onClose: () => void; onTranslate: (t: Translation) => void }) {
   const { t } = useI18n();
+  const lay = useLayout();
   const [tab, setTab] = useState<'reading' | 'ai'>('reading');
 
   return (
-    <div style={{ position: 'absolute', inset: 0, zIndex: 50, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', color: 'var(--color-text)' }}>
-      <div className="scrim" onClick={onClose} />
-      <div className="sheet" role="dialog" aria-modal="true" aria-label={t('reader.tools')}>
-        <div style={{ padding: '10px 20px 0' }}>
-          <div className="sheet__grip" />
+    <div style={{
+      position: 'absolute', top: 0, right: 0, bottom: 0, left: lay.wide ? 'auto' : 0, width: lay.wide ? lay.toolsW : 'auto',
+      zIndex: 50, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', color: 'var(--color-text)'
+    }}>
+      {lay.isPhone && <div className="scrim" onClick={onClose} />}
+      <div className={`sheet${lay.wide ? ' sheet--side' : ''}`} role="dialog" aria-modal={lay.isPhone} aria-label={t('reader.tools')}>
+        <div style={{ padding: `${lay.v('10px', 'calc(env(safe-area-inset-top, 0px) + 42px)', '22px')} 20px 0` }}>
+          {lay.isPhone && <div className="sheet__grip" />}
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
             <Segmented value={tab} onChange={setTab} style={{ flex: 1 }} optStyle={{ padding: 10 }}
               options={[{ label: t('tools.reading'), value: 'reading' }, { label: t('tools.ai'), value: 'ai' }]} />
@@ -28,7 +37,7 @@ export function ReaderTools({ onClose, onTranslate }: { onClose: () => void; onT
           </div>
         </div>
         <div className="nx-scroll" style={{ overflowY: 'auto', padding: '0 20px calc(env(safe-area-inset-bottom) + 30px)', display: 'flex', flexDirection: 'column', gap: 18 }}>
-          {tab === 'reading' ? <ReadingTab /> : <AiTab onTranslate={onTranslate} />}
+          {tab === 'reading' ? <ReadingTab /> : <AiTab glossary={glossary} onTranslate={onTranslate} />}
         </div>
       </div>
     </div>
@@ -94,7 +103,7 @@ function ReadingTab() {
 const panel: React.CSSProperties = { borderRadius: 30, background: 'var(--color-surface)', padding: 16, display: 'flex', flexDirection: 'column', gap: 12 };
 const panelIcon = (bg: string, fg: string): React.CSSProperties => ({ width: 34, height: 34, borderRadius: '50%', background: bg, color: fg, display: 'grid', placeItems: 'center' });
 
-function AiTab({ onTranslate }: { onTranslate: (t: Translation) => void }) {
+function AiTab({ glossary: terms, onTranslate }: { glossary: Record<string, GlossaryTerm>; onTranslate: (t: Translation) => void }) {
   const { t } = useI18n();
   const app = useApp();
   const currentLang = app.top.s === 'reader' ? app.top.lang : 'en';
@@ -103,7 +112,7 @@ function AiTab({ onTranslate }: { onTranslate: (t: Translation) => void }) {
   const [trLang, setTrLang] = useState<ContentLang>(currentLang === 'vi' ? 'en' : 'vi');
   const [style, setStyle] = useState<TranslateStyle>('Natural');
   const [applyDict, setApplyDict] = useState(true);
-  const glossary = Object.values(GLOSSARY);
+  const glossary = Object.entries(terms);
 
   // Simulated lookup until the dictionary API exists.
   const lookup = (w: string) => {
@@ -140,10 +149,10 @@ function AiTab({ onTranslate }: { onTranslate: (t: Translation) => void }) {
           </div>
         )}
         <div style={{ fontSize: 12, fontWeight: 700, marginTop: 4 }}>{t('dict.glossary')}</div>
-        {glossary.map(g => (
-          <div key={g.en} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 12, padding: '8px 12px', borderRadius: 16, background: 'var(--color-bg)' }}>
-            <span style={{ fontWeight: 700 }}>{g.en}</span>
-            <span className="muted">{g.vi} · {g.es}</span>
+        {glossary.map(([key, g]) => (
+          <div key={key} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 12, padding: '8px 12px', borderRadius: 16, background: 'var(--color-bg)' }}>
+            <span style={{ fontWeight: 700 }}>{g.en ?? key}</span>
+            <span className="muted">{[g.vi, g.es].filter(Boolean).join(' · ')}</span>
           </div>
         ))}
       </div>
@@ -155,7 +164,7 @@ function AiTab({ onTranslate }: { onTranslate: (t: Translation) => void }) {
         </div>
         <div>
           <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>{t('tr.to')}</div>
-          <Segmented value={trLang} onChange={setTrLang} style={{ background: 'var(--color-bg)' }} options={CONTENT_LANGS.map(l => ({ label: l.native, value: l.code }))} />
+          <Segmented value={trLang} onChange={setTrLang} style={{ background: 'var(--color-bg)' }} options={getContentLangs().map(l => ({ label: l.native, value: l.code }))} />
         </div>
         <div>
           <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>{t('tr.style')}</div>

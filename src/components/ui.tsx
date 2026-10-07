@@ -4,6 +4,7 @@ import { useI18n } from '../i18n';
 import type { Novel } from '../data/types';
 import { CheckIcon, SearchIcon, XIcon } from './Icons';
 import { NovelCover } from './NovelCover';
+import { useCatalogNames } from '../data/useCatalogNames';
 
 export const Spinner = ({ size = 12, width = 2 }: { size?: number; width?: number }) => (
   <span className="spinner" style={{ width: size, height: size, borderWidth: width }} />
@@ -57,12 +58,13 @@ export function NovelRow({ novel, onOpen, statusAsTag, coverW = 64, coverH = 92 
   novel: Novel; onOpen: () => void; statusAsTag?: boolean; coverW?: number; coverH?: number;
 }) {
   const { t, uiLang } = useI18n();
+  const names = useCatalogNames();
   return (
     <button className="novel-row" onClick={onOpen}>
       <NovelCover novel={novel} w={coverW} h={coverH} fs={11} />
       <div className="novel-row__body">
         <div className="novel-row__title">{novel.title}</div>
-        <div className="muted" style={{ fontSize: 12 }}>{novel.author} · {t(`cat.${novel.cat}`)}</div>
+        <div className="muted" style={{ fontSize: 12 }}>{novel.author} · {names.cat(novel.cat)}</div>
         <div className="novel-row__desc clamp-2">{novel.desc[uiLang]}</div>
         <div className="novel-row__meta">
           <span className="rating">★ {novel.rating}</span>
@@ -88,12 +90,14 @@ export function ShelfItem({ novel, onOpen, w, h, fs, showAuthor = true, titleSiz
   );
 }
 
-export function CoverGrid({ novels, onOpen, showAuthor = true }: { novels: Novel[]; onOpen: (id: number) => void; showAuthor?: boolean }) {
+export function CoverGrid({ novels, onOpen, showAuthor = true, cols, gap, fs = 13 }: {
+  novels: Novel[]; onOpen: (id: number) => void; showAuthor?: boolean; cols?: string; gap?: string; fs?: number;
+}) {
   return (
-    <div className="cover-grid">
+    <div className="cover-grid" style={{ gridTemplateColumns: cols, gap }}>
       {novels.map(n => (
         <button key={n.id} className="shelf-item" style={{ minWidth: 0 }} onClick={() => onOpen(n.id)}>
-          <NovelCover novel={n} w="100%" h="auto" fs={13} style={{ aspectRatio: 0.7 }} />
+          <NovelCover novel={n} w="100%" h="auto" fs={fs} style={{ aspectRatio: 0.7 }} />
           <div className="shelf-item__title" style={{ fontSize: 12 }}>{n.title}</div>
           {showAuthor && <div className="shelf-item__author muted">{n.author}</div>}
         </button>
