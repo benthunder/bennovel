@@ -1,14 +1,12 @@
 -- Sample catalog for local development, generated from src/data/mock.ts.
 -- Runs on `supabase db reset` (see [db.seed] in config.toml).
 -- Every novel gets up to 20 released chapters that reuse the same sample text,
--- like the mock data does. English is the original; Vietnamese and Spanish are human translations.
+-- like the mock data does. English is the original; Vietnamese is a human translation. Chinese and Korean
+-- have no text yet; readers get them from the AI translator.
 
 begin;
 
-insert into public.languages (code, name, native_name, sort_order) values
-  ('en', 'English', 'English', 0),
-  ('vi', 'Vietnamese', 'Tiếng Việt', 1),
-  ('es', 'Spanish', 'Español', 2);
+-- The four content languages come from the content_langs_and_replace_rules migration.
 
 insert into public.categories (slug, name, sort_order) values
   ('wuxia', 'Wuxia', 0),
@@ -179,54 +177,13 @@ Lão già bật cười, tiếng cười khô khốc như giấy rách. “Vậy
     (20, 'Where the Road Bends')
   ) as t(number, title) on t.number = c.number;
 
-insert into public.chapter_translations (chapter_id, lang, source, state, title, content)
-select c.id, 'es', 'human', 'published', t.title, 'La campana de la [[sect]] sonó tres veces antes del alba, y [[wen]] ya estaba despierto, contando las grietas del techo de la leñera que le habían dado en lugar de una habitación.
-
-Hace seis meses había sido el discípulo más brillante de la secta. Ahora su espada colgaba en la pared del salón de los ancianos, envuelta en tela blanca como algo que hubiera muerto.
-
-Se vistió a oscuras, se ató las mangas y salió al patio. La escarcha había plateado las piedras de entrenamiento. Más allá del muro, el río que daba nombre a [[ash]] arrastraba hielo contra la vieja rueda del molino.
-
-—Llegas temprano —dijo una voz desde la puerta. El viejo maestro Qiao se apoyaba en su escoba como si fuera lo único que sostenía la mañana—. O no has dormido.
-
-—Las dos cosas —dijo [[wen]].
-
-El viejo rió, un sonido seco como papel que se rasga. —Entonces barre. Quien no puede sostener una espada aún puede sostener una escoba, y una escoba, muchacho, ha enseñado a más de un tonto a mantenerse en pie.
-
-[[wen]] tomó la escoba. Pesaba más de lo que parecía.'
-  from public.chapters c
-  join (values
-    (1, 'The Bell Before Dawn'),
-    (2, 'A Broom Heavier Than Steel'),
-    (3, 'Frost on the Training Stones'),
-    (4, 'The Elders’ Hall'),
-    (5, 'What the River Remembers'),
-    (6, 'Ash in the Rice Bowl'),
-    (7, 'A Sword in White Cloth'),
-    (8, 'The Mill Wheel Turns'),
-    (9, 'Old Master Qiao'),
-    (10, 'Lessons in Standing'),
-    (11, 'Smoke Over the Eastern Ridge'),
-    (12, 'The First Cut'),
-    (13, 'Night Market'),
-    (14, 'A Debt of Salt'),
-    (15, 'Paper Lanterns'),
-    (16, 'The Second Bell'),
-    (17, 'Snow Without Sound'),
-    (18, 'Iron and Patience'),
-    (19, 'Borrowed Names'),
-    (20, 'Where the Road Bends')
-  ) as t(number, title) on t.number = c.number;
-
 insert into public.glossary_entries (novel_id, term_key, lang, value) values
   (1, 'sect', 'en', 'Cinder Sect'),
   (1, 'sect', 'vi', 'Hỏa Tẫn Tông'),
-  (1, 'sect', 'es', 'Secta Ceniza'),
   (1, 'wen', 'en', 'Wen Yu'),
   (1, 'wen', 'vi', 'Văn Vũ'),
-  (1, 'wen', 'es', 'Wen Yu'),
   (1, 'ash', 'en', 'Ashvale'),
-  (1, 'ash', 'vi', 'Tro Cốc'),
-  (1, 'ash', 'es', 'Valceniza');
+  (1, 'ash', 'vi', 'Tro Cốc');
 
 commit;
 

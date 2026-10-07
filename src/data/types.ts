@@ -1,5 +1,7 @@
 export type UiLang = 'en' | 'vi';
-export type ContentLang = 'en' | 'vi' | 'es';
+/** Chapters are offered in these languages only (enforced in the database too). */
+export const CONTENT_LANGS = ['en', 'vi', 'zh', 'ko'] as const;
+export type ContentLang = (typeof CONTENT_LANGS)[number];
 export type NovelStatus = 'Ongoing' | 'Completed';
 /** Category slug, e.g. `wuxia`. */
 export type Category = string;
@@ -47,6 +49,12 @@ export interface ChapterText {
   title: string;
   /** Paragraphs; `[[key]]` marks a glossary term. */
   paragraphs: string[];
+}
+
+/** A reader's "find → replace" for one novel in one language, applied to the chapter text shown. */
+export interface ReplaceRule {
+  find: string;
+  replace: string;
 }
 
 export interface DictEntry {
