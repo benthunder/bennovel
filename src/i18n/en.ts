@@ -106,6 +106,19 @@ export const en = {
   'library.emptyTitle': 'Nothing saved yet',
   'library.emptyBody': 'Tap the heart on any novel to keep it here.',
   'library.browse': 'Browse categories',
+  'library.device': 'On this device',
+  'library.import': 'Import a book (EPUB, PDF, MOBI, TXT…)',
+  'library.openOnce': 'Open without saving',
+  'library.importing': 'Importing {done}/{total}…',
+  'library.imported': 'Added “{title}” to your library.',
+  'library.importFailed': 'Could not import this file.',
+  'library.deviceEmpty': 'Books you import are saved on this device and open where you left off.',
+  'library.parts': '{n} parts',
+  'library.at': 'Part {n} of {total}',
+  'library.read': 'Read',
+  'library.continue': 'Continue',
+  'library.delete': 'Remove from library',
+  'library.deleteAsk': 'Remove “{title}” from this device?',
 
   // profile
   'profile.signedInWith': 'Signed in with {p}',
@@ -217,7 +230,17 @@ export const en = {
   'load.failed': 'Could not reach the library. Check your connection and try again.',
   'load.retry': 'Try again',
   'reader.loading': 'Loading chapter…',
-  'reader.missing': 'This chapter is not available in this language yet.'
+  'reader.missing': 'This chapter is not available in this language yet.',
+  // local book files
+  'book.open': 'Open a book file (EPUB, PDF, MOBI, TXT…)',
+  'book.openFailed': 'Could not open this file.',
+  'book.untitled': 'Untitled book',
+  'book.part': 'Part {n} of {total}',
+  'book.pages': 'Pages {from}–{to}',
+  'book.prev': '‹ Previous part',
+  'book.next': 'Next part ›',
+  'book.loading': 'Loading…',
+  'book.empty': 'This part has no text.'
 };
 
 export type MessageKey = keyof typeof en;
