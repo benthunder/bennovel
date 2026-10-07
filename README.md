@@ -69,6 +69,17 @@ npx supabase db push     # apply migrations to the linked remote project
 
 Catalog writes, chapter imports and the translation worker use the service role key, which bypasses RLS. The worker claims work with `claim_translation_job()`.
 
+## Offline EPUB / PDF files
+
+In the native app, Library → **Open EPUB / PDF file** opens a book from the device (`src-tauri/src/book`).
+The file stays on disk and is read in sections (EPUB: one chapter, PDF: 10 pages). Only the current
+section, the 2 after it and the 1 before it are kept in memory; the next ones are read in the background
+and sections further away are freed (`KEEP_AHEAD` / `KEEP_BEHIND` in `book/mod.rs`).
+
+PDF text comes from [Pdfium](https://github.com/bblanchon/pdfium-binaries), loaded at runtime from next to
+the app, its resources folder (`pdfium/`) or the system. Without it EPUB still works and opening a PDF shows
+an error. To run the PDF test: `PDFIUM_DIR=/path/to/pdfium/lib cargo test` in `src-tauri`.
+
 ## Simulated for now
 
 - **Data**: everything comes from `src/data/mock.ts` through `src/data/repository.ts`. To connect a backend (for example a NestJS + Postgres API), you only replace that file.

@@ -217,7 +217,17 @@ export const en = {
   'load.failed': 'Could not reach the library. Check your connection and try again.',
   'load.retry': 'Try again',
   'reader.loading': 'Loading chapter…',
-  'reader.missing': 'This chapter is not available in this language yet.'
+  'reader.missing': 'This chapter is not available in this language yet.',
+  // local EPUB/PDF files
+  'book.open': 'Open EPUB / PDF file',
+  'book.openFailed': 'Could not open this file.',
+  'book.untitled': 'Untitled book',
+  'book.part': 'Part {n} of {total}',
+  'book.pages': 'Pages {from}–{to}',
+  'book.prev': '‹ Previous part',
+  'book.next': 'Next part ›',
+  'book.loading': 'Loading…',
+  'book.empty': 'This part has no text.'
 };
 
 export type MessageKey = keyof typeof en;

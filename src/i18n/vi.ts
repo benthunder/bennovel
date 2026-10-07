@@ -219,5 +219,15 @@ export const vi: Record<MessageKey, string> = {
   'load.failed': 'Không kết nối được thư viện. Kiểm tra mạng rồi thử lại.',
   'load.retry': 'Thử lại',
   'reader.loading': 'Đang tải chương…',
-  'reader.missing': 'Chương này chưa có bản ở ngôn ngữ này.'
+  'reader.missing': 'Chương này chưa có bản ở ngôn ngữ này.',
+  // local EPUB/PDF files
+  'book.open': 'Mở file EPUB / PDF',
+  'book.openFailed': 'Không mở được file này.',
+  'book.untitled': 'Sách chưa có tên',
+  'book.part': 'Phần {n} / {total}',
+  'book.pages': 'Trang {from}–{to}',
+  'book.prev': '‹ Phần trước',
+  'book.next': 'Phần sau ›',
+  'book.loading': 'Đang tải…',
+  'book.empty': 'Phần này không có chữ.'
 };

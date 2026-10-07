@@ -10,6 +10,7 @@ import { ListScreen } from './screens/ListScreen';
 import { LoginScreen } from './screens/LoginScreen';
 import { ProfileScreen } from './screens/ProfileScreen';
 import { ReaderScreen } from './screens/ReaderScreen';
+import { LocalBookScreen } from './screens/LocalBookScreen';
 
 function renderRoute(r: Route) {
   switch (r.s) {
@@ -20,6 +21,7 @@ function renderRoute(r: Route) {
     case 'library': return <LibraryScreen />;
     case 'profile': return <ProfileScreen />;
     case 'reader': return <ReaderScreen id={r.id} ch={r.ch} lang={r.lang} />;
+    case 'book': return <LocalBookScreen book={r.book} />;
   }
 }
 
@@ -29,7 +31,7 @@ export default function App() {
   const top = app.top;
   // Keyed by stack depth + route, so each pushed screen starts fresh (scroll, search, filters).
   const key = `${app.stack.length}:${JSON.stringify(top)}`;
-  const showNav = top.s !== 'reader' && top.s !== 'login';
+  const showNav = top.s !== 'reader' && top.s !== 'book' && top.s !== 'login';
   // Tablet gets a navigation rail and desktop a sidebar; content starts to their right.
   const contentLeft = showNav ? lay.navLeft : 0;
 
