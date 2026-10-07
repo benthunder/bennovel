@@ -45,6 +45,30 @@ src/
 src-tauri/     Tauri v2 shell (Rust)
 ```
 
+## Database (Supabase)
+
+The schema lives in `supabase/migrations`, sample data in `supabase/seed.sql` (generated from `src/data/mock.ts`).
+
+```bash
+npx supabase start       # local Postgres + Auth + API (needs Docker)
+npx supabase db reset    # re-run all migrations and the seed
+npx supabase db push     # apply migrations to the linked remote project
+```
+
+| Table | What it holds | Who can read / write |
+| --- | --- | --- |
+| `languages`, `categories`, `authors` | Lookups | Everyone reads |
+| `novels`, `novel_translations` | Novel info; title and blurb per language | Everyone reads published novels |
+| `collections`, `collection_items` | Home shelves (trending, new, completed, picks) | Everyone reads |
+| `chapters`, `chapter_translations` | Chapters; text per language (original, human or AI, one AI version per style) | Everyone reads released chapters with a published text |
+| `glossary_entries` | Per-novel names and terms per language, fed to the AI translator | Everyone reads |
+| `profiles` | Display name, UI language, default reading language, reader settings; created on sign-up | Owner reads and updates |
+| `favorites` | The heart button / Library grid | Owner only |
+| `reading_history` | One row per novel: last chapter, language, scroll position | Owner only |
+| `translation_jobs` | Queue for the AI translation pipeline | Signed-in users read; created via `request_translation()`, moved along by the worker |
+
+Catalog writes, chapter imports and the translation worker use the service role key, which bypasses RLS. The worker claims work with `claim_translation_job()`.
+
 ## Simulated for now
 
 - **Data**: everything comes from `src/data/mock.ts` through `src/data/repository.ts`. To connect a backend (for example a NestJS + Postgres API), you only replace that file.
