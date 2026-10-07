@@ -1,5 +1,7 @@
 import { BottomNav } from './components/BottomNav';
 import { LangDialog } from './components/LangDialog';
+import { NavRail, Sidebar } from './components/SideNav';
+import { useLayout } from './lib/useLayout';
 import { useApp, type Route } from './store/AppStore';
 import { DetailScreen } from './screens/DetailScreen';
 import { HomeScreen } from './screens/HomeScreen';
@@ -23,16 +25,24 @@ function renderRoute(r: Route) {
 
 export default function App() {
   const app = useApp();
+  const lay = useLayout();
   const top = app.top;
   // Keyed by stack depth + route, so each pushed screen starts fresh (scroll, search, filters).
   const key = `${app.stack.length}:${JSON.stringify(top)}`;
+  const showNav = top.s !== 'reader' && top.s !== 'login';
+  // Tablet gets a navigation rail and desktop a sidebar; content starts to their right.
+  const contentLeft = showNav ? lay.navLeft : 0;
 
   return (
-    <div className="app">
-      <div key={key} style={{ position: 'absolute', inset: 0 }}>{renderRoute(top)}</div>
-      {top.s !== 'reader' && top.s !== 'login' && <BottomNav />}
+    <div className="app" data-device={lay.device}>
+      <div key={key} style={{ position: 'absolute', top: 0, bottom: 0, right: 0, left: contentLeft }}>{renderRoute(top)}</div>
+      {showNav && (lay.isPhone ? <BottomNav /> : lay.isTablet ? <NavRail /> : <Sidebar />)}
       {app.langDialog && <LangDialog key={JSON.stringify(app.langDialog)} dialog={app.langDialog} />}
-      {app.toast && <div className="toast" role="status">{app.toast}</div>}
+      {app.toast && (
+        <div className="toast-wrap" style={{ left: contentLeft }}>
+          <div className="toast" role="status">{app.toast}</div>
+        </div>
+      )}
     </div>
   );
 }

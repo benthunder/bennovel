@@ -1,21 +1,24 @@
 {
   "name": "bennovel",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -b",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@fontsource/be-vietnam-pro": "^5.3.0",
+    "@supabase/supabase-js": "^2.117.2",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },
   "devDependencies": {
+    "@playwright/test": "1.56",
     "@tauri-apps/cli": "^2.12.1",
     "@types/node": "^22.20.4",
     "@types/react": "^19.2.0",

@@ -5,3 +5,6 @@ dist
 src-tauri/target
 src-tauri/gen/schemas
 *.tsbuildinfo
+.env.local
+test-results
+playwright-report

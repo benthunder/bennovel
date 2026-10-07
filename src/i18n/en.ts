@@ -11,13 +11,9 @@ export const en = {
   'common.chapter': 'Chapter {n}',
   'status.Ongoing': 'Ongoing',
   'status.Completed': 'Completed',
-  'cat.Wuxia': 'Wuxia',
-  'cat.Fantasy': 'Fantasy',
-  'cat.Romance': 'Romance',
-  'cat.Mystery': 'Mystery',
-  'cat.Sci-Fi': 'Sci-Fi',
-  'cat.Slice of Life': 'Slice of Life',
   'uiLang.label': 'App language',
+  'uiLang.title': 'App language',
+  'uiLang.body': 'Menus, buttons, categories and collections will show in this language.',
 
   // auth
   'auth.skip': 'Skip for now',
@@ -34,6 +30,11 @@ export const en = {
   'auth.pwPlaceholder': 'At least 6 characters',
   'auth.createAccount': 'Create account',
   'auth.signingIn': 'Signing in…',
+  'auth.panelSub': 'Sync favourites, reading history and your language across phone, tablet and desktop.',
+  'auth.wideTitle.login': 'Welcome back',
+  'auth.wideTitle.register': 'Create your account',
+  'auth.wideSub.login': 'Pick up right where you left off.',
+  'auth.wideSub.register': 'Free forever. Takes ten seconds.',
   'auth.terms': 'By continuing you agree to the Terms and Privacy Policy.',
   'auth.err.name': 'Tell us what to call you',
   'auth.err.email': 'Enter a valid email address',
@@ -54,14 +55,11 @@ export const en = {
   'home.emptyBody': 'Try an author name or a genre like “mystery”.',
   'home.popular': 'Most popular',
   'home.rank': '#{n} this week',
-  'coll.trend.kicker': 'This week',
-  'coll.trend.title': 'Trending now',
-  'coll.new.kicker': 'Fresh ink',
-  'coll.new.title': 'New releases',
-  'coll.done.kicker': 'Binge-ready',
-  'coll.done.title': 'Completed sagas',
-  'coll.picks.kicker': 'From the editors',
-  'coll.picks.title': 'Quiet favourites',
+  'home.topRated': 'Top rated',
+  'home.browse': 'Browse',
+  'home.prev': 'Previous',
+  'home.next': 'Next',
+  'common.chapters': '{n} chapters',
 
   // detail
   'detail.favourite': 'Favourite',
@@ -131,6 +129,8 @@ export const en = {
   'nav.home': 'Home',
   'nav.category': 'Category',
   'nav.continue': 'Continue',
+  'nav.categories': 'Categories',
+  'nav.continueReading': 'Continue reading',
   'nav.library': 'Library',
   'nav.profile': 'Profile',
   'nav.nothing': 'Nothing to continue yet',
@@ -201,7 +201,13 @@ export const en = {
   'tr.desc.Casual': 'Plain, modern and easy-going.',
   'tr.applyDict': 'Apply dictionary',
   'tr.applyDictSub': 'Keep the {n} glossary names consistent',
-  'tr.run': 'Translate this chapter'
+  'tr.run': 'Translate this chapter',
+  // loading from the server
+  'load.catalog': 'Loading the library…',
+  'load.failed': 'Could not reach the library. Check your connection and try again.',
+  'load.retry': 'Try again',
+  'reader.loading': 'Loading chapter…',
+  'reader.missing': 'This chapter is not available in this language yet.'
 };
 
 export type MessageKey = keyof typeof en;
