@@ -115,10 +115,6 @@ export const vi: Record<MessageKey, string> = {
   'library.imported': 'Đã thêm “{title}” vào thư viện.',
   'library.importFailed': 'Không nhập được file này.',
   'library.deviceEmpty': 'Sách bạn nhập được lưu trên máy và mở lại đúng chỗ đang đọc.',
-  'library.parts': '{n} phần',
-  'library.at': 'Phần {n} / {total}',
-  'library.read': 'Đọc',
-  'library.continue': 'Đọc tiếp',
   'library.delete': 'Xoá khỏi thư viện',
   'library.deleteAsk': 'Xoá “{title}” khỏi máy?',
 
@@ -246,4 +242,5 @@ export const vi: Record<MessageKey, string> = {
   'book.viewPages': 'Trang gốc',
   'book.viewText': 'Chữ',
   'book.page': 'Trang {n}',
+  'book.translateSoon': 'Dịch AI cho sách nhập sẽ có sớm.',
 };

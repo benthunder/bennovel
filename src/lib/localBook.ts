@@ -31,12 +31,28 @@ export const BOOK_EXTENSIONS = [
   'docx', 'odt', 'rtf', 'html', 'htm', 'xhtml', 'mht', 'mhtml', 'md', 'markdown'
 ];
 
+/**
+ * Android turns the extension filter into media types and greys out every file whose
+ * type it doesn't know (MOBI, FB2, DjVu…), so there the picker shows all files and the
+ * app tells the format from the file itself.
+ */
+const isAndroid = () => /android/i.test(navigator.userAgent);
+
+const pickBookFile = () =>
+  open({ multiple: false, filters: isAndroid() ? undefined : [{ name: 'Books', extensions: BOOK_EXTENSIONS }] });
+
+/** Opens a book file by path or `file:`/`content:` URL, without saving it. */
+export const openBookFile = (path: string) => invoke<LocalBook>('book_open', { path });
+
 /** Asks for a book file and opens it. Resolves to null when the user cancels. */
 export async function pickLocalBook(): Promise<LocalBook | null> {
-  const path = await open({ multiple: false, filters: [{ name: 'Books', extensions: BOOK_EXTENSIONS }] });
+  const path = await pickBookFile();
   if (!path) return null;
-  return invoke<LocalBook>('book_open', { path });
+  return openBookFile(path);
 }
+
+/** Book files the system asked the app to open ("Open with"), oldest first. */
+export const takeOpenedFiles = () => invoke<string[]>('take_opened_files');
 
 /** A paragraph that is this character followed by a key stands for a picture. */
 export const IMAGE_MARK = '\uFFFC';
@@ -78,6 +94,8 @@ export interface LibraryBook {
 export interface LibraryPlace {
   user: string;
   novelId: number;
+  /** Language guessed from the text: en, vi, zh or ko. */
+  lang: string;
   index: number;
   progress: number;
 }
@@ -93,7 +111,7 @@ export const listLibrary = (user: string) =>
  * `onProgress` gets each stored chapter. Resolves to null when the user cancels.
  */
 export async function importLocalBook(user: string, onProgress?: (done: number, total: number) => void): Promise<LibraryBook | null> {
-  const path = await open({ multiple: false, filters: [{ name: 'Books', extensions: BOOK_EXTENSIONS }] });
+  const path = await pickBookFile();
   if (!path) return null;
   const { listen } = await import('@tauri-apps/api/event');
   const stop = await listen<{ done: number; total: number }>('library-import', e => onProgress?.(e.payload.done, e.payload.total));
@@ -105,8 +123,8 @@ export async function importLocalBook(user: string, onProgress?: (done: number, 
 }
 
 export async function openLibraryBook(user: string, novelId: number): Promise<{ book: LocalBook; place: LibraryPlace }> {
-  const r = await invoke<{ book: LocalBook; novelId: number; index: number; progress: number }>('library_open', { user, novelId });
-  return { book: r.book, place: { user, novelId, index: r.index, progress: r.progress } };
+  const r = await invoke<{ book: LocalBook; novelId: number; lang: string; index: number; progress: number }>('library_open', { user, novelId });
+  return { book: r.book, place: { user, novelId, lang: r.lang, index: r.index, progress: r.progress } };
 }
 
 export function saveLibraryProgress(user: string, novelId: number, index: number, progress: number) {
@@ -116,3 +134,17 @@ export function saveLibraryProgress(user: string, novelId: number, index: number
 }
 
 export const deleteLibraryBook = (user: string, novelId: number) => invoke<void>('library_delete', { user, novelId });
+
+/* ---------- Covers for imported books ---------- */
+
+const COVER_PALETTES = ['accent', 'accent-2'] as const;
+const COVER_SHADES = [[200, 800, 400], [300, 900, 500], [100, 700, 300]] as const;
+
+/** A placeholder cover like the online novels have, picked from the title so it stays the same. */
+export function localCover(title: string) {
+  let h = 0;
+  for (const c of title) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  const pal = COVER_PALETTES[h % COVER_PALETTES.length];
+  const [bg, fg, deco] = COVER_SHADES[(h >> 3) % COVER_SHADES.length];
+  return { bg: `var(--color-${pal}-${bg})`, fg: `var(--color-${pal}-${fg})`, deco: `var(--color-${pal}-${deco})` };
+}

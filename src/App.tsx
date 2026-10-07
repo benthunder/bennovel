@@ -2,6 +2,7 @@ import { BottomNav } from './components/BottomNav';
 import { LangDialog } from './components/LangDialog';
 import { NavRail, Sidebar } from './components/SideNav';
 import { useLayout } from './lib/useLayout';
+import { useOpenedFiles } from './lib/useOpenedFiles';
 import { useApp, type Route } from './store/AppStore';
 import { DetailScreen } from './screens/DetailScreen';
 import { HomeScreen } from './screens/HomeScreen';
@@ -28,6 +29,7 @@ function renderRoute(r: Route) {
 export default function App() {
   const app = useApp();
   const lay = useLayout();
+  useOpenedFiles();
   const top = app.top;
   // Keyed by stack depth + route, so each pushed screen starts fresh (scroll, search, filters).
   const key = `${app.stack.length}:${JSON.stringify(top)}`;

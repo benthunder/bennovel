@@ -158,6 +158,8 @@ fn open_original<R: Runtime>(
 pub struct OpenedLibraryBook {
     pub book: BookInfo,
     pub novel_id: i64,
+    /// Language guessed from the text (en, vi, zh or ko).
+    pub lang: String,
     /// Section to start at and scroll position in it.
     pub index: usize,
     pub progress: f64,
@@ -173,11 +175,13 @@ pub async fn library_open<R: Runtime>(
 ) -> Result<OpenedLibraryBook, BookError> {
     let path = db_path(&app, &user)?;
     let app2 = app.clone();
-    let (format, source, last) = blocking(move || {
+    let (format, source, lang, last) = blocking(move || {
         let original = open_original(&app2, &path, novel_id);
         let (format, source) = DbBook::open(&path, novel_id, original)?;
-        let last = super::get(&db::open(&path)?, novel_id)?.and_then(|b| b.last_read);
-        Ok((format, source, last))
+        let saved = super::get(&db::open(&path)?, novel_id)?;
+        let lang = saved.as_ref().map_or_else(String::new, |b| b.lang.clone());
+        let last = saved.and_then(|b| b.last_read);
+        Ok((format, source, lang, last))
     })
     .await?;
     let book = books.add(format, Box::new(source));
@@ -187,6 +191,7 @@ pub async fn library_open<R: Runtime>(
     Ok(OpenedLibraryBook {
         book,
         novel_id,
+        lang,
         index,
         progress,
     })

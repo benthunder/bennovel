@@ -113,10 +113,6 @@ export const en = {
   'library.imported': 'Added “{title}” to your library.',
   'library.importFailed': 'Could not import this file.',
   'library.deviceEmpty': 'Books you import are saved on this device and open where you left off.',
-  'library.parts': '{n} parts',
-  'library.at': 'Part {n} of {total}',
-  'library.read': 'Read',
-  'library.continue': 'Continue',
   'library.delete': 'Remove from library',
   'library.deleteAsk': 'Remove “{title}” from this device?',
 
@@ -244,6 +240,7 @@ export const en = {
   'book.viewPages': 'Pages',
   'book.viewText': 'Text',
   'book.page': 'Page {n}',
+  'book.translateSoon': 'AI translation for imported books is coming soon.',
 };
 
 export type MessageKey = keyof typeof en;

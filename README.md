@@ -114,10 +114,18 @@ synced or uploaded later without reshaping them.
 - The language is guessed from the text (Hangul → ko, Chinese → zh, Vietnamese letters → vi, else en) and
   the author is "Unknown" until it can be edited.
 - Reading a library book loads chapters from SQLite through the same in-memory window as a book file, and
-  `reading_history` keeps the part and scroll position, so **Continue** opens where you stopped.
+  `reading_history` keeps the part and scroll position. The Library shows imported books as covers, like
+  online novels, and the navigation's **Continue** reopens whichever was read last, an online chapter or an
+  imported book, at the place you stopped.
+- Imported books open in the same reader as online novels, with the reading settings and the replace list
+  (kept on the device per book and language). AI translation of imported books comes with the translate pipeline.
 - Pictures are copied into a local-only `chapter_images` table. For PDF and DjVu a copy of the file is kept in
   `<user>.files/` next to the database, so pages can still be drawn as pictures.
 - **Open without saving** still reads a file directly without importing it.
+- On Android the file picker lists every file (its type filter greys out MOBI, FB2, DjVu…), and the app tells
+  the format from the file's first bytes.
+- The app registers for the book types (`bundle.fileAssociations` in `tauri.conf.json`), so "Open with
+  BenNovel" or tapping a book in a file manager opens it in the reader (`src-tauri/src/opened.rs`).
 
 PDF text comes from [Pdfium](https://github.com/bblanchon/pdfium-binaries), loaded at runtime from next to
 the app, its resources folder (`pdfium/`) or the system. The release workflow ships it with the Linux and

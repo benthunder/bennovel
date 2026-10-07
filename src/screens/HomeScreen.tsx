@@ -34,13 +34,16 @@ export function HomeScreen() {
           <div className="muted" style={{ fontSize: 13 }}>{greeting}</div>
           <div className="display" style={{ fontSize: lay.homeH, lineHeight: 1.1 }}>{t('home.whatsNext', { name: firstName })}</div>
         </div>
-        <div style={{ width: lay.searchW, order: lay.isPhone ? 3 : 2 }}>
+        <div style={{ width: lay.searchW, order: 2 }}>
           <SearchField value={input} onChange={setInput} placeholder={t('home.searchPlaceholder')} />
         </div>
-        <button className="display" aria-label={t('nav.profile')} onClick={() => app.switchTab('profile')}
-          style={{ order: lay.isPhone ? 2 : 3, width: 44, height: 44, flex: 'none', borderRadius: '50%', border: 'none', background: 'var(--color-accent-2-300)', color: 'var(--color-accent-2-900)', fontSize: 16, cursor: 'pointer' }}>
-          {initials}
-        </button>
+        {/* Phones already have Profile in the bottom bar. */}
+        {!lay.isPhone && (
+          <button className="display" aria-label={t('nav.profile')} onClick={() => app.switchTab('profile')}
+            style={{ order: 3, width: 44, height: 44, flex: 'none', borderRadius: '50%', border: 'none', background: 'var(--color-accent-2-300)', color: 'var(--color-accent-2-900)', fontSize: 16, cursor: 'pointer' }}>
+            {initials}
+          </button>
+        )}
       </div>
 
       {input ? (
