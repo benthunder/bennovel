@@ -8,6 +8,7 @@ pub mod commands;
 mod epub;
 mod pdf;
 mod text;
+mod txt;
 mod window;
 
 use serde::Serialize;
@@ -47,6 +48,7 @@ impl Serialize for BookError {
 pub enum BookFormat {
     Epub,
     Pdf,
+    Txt,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -163,7 +165,7 @@ impl OpenBook {
     }
 }
 
-/// Opens an EPUB or PDF by its extension (or, for content URIs, by its leading bytes).
+/// Opens an EPUB, PDF or TXT by its extension (or, for content URIs, by its leading bytes).
 pub fn open_source(
     file: std::fs::File,
     name_hint: &str,
@@ -186,6 +188,19 @@ pub fn open_source(
             BookFormat::Epub,
             Box::new(epub::EpubBook::open(std::io::BufReader::new(file))?),
         ))
+    } else if lower.ends_with(".txt") || lower.starts_with("content://") {
+        // Android content URIs carry no file name; anything that is not PDF/EPUB is read as text.
+        let title = Some(name_hint)
+            .filter(|n| !n.starts_with("content://"))
+            .and_then(|n| n.rsplit(['/', '\\']).next())
+            .map(|n| {
+                n.strip_suffix(".txt")
+                    .or(n.strip_suffix(".TXT"))
+                    .unwrap_or(n)
+                    .to_string()
+            })
+            .filter(|n| !n.is_empty());
+        Ok((BookFormat::Txt, Box::new(txt::TxtBook::open(file, title)?)))
     } else {
         Err(BookError::Unsupported)
     }

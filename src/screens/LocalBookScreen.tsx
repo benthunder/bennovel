@@ -10,7 +10,7 @@ import { READER_THEMES, useApp } from '../store/AppStore';
 const GAP_PX = { tight: 6, normal: 16, airy: 28 };
 const MARGIN_PX = { narrow: 16, normal: 24, wide: 36 };
 
-/** Reads an EPUB/PDF opened from the device, one section at a time. */
+/** Reads an EPUB/PDF/TXT file opened from the device, one section at a time. */
 export function LocalBookScreen({ book }: { book: LocalBook }) {
   const t = useT();
   const app = useApp();

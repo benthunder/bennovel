@@ -69,10 +69,11 @@ npx supabase db push     # apply migrations to the linked remote project
 
 Catalog writes, chapter imports and the translation worker use the service role key, which bypasses RLS. The worker claims work with `claim_translation_job()`.
 
-## Offline EPUB / PDF files
+## Offline EPUB / PDF / TXT files
 
-In the native app, Library → **Open EPUB / PDF file** opens a book from the device (`src-tauri/src/book`).
-The file stays on disk and is read in sections (EPUB: one chapter, PDF: 10 pages). Only the current
+In the native app, Library → **Open EPUB / PDF / TXT file** opens a book from the device (`src-tauri/src/book`).
+The file stays on disk and is read in sections (EPUB: one chapter, PDF: 10 pages, TXT: about 64 KB
+ending at a line break; the encoding is detected from the BOM, else UTF-8, else GB18030/GBK). Only the current
 section, the 2 after it and the 1 before it are kept in memory; the next ones are read in the background
 and sections further away are freed (`KEEP_AHEAD` / `KEEP_BEHIND` in `book/mod.rs`).
 
