@@ -76,7 +76,7 @@ test('only English, Vietnamese, Chinese and Korean are offered', async ({ page }
   await page.getByRole('button', { name: 'Profile' }).filter({ visible: true }).first().click();
   await page.getByRole('button', { name: /Default reading language/ }).click();
   const dialog = page.getByRole('dialog');
-  for (const name of ['English', 'Tiếng Việt']) await expect(dialog.getByText(name, { exact: true })).toBeVisible();
+  for (const name of ['English', 'Tiếng Việt']) await expect(dialog.getByText(name, { exact: true }).first()).toBeVisible();
   await expect(dialog.getByText('Español')).toHaveCount(0);
 });
 
