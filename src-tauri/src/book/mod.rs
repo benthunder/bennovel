@@ -26,6 +26,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use window::WindowCache;
 
+#[cfg(test)]
+pub(crate) use extract::test_dir;
+
 /// Sections kept before the current one.
 pub const KEEP_BEHIND: usize = 1;
 /// Sections loaded ahead of the current one.
@@ -45,6 +48,8 @@ pub enum BookError {
     NoSection(usize),
     #[error("book {0} is not open")]
     NotOpen(u32),
+    #[error("library error: {0}")]
+    Db(#[from] rusqlite::Error),
 }
 
 impl Serialize for BookError {
@@ -53,7 +58,7 @@ impl Serialize for BookError {
     }
 }
 
-#[derive(Clone, Copy, Debug, Serialize, PartialEq)]
+#[derive(Clone, Copy, Debug, Serialize, serde::Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum BookFormat {
     Epub,

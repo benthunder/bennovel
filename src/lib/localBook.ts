@@ -40,3 +40,63 @@ export async function pickLocalBook(): Promise<LocalBook | null> {
 export const getLocalSection = (id: number, index: number) => invoke<LocalSection>('book_section', { id, index });
 
 export const closeLocalBook = (id: number) => invoke<void>('book_close', { id });
+
+/* ---------- On-device library (one SQLite file per user, see src-tauri/src/library) ---------- */
+
+/** Key of the library file: the signed-in email, or '' for a guest. */
+export const libraryUser = (user: { email: string } | null) => user?.email ?? '';
+
+export interface LibraryBook {
+  novelId: number;
+  title: string;
+  /** Language guessed from the text: en, vi, zh or ko. */
+  lang: string;
+  format: LocalBook['format'] | null;
+  sourceName: string | null;
+  chapterCount: number;
+  createdAt: string;
+  lastRead: { index: number; progress: number; lastReadAt: string } | null;
+}
+
+/** Where a library book is read from and where to resume it. */
+export interface LibraryPlace {
+  user: string;
+  novelId: number;
+  index: number;
+  progress: number;
+}
+
+/** The latest progress save, so the list read after leaving the reader includes it. */
+let lastSave: Promise<unknown> = Promise.resolve();
+
+export const listLibrary = (user: string) =>
+  lastSave.catch(() => undefined).then(() => invoke<LibraryBook[]>('library_list', { user }));
+
+/**
+ * Asks for a book file and copies it into the library chapter by chapter.
+ * `onProgress` gets each stored chapter. Resolves to null when the user cancels.
+ */
+export async function importLocalBook(user: string, onProgress?: (done: number, total: number) => void): Promise<LibraryBook | null> {
+  const path = await open({ multiple: false, filters: [{ name: 'Books', extensions: BOOK_EXTENSIONS }] });
+  if (!path) return null;
+  const { listen } = await import('@tauri-apps/api/event');
+  const stop = await listen<{ done: number; total: number }>('library-import', e => onProgress?.(e.payload.done, e.payload.total));
+  try {
+    return await invoke<LibraryBook>('library_import', { user, path });
+  } finally {
+    stop();
+  }
+}
+
+export async function openLibraryBook(user: string, novelId: number): Promise<{ book: LocalBook; place: LibraryPlace }> {
+  const r = await invoke<{ book: LocalBook; novelId: number; index: number; progress: number }>('library_open', { user, novelId });
+  return { book: r.book, place: { user, novelId, index: r.index, progress: r.progress } };
+}
+
+export function saveLibraryProgress(user: string, novelId: number, index: number, progress: number) {
+  const p = invoke<void>('library_save_progress', { user, novelId, index, progress });
+  lastSave = p;
+  return p;
+}
+
+export const deleteLibraryBook = (user: string, novelId: number) => invoke<void>('library_delete', { user, novelId });

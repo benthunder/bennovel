@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import { load, save } from '../lib/storage';
 import type { Category, CollectionKey, ContentLang, HistoryEntry, User } from '../data/types';
 import type { ListSource } from '../data/repository';
-import type { LocalBook } from '../lib/localBook';
+import type { LibraryPlace, LocalBook } from '../lib/localBook';
 
 export type Tab = 'home' | 'category' | 'library' | 'profile';
 
@@ -14,7 +14,7 @@ export type Route =
   | { s: 'library' }
   | { s: 'profile' }
   | { s: 'reader'; id: number; ch: number; lang: ContentLang }
-  | { s: 'book'; book: LocalBook };
+  | { s: 'book'; book: LocalBook; place?: LibraryPlace };
 
 export type LangDialog =
   | { mode: 'chapter'; id: number; ch: number }

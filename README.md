@@ -84,6 +84,22 @@ background and sections further away are freed (`KEEP_AHEAD` / `KEEP_BEHIND` in 
 | MOBI, AZW3, PRC, FB2, DOCX, ODT, RTF, HTML, MHT/MHTML, Markdown | Text extracted once, streaming, to a plain file in the cache folder (deleted on close), then read in sections; headings start chapters |
 | UMD | Not supported yet |
 
+### On-device library (SQLite)
+
+Library → **Import a book** copies a book file into a SQLite database on the device, one file per user
+(`<app data>/library/<email or guest>.sqlite3`, code in `src-tauri/src/library`). The tables are the
+novel part of the Supabase schema (`languages`, `authors`, `novels`, `novel_translations`, `chapters`,
+`chapter_translations`, `glossary_entries`, `reading_history`, `replace_rules`), so imported books can be
+synced or uploaded later without reshaping them.
+
+- The import reads the file one section at a time; each section becomes a chapter with its original text
+  (paragraphs separated by a blank line, as in Supabase), all in one transaction.
+- The language is guessed from the text (Hangul → ko, Chinese → zh, Vietnamese letters → vi, else en) and
+  the author is "Unknown" until it can be edited.
+- Reading a library book loads chapters from SQLite through the same in-memory window as a book file, and
+  `reading_history` keeps the part and scroll position, so **Continue** opens where you stopped.
+- **Open without saving** still reads a file directly without importing it.
+
 PDF text comes from [Pdfium](https://github.com/bblanchon/pdfium-binaries), loaded at runtime from next to
 the app, its resources folder (`pdfium/`) or the system. The release workflow ships it with the Linux and
 Android builds. To run the PDF test: `PDFIUM_DIR=/path/to/pdfium/lib cargo test` in `src-tauri`.

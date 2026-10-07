@@ -1,4 +1,4 @@
-use super::{open_source, BookError, BookInfo, OpenBook, OpenCtx, Section};
+use super::{open_source, BookError, BookFormat, BookInfo, BookSource, OpenBook, OpenCtx, Section};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -14,6 +14,15 @@ pub struct Books {
 }
 
 impl Books {
+    /// Registers an opened book and returns what the reader needs to show it.
+    pub(crate) fn add(&self, format: BookFormat, source: Box<dyn BookSource>) -> BookInfo {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst) + 1;
+        let book = OpenBook::new(id, format, source);
+        let info = book.info.clone();
+        self.open.lock().unwrap().insert(id, Arc::new(book));
+        info
+    }
+
     fn get(&self, id: u32) -> Result<Arc<OpenBook>, BookError> {
         self.open
             .lock()
@@ -39,15 +48,12 @@ fn pdfium_dirs<R: Runtime>(app: &AppHandle<R>) -> Vec<PathBuf> {
     dirs
 }
 
-/// Opens a book picked by the user (a path, or a `content://` URI on Android).
-/// Only the table of contents is read here (or, for compressed formats, the text is
-/// extracted to the cache folder); text is read per section by `book_section`.
-#[tauri::command]
-pub async fn book_open<R: Runtime>(
-    app: AppHandle<R>,
-    books: State<'_, Books>,
+/// Opens the file the user picked (a path, or a `content://` URI on Android) and
+/// describes where the book reader may put cache files.
+pub(crate) fn open_picked<R: Runtime>(
+    app: &AppHandle<R>,
     path: FilePath,
-) -> Result<BookInfo, BookError> {
+) -> Result<(std::fs::File, OpenCtx), BookError> {
     let name = path.to_string();
     let local_path = match &path {
         FilePath::Path(p) => Some(p.clone()),
@@ -64,20 +70,25 @@ pub async fn book_open<R: Runtime>(
             .app_cache_dir()
             .unwrap_or_else(|_| std::env::temp_dir())
             .join("books"),
-        pdfium_dirs: pdfium_dirs(&app),
+        pdfium_dirs: pdfium_dirs(app),
     };
-    let id = books.next_id.fetch_add(1, Ordering::SeqCst) + 1;
+    Ok((file, ctx))
+}
 
-    let book = tauri::async_runtime::spawn_blocking(move || {
-        let (format, source) = open_source(file, &ctx)?;
-        Ok::<_, BookError>(OpenBook::new(id, format, source))
-    })
-    .await
-    .map_err(|e| BookError::Parse(e.to_string()))??;
-
-    let info = book.info.clone();
-    books.open.lock().unwrap().insert(id, Arc::new(book));
-    Ok(info)
+/// Opens a book picked by the user without importing it.
+/// Only the table of contents is read here (or, for compressed formats, the text is
+/// extracted to the cache folder); text is read per section by `book_section`.
+#[tauri::command]
+pub async fn book_open<R: Runtime>(
+    app: AppHandle<R>,
+    books: State<'_, Books>,
+    path: FilePath,
+) -> Result<BookInfo, BookError> {
+    let (file, ctx) = open_picked(&app, path)?;
+    let (format, source) = tauri::async_runtime::spawn_blocking(move || open_source(file, &ctx))
+        .await
+        .map_err(|e| BookError::Parse(e.to_string()))??;
+    Ok(books.add(format, source))
 }
 
 /// Text of one section. Moves the in-memory window there: neighbours are read
