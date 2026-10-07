@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { DICTIONARY, DICT_SUGGEST, TRANSLATE_STYLES } from '../data/mock';
 import { getContentLangs } from '../data/repository';
-import type { ContentLang, DictEntry, GlossaryTerm, TranslateStyle } from '../data/types';
+import { CONTENT_LANGS, type ContentLang, type DictEntry, type GlossaryTerm, type ReplaceRule, type TranslateStyle } from '../data/types';
 import { useI18n } from '../i18n';
 import { DEFAULT_READER_PREFS, READER_THEMES, useApp, type ReaderPrefs } from '../store/AppStore';
 import { BookIcon, SparklesIcon, XIcon } from './Icons';
@@ -16,10 +16,18 @@ const FONT_MIN = 14, FONT_MAX = 26;
  * Reading settings and the (simulated) AI dictionary / translator.
  * Phone: bottom sheet over the chapter. Tablet and desktop: a side panel the chapter makes room for.
  */
-export function ReaderTools({ glossary, onClose, onTranslate }: { glossary: Record<string, GlossaryTerm>; onClose: () => void; onTranslate: (t: Translation) => void }) {
+export function ReaderTools({ glossary, lang, rules, onRulesChange, onClose, onTranslate }: {
+  glossary: Record<string, GlossaryTerm>;
+  /** Language of the text on screen; replace rules are kept per language. */
+  lang: ContentLang;
+  rules: ReplaceRule[];
+  onRulesChange: (rules: ReplaceRule[]) => void;
+  onClose: () => void;
+  onTranslate: (t: Translation) => void;
+}) {
   const { t } = useI18n();
   const lay = useLayout();
-  const [tab, setTab] = useState<'reading' | 'ai'>('reading');
+  const [tab, setTab] = useState<'reading' | 'replace' | 'ai'>('reading');
 
   return (
     <div style={{
@@ -32,12 +40,14 @@ export function ReaderTools({ glossary, onClose, onTranslate }: { glossary: Reco
           {lay.isPhone && <div className="sheet__grip" />}
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
             <Segmented value={tab} onChange={setTab} style={{ flex: 1 }} optStyle={{ padding: 10 }}
-              options={[{ label: t('tools.reading'), value: 'reading' }, { label: t('tools.ai'), value: 'ai' }]} />
+              options={[{ label: t('tools.reading'), value: 'reading' }, { label: t('tools.replace'), value: 'replace' }, { label: t('tools.ai'), value: 'ai' }]} />
             <button className="btn btn-icon btn-secondary" style={{ width: 40, height: 40 }} aria-label={t('common.close')} onClick={onClose}><XIcon size={16} /></button>
           </div>
         </div>
         <div className="nx-scroll" style={{ overflowY: 'auto', padding: '0 20px calc(env(safe-area-inset-bottom) + 30px)', display: 'flex', flexDirection: 'column', gap: 18 }}>
-          {tab === 'reading' ? <ReadingTab /> : <AiTab glossary={glossary} onTranslate={onTranslate} />}
+          {tab === 'reading' && <ReadingTab />}
+          {tab === 'replace' && <ReplaceTab lang={lang} rules={rules} onChange={onRulesChange} />}
+          {tab === 'ai' && <AiTab glossary={glossary} onTranslate={onTranslate} />}
         </div>
       </div>
     </div>
@@ -100,6 +110,49 @@ function ReadingTab() {
   );
 }
 
+/** The reader's own "find → replace" list for this novel in the language on screen. */
+function ReplaceTab({ lang, rules, onChange }: { lang: ContentLang; rules: ReplaceRule[]; onChange: (rules: ReplaceRule[]) => void }) {
+  const { t } = useI18n();
+  const [find, setFind] = useState('');
+  const [replace, setReplace] = useState('');
+  const langName = getContentLangs().find(l => l.code === lang)?.native ?? lang;
+
+  const add = () => {
+    const f = find.trim();
+    if (!f) return;
+    // Adding a word that already has a rule changes that rule instead of stacking a second one.
+    const i = rules.findIndex(r => r.find === f);
+    onChange(i >= 0 ? rules.map((r, j) => (j === i ? { find: f, replace } : r)) : [...rules, { find: f, replace }]);
+    setFind('');
+    setReplace('');
+  };
+
+  return (
+    <div style={panel}>
+      <div>
+        <div className="display" style={{ fontSize: 18 }}>{t('replace.title')}</div>
+        <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>{t('replace.sub', { lang: langName })}</div>
+      </div>
+      <form style={{ display: 'flex', flexDirection: 'column', gap: 8 }} onSubmit={e => { e.preventDefault(); add(); }}>
+        <input className="input" style={{ height: 42, background: 'var(--color-bg)' }} aria-label={t('replace.find')} placeholder={t('replace.find')} value={find} onChange={e => setFind(e.target.value)} maxLength={200} />
+        <input className="input" style={{ height: 42, background: 'var(--color-bg)' }} aria-label={t('replace.with')} placeholder={t('replace.with')} value={replace} onChange={e => setReplace(e.target.value)} maxLength={200} />
+        <button type="submit" className="btn btn-primary" style={{ height: 42 }} disabled={!find.trim()}>{t('replace.add')}</button>
+      </form>
+      {rules.length === 0
+        ? <div className="muted" style={{ fontSize: 12 }}>{t('replace.empty')}</div>
+        : rules.map(r => (
+          <div key={r.find} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, padding: '8px 8px 8px 12px', borderRadius: 16, background: 'var(--color-bg)' }}>
+            <span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>
+              <span style={{ fontWeight: 700 }}>{r.find}</span> → {r.replace || <span className="muted">{t('replace.removed')}</span>}
+            </span>
+            <button className="btn btn-icon btn-secondary" style={{ width: 32, height: 32, flex: 'none' }} aria-label={t('replace.delete', { w: r.find })}
+              onClick={() => onChange(rules.filter(x => x !== r))}><XIcon size={14} /></button>
+          </div>
+        ))}
+    </div>
+  );
+}
+
 const panel: React.CSSProperties = { borderRadius: 30, background: 'var(--color-surface)', padding: 16, display: 'flex', flexDirection: 'column', gap: 12 };
 const panelIcon = (bg: string, fg: string): React.CSSProperties => ({ width: 34, height: 34, borderRadius: '50%', background: bg, color: fg, display: 'grid', placeItems: 'center' });
 
@@ -152,7 +205,7 @@ function AiTab({ glossary: terms, onTranslate }: { glossary: Record<string, Glos
         {glossary.map(([key, g]) => (
           <div key={key} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 12, padding: '8px 12px', borderRadius: 16, background: 'var(--color-bg)' }}>
             <span style={{ fontWeight: 700 }}>{g.en ?? key}</span>
-            <span className="muted">{[g.vi, g.es].filter(Boolean).join(' · ')}</span>
+            <span className="muted">{CONTENT_LANGS.filter(l => l !== 'en').map(l => g[l]).filter(Boolean).join(' · ')}</span>
           </div>
         ))}
       </div>

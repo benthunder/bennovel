@@ -2,9 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import { ChevronLeftIcon, SlidersIcon, SparklesIcon } from '../components/Icons';
 import { ReaderTools, type Translation } from '../components/ReaderTools';
 import { Spinner } from '../components/ui';
-import { getChapterText, getContentLangs, getGlossary, getNovel } from '../data/repository';
+import { applyReplaceRules, getChapterText, getContentLangs, getGlossary, getNovel, getReplaceRules, saveReplaceRules } from '../data/repository';
 import { useAsync } from '../lib/useAsync';
-import type { ContentLang } from '../data/types';
+import type { ContentLang, ReplaceRule } from '../data/types';
 import { useI18n } from '../i18n';
 import { READER_THEMES, useApp } from '../store/AppStore';
 import { useLayout } from '../lib/useLayout';
@@ -36,6 +36,14 @@ export function ReaderScreen({ id, ch, lang }: { id: number; ch: number; lang: C
   const glossary = glossaryQ.status === 'ready' ? glossaryQ.data : {};
   const textQ = useAsync(() => getChapterText(id, ch, dispLang), [id, ch, dispLang]);
   const chapter = textQ.status === 'ready' ? textQ.data : null;
+  const rulesQ = useAsync(() => getReplaceRules(id, dispLang), [id, dispLang]);
+  // Edits made here win over what was loaded until the language changes.
+  const [edited, setEdited] = useState<{ lang: ContentLang; rules: ReplaceRule[] } | null>(null);
+  const rules = edited?.lang === dispLang ? edited.rules : rulesQ.status === 'ready' ? rulesQ.data : [];
+  const changeRules = (next: ReplaceRule[]) => {
+    setEdited({ lang: dispLang, rules: next });
+    saveReplaceRules(id, dispLang, next).catch(() => app.showToast(t('replace.saveFailed')));
+  };
   const langName = (c: ContentLang) => getContentLangs().find(l => l.code === c)?.native ?? c;
 
   // Simulated AI translation until the translate API exists.
@@ -55,7 +63,7 @@ export function ReaderScreen({ id, ch, lang }: { id: number; ch: number; lang: C
     // Without the dictionary the translation keeps source-language names; with it, glossary names are used and highlighted.
     const useDict = !translated || translated.dict;
     return { text: (useDict ? g[dispLang] : g[lang]) ?? g[dispLang] ?? seg, hl: !!translated?.dict };
-  }));
+  }).map(s => ({ ...s, text: applyReplaceRules(s.text, rules) })));
 
   const onScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const el = e.currentTarget, max = el.scrollHeight - el.clientHeight;
@@ -88,7 +96,7 @@ export function ReaderScreen({ id, ch, lang }: { id: number; ch: number; lang: C
             <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: night ? 'var(--color-accent-400)' : 'var(--color-accent-700)' }}>
               {t('common.chapter', { n: ch })}
             </div>
-            <h2 style={{ margin: '4px 0 18px', fontSize: lay.readerH, color: theme.fg }}>{chapter?.title}</h2>
+            <h2 style={{ margin: '4px 0 18px', fontSize: lay.readerH, color: theme.fg }}>{chapter && applyReplaceRules(chapter.title, rules)}</h2>
 
             {translated && (
               <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: '12px 14px', borderRadius: 22, background: night ? 'var(--color-neutral-800)' : 'var(--color-accent-100)', marginBottom: 18, fontSize: 12, lineHeight: 1.45 }}>
@@ -139,7 +147,7 @@ export function ReaderScreen({ id, ch, lang }: { id: number; ch: number; lang: C
         )}
       </div>
 
-      {toolsOpen && <ReaderTools glossary={glossary} onClose={() => setToolsOpen(false)} onTranslate={runTranslate} />}
+      {toolsOpen && <ReaderTools glossary={glossary} lang={dispLang} rules={rules} onRulesChange={changeRules} onClose={() => setToolsOpen(false)} onTranslate={runTranslate} />}
     </div>
   );
 }
