@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import { ChevronLeftIcon, ChevronRightIcon, HeartIcon, LanguagesIcon, PlayIcon } from '../components/Icons';
 import { NovelCover } from '../components/NovelCover';
-import { ShelfItem, formatReads } from '../components/ui';
-import { CHAPTER_TITLES, CONTENT_LANGS } from '../data/mock';
-import { getNovel, sameAuthor, sameCategory } from '../data/repository';
+import { ShelfItem, Spinner, formatReads } from '../components/ui';
+import { getChapterList, getContentLangs, getNovel, sameAuthor, sameCategory } from '../data/repository';
+import { useAsync } from '../lib/useAsync';
 import type { Novel } from '../data/types';
 import { useI18n } from '../i18n';
 import { useApp } from '../store/AppStore';
@@ -11,6 +11,7 @@ import { useCatalogNames } from '../data/useCatalogNames';
 import { useLayout } from '../lib/useLayout';
 
 const MAX_LISTED_CHAPTERS = 20;
+const WORDS_PER_MIN = 220;
 
 export function DetailScreen({ id }: { id: number }) {
   const { t, uiLang } = useI18n();
@@ -19,13 +20,15 @@ export function DetailScreen({ id }: { id: number }) {
   const lay = useLayout();
   const d = getNovel(id);
   const [allCh, setAllCh] = useState(false);
+  const chList = useAsync(() => getChapterList(id, app.contentLang), [id, app.contentLang]);
+  const chapters = chList.status === 'ready' ? chList.data : [];
 
   const readUpTo = app.history.find(h => h.id === id)?.ch ?? 0;
   const isFav = app.favs.includes(id);
   const related = sameCategory(d);
   const byAuthor = sameAuthor(d);
-  const shown = allCh ? Math.min(MAX_LISTED_CHAPTERS, d.chapters) : Math.min(lay.chPreview, d.chapters);
-  const langLabel = CONTENT_LANGS.find(l => l.code === app.contentLang)?.native ?? t('lang.askEach');
+  const shown = chapters.slice(0, allCh ? MAX_LISTED_CHAPTERS : lay.chPreview);
+  const langLabel = getContentLangs().find(l => l.code === app.contentLang)?.native ?? t('lang.askEach');
 
   const toggleFav = () => app.showToast(t(app.toggleFav(id) ? 'detail.saved' : 'detail.removed'));
 
@@ -87,15 +90,16 @@ export function DetailScreen({ id }: { id: number }) {
               </button>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: lay.chCols, gap: '2px 12px' }}>
-              {Array.from({ length: shown }, (_, i) => {
-                const n = i + 1, read = n <= readUpTo;
+              {chList.status === 'loading' && <div style={{ padding: 12 }}><Spinner size={18} /></div>}
+              {shown.map(c => {
+                const n = c.number, read = n <= readUpTo;
                 return (
                   <button key={n} className="novel-row" style={{ alignItems: 'center', gap: 12, padding: '10px 8px', borderRadius: 20, minWidth: 0 }} onClick={() => app.openChapter(id, n)}>
                     <span style={{ width: 36, height: 36, flex: 'none', borderRadius: '50%', display: 'grid', placeItems: 'center', fontSize: 12, fontWeight: 700, background: read ? 'var(--color-accent-2-200)' : 'var(--color-surface)', color: read ? 'var(--color-accent-2-800)' : 'var(--color-text)' }}>{n}</span>
                     <span style={{ flex: 1, minWidth: 0 }}>
-                      <span style={{ display: 'block', fontSize: 14, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{CHAPTER_TITLES[i % CHAPTER_TITLES.length]}</span>
+                      <span style={{ display: 'block', fontSize: 14, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.title}</span>
                       <span className="muted" style={{ fontSize: 11 }}>
-                        {read ? t(n === readUpTo ? 'detail.lastRead' : 'detail.read') : t('detail.minRead', { n: 8 + ((n * 7) % 9) })}
+                        {read ? t(n === readUpTo ? 'detail.lastRead' : 'detail.read') : t('detail.minRead', { n: Math.max(1, Math.round(c.words / WORDS_PER_MIN)) })}
                       </span>
                     </span>
                     <ChevronRightIcon size={16} style={{ flex: 'none', color: 'var(--color-neutral-500)' }} />
@@ -103,9 +107,9 @@ export function DetailScreen({ id }: { id: number }) {
                 );
               })}
             </div>
-            {d.chapters > lay.chPreview && (
+            {chapters.length > lay.chPreview && (
               <button className="btn btn-secondary btn-block" style={{ marginTop: 6 }} onClick={() => setAllCh(a => !a)}>
-                {allCh ? t('detail.showFewer') : t('detail.showMore', { n: d.chapters })}
+                {allCh ? t('detail.showFewer') : t('detail.showMore', { n: chapters.length })}
               </button>
             )}
           </div>

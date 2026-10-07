@@ -43,7 +43,7 @@ export const SEARCH_THROTTLE_MS = 400;
 const HOUR = 3600_000;
 const seedHistory = (): HistoryEntry[] => {
   const now = Date.now();
-  return [{ id: 1, ch: 12, at: now - 2 * HOUR }, { id: 3, ch: 4, at: now - 26 * HOUR }, { id: 5, ch: 27, at: now - 72 * HOUR }];
+  return [{ id: 1, ch: 12, at: now - 2 * HOUR }, { id: 3, ch: 4, at: now - 26 * HOUR }, { id: 5, ch: 17, at: now - 72 * HOUR }];
 };
 
 const tabRoot = (t: Tab): Route => (t === 'category' ? { s: 'list', src: { type: 'all' } } : { s: t });

@@ -3,8 +3,7 @@ import { GlobeIcon, LanguagesIcon, LogOutIcon } from '../components/Icons';
 import { NovelCover } from '../components/NovelCover';
 import { UiLangDialog, uiLangLabel } from '../components/UiLangDialog';
 import { CoverGrid, Segmented } from '../components/ui';
-import { CONTENT_LANGS } from '../data/mock';
-import { getNovel } from '../data/repository';
+import { findNovel, getContentLangs, getNovels } from '../data/repository';
 import { relativeTime, useI18n } from '../i18n';
 import { useApp } from '../store/AppStore';
 import { useLayout } from '../lib/useLayout';
@@ -17,7 +16,7 @@ export function ProfileScreen() {
   const [uiLangOpen, setUiLangOpen] = useState(false);
   const user = app.user;
   const initials = user ? user.name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase() : 'G';
-  const langLabel = CONTENT_LANGS.find(l => l.code === app.contentLang)?.native ?? t('lang.askEach');
+  const langLabel = getContentLangs().find(l => l.code === app.contentLang)?.native ?? t('lang.askEach');
 
   return (
     <div className="screen screen--tabbed" style={{ paddingTop: lay.topPlus, paddingLeft: lay.px, paddingRight: lay.px }}>
@@ -52,8 +51,9 @@ export function ProfileScreen() {
           {tab === 'history' ? (
             <div style={{ display: 'grid', gridTemplateColumns: lay.histCols, gap: '4px 12px', marginTop: -6 }}>
               {app.history.map(h => {
-                const n = getNovel(h.id);
-                const pct = Math.max(4, Math.round((h.ch / n.chapters) * 100));
+                const n = findNovel(h.id);
+                if (!n) return null;
+                const pct = Math.max(4, Math.min(100, Math.round((h.ch / n.chapters) * 100)));
                 return (
                   <button key={h.id} className="novel-row" style={{ alignItems: 'center', padding: 8, borderRadius: 22, minWidth: 0 }} onClick={() => app.openChapter(h.id, h.ch)}>
                     <NovelCover novel={n} w={52} h={74} fs={9} />
@@ -72,7 +72,7 @@ export function ProfileScreen() {
             </div>
           ) : (
             <div style={{ marginTop: -4 }}>
-              <CoverGrid novels={app.favs.map(getNovel)} onOpen={app.openDetail} showAuthor={false} cols={lay.libCols} gap="14px 12px" />
+              <CoverGrid novels={getNovels(app.favs)} onOpen={app.openDetail} showAuthor={false} cols={lay.libCols} gap="14px 12px" />
               {app.favs.length === 0 && <div className="muted" style={{ fontSize: 13 }}>{t('profile.noFavs')}</div>}
             </div>
           )}

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { BookOpenIcon } from '../components/Icons';
 import { NovelCover } from '../components/NovelCover';
 import { Segmented, Spinner } from '../components/ui';
-import { getNovel } from '../data/repository';
+import { getPopular } from '../data/repository';
 import { useLayout } from '../lib/useLayout';
 import { useI18n } from '../i18n';
 import type { MessageKey } from '../i18n/en';
@@ -15,7 +15,8 @@ const SOCIALS = [
 ];
 
 // Fanned covers at the bottom of the wide-screen panel: [novel id, transform, overlap, z-index].
-const FAN: [number, string, number, number][] = [[11, 'rotate(-9deg) translateY(14px)', 0, 1], [2, 'rotate(0deg)', -28, 2], [8, 'rotate(8deg) translateY(10px)', -28, 1]];
+/** Cover fan of the three most-read novels: [transform, margin-left, z-index]. */
+const FAN: [string, number, number][] = [['rotate(-9deg) translateY(14px)', 0, 1], ['rotate(0deg)', -28, 2], ['rotate(8deg) translateY(10px)', -28, 1]];
 
 type Field = 'name' | 'email' | 'pw';
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -153,11 +154,11 @@ export function LoginScreen() {
         <p style={{ margin: '-8px 0 0', fontSize: 16, maxWidth: 440, color: 'var(--color-accent-2-900)' }}>{t('auth.panelSub')}</p>
         {!portrait && (
           <div style={{ marginTop: 'auto', display: 'flex', alignItems: 'flex-end', paddingLeft: 12 }}>
-            {FAN.map(([id, transform, ml, z]) => (
-              <div key={id} style={{ width: lay.v(120, 150, 180), flex: 'none', marginLeft: ml, transform, zIndex: z, position: 'relative' }}>
-                <NovelCover novel={getNovel(id)} w="100%" h="auto" fs={20} style={{ aspectRatio: 0.7 }} />
+            {getPopular().slice(0, FAN.length).map((novel, i) => { const [transform, ml, z] = FAN[i]; return (
+              <div key={novel.id} style={{ width: lay.v(120, 150, 180), flex: 'none', marginLeft: ml, transform, zIndex: z, position: 'relative' }}>
+                <NovelCover novel={novel} w="100%" h="auto" fs={20} style={{ aspectRatio: 0.7 }} />
               </div>
-            ))}
+            ); })}
           </div>
         )}
       </div>

@@ -1,7 +1,8 @@
 export type UiLang = 'en' | 'vi';
 export type ContentLang = 'en' | 'vi' | 'es';
 export type NovelStatus = 'Ongoing' | 'Completed';
-export type Category = 'Wuxia' | 'Fantasy' | 'Romance' | 'Mystery' | 'Sci-Fi' | 'Slice of Life';
+/** Category slug, e.g. `wuxia`. */
+export type Category = string;
 
 export interface Novel {
   id: number;
@@ -19,17 +20,33 @@ export interface Novel {
   cover: { bg: string; fg: string; deco: string };
 }
 
-export type CollectionKey = 'trend' | 'new' | 'done' | 'picks';
+/** Collection key, e.g. `trend`. */
+export type CollectionKey = string;
 
 export interface Collection {
   key: CollectionKey;
   ids: number[];
 }
 
-export interface GlossaryTerm {
-  en: string;
-  vi: string;
-  es: string;
+/** One glossary term's name in each content language. */
+export type GlossaryTerm = Partial<Record<ContentLang, string>>;
+
+export interface ContentLangInfo {
+  code: ContentLang;
+  name: string;
+  native: string;
+}
+
+export interface ChapterInfo {
+  number: number;
+  title: string;
+  words: number;
+}
+
+export interface ChapterText {
+  title: string;
+  /** Paragraphs; `[[key]]` marks a glossary term. */
+  paragraphs: string[];
 }
 
 export interface DictEntry {

@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { ChevronLeftIcon, SlidersIcon, SparklesIcon } from '../components/Icons';
 import { ReaderTools, type Translation } from '../components/ReaderTools';
 import { Spinner } from '../components/ui';
-import { CHAPTER_TITLES, CONTENT_LANGS, GLOSSARY, SAMPLE_TEXT } from '../data/mock';
-import { getNovel } from '../data/repository';
+import { getChapterText, getContentLangs, getGlossary, getNovel } from '../data/repository';
+import { useAsync } from '../lib/useAsync';
 import type { ContentLang } from '../data/types';
 import { useI18n } from '../i18n';
 import { READER_THEMES, useApp } from '../store/AppStore';
@@ -32,7 +32,11 @@ export function ReaderScreen({ id, ch, lang }: { id: number; ch: number; lang: C
   useEffect(() => () => timers.current.forEach(clearTimeout), []);
 
   const dispLang = translated?.lang ?? lang;
-  const langName = (c: ContentLang) => CONTENT_LANGS.find(l => l.code === c)?.native ?? c;
+  const glossaryQ = useAsync(() => getGlossary(id), [id]);
+  const glossary = glossaryQ.status === 'ready' ? glossaryQ.data : {};
+  const textQ = useAsync(() => getChapterText(id, ch, dispLang), [id, ch, dispLang]);
+  const chapter = textQ.status === 'ready' ? textQ.data : null;
+  const langName = (c: ContentLang) => getContentLangs().find(l => l.code === c)?.native ?? c;
 
   // Simulated AI translation until the translate API exists.
   const runTranslate = (tr: Translation) => {
@@ -45,12 +49,12 @@ export function ReaderScreen({ id, ch, lang }: { id: number; ch: number; lang: C
     );
   };
 
-  const paragraphs = SAMPLE_TEXT[dispLang].map(para => para.split(/\[\[(\w+)\]\]/).map((seg, i) => {
+  const paragraphs = (chapter?.paragraphs ?? []).map(para => para.split(/\[\[([\w-]+)\]\]/).map((seg, i) => {
     if (i % 2 === 0) return { text: seg, hl: false };
-    const g = GLOSSARY[seg];
+    const g = glossary[seg] ?? {};
     // Without the dictionary the translation keeps source-language names; with it, glossary names are used and highlighted.
     const useDict = !translated || translated.dict;
-    return { text: useDict ? g[dispLang] : g[lang], hl: !!translated?.dict };
+    return { text: (useDict ? g[dispLang] : g[lang]) ?? g[dispLang] ?? seg, hl: !!translated?.dict };
   }));
 
   const onScroll = (e: React.UIEvent<HTMLDivElement>) => {
@@ -84,7 +88,7 @@ export function ReaderScreen({ id, ch, lang }: { id: number; ch: number; lang: C
             <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: night ? 'var(--color-accent-400)' : 'var(--color-accent-700)' }}>
               {t('common.chapter', { n: ch })}
             </div>
-            <h2 style={{ margin: '4px 0 18px', fontSize: lay.readerH, color: theme.fg }}>{CHAPTER_TITLES[(ch - 1) % CHAPTER_TITLES.length]}</h2>
+            <h2 style={{ margin: '4px 0 18px', fontSize: lay.readerH, color: theme.fg }}>{chapter?.title}</h2>
 
             {translated && (
               <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: '12px 14px', borderRadius: 22, background: night ? 'var(--color-neutral-800)' : 'var(--color-accent-100)', marginBottom: 18, fontSize: 12, lineHeight: 1.45 }}>
@@ -93,7 +97,7 @@ export function ReaderScreen({ id, ch, lang }: { id: number; ch: number; lang: C
                   {t('reader.banner', {
                     lang: langName(translated.lang),
                     style: t(`tr.style.${translated.style}`),
-                    dict: translated.dict ? t('reader.dictKept', { n: Object.keys(GLOSSARY).length }) : t('reader.dictOff')
+                    dict: translated.dict ? t('reader.dictKept', { n: Object.keys(glossary).length }) : t('reader.dictOff')
                   })}
                 </div>
                 <button onClick={() => setTranslated(null)} style={{ border: 'none', background: 'none', font: 'inherit', fontSize: 12, fontWeight: 700, textDecoration: 'underline', cursor: 'pointer', color: 'inherit', padding: 0 }}>
@@ -102,6 +106,11 @@ export function ReaderScreen({ id, ch, lang }: { id: number; ch: number; lang: C
               </div>
             )}
 
+            {textQ.status === 'loading' && (
+              <div role="status" style={{ display: 'flex', alignItems: 'center', gap: 10, opacity: .75 }}><Spinner size={16} />{t('reader.loading')}</div>
+            )}
+            {textQ.status === 'failed' && <p role="alert">{t('load.failed')}</p>}
+            {textQ.status === 'ready' && !chapter && <p role="alert">{t('reader.missing')}</p>}
             {paragraphs.map((segs, i) => (
               <p key={i} style={{ margin: `0 0 ${GAP_PX[p.gap]}px`, fontSize: p.fontSize, lineHeight: p.lineH, textAlign: p.align, textWrap: 'pretty' }}>
                 {segs.map((s, j) => s.hl
@@ -130,7 +139,7 @@ export function ReaderScreen({ id, ch, lang }: { id: number; ch: number; lang: C
         )}
       </div>
 
-      {toolsOpen && <ReaderTools onClose={() => setToolsOpen(false)} onTranslate={runTranslate} />}
+      {toolsOpen && <ReaderTools glossary={glossary} onClose={() => setToolsOpen(false)} onTranslate={runTranslate} />}
     </div>
   );
 }

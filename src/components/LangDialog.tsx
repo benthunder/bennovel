@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { CONTENT_LANGS } from '../data/mock';
+import { getContentLangs } from '../data/repository';
 import type { ContentLang } from '../data/types';
 import { useT } from '../i18n';
 import { useApp, type LangDialog as Dialog } from '../store/AppStore';
@@ -51,7 +51,7 @@ export function LangDialog({ dialog }: { dialog: Dialog }) {
         <div className="dialog-title" style={{ fontSize: 22 }}>{title}</div>
         <div className="dialog-body" style={{ marginTop: -6 }}>{dialog.mode === 'settings' ? t('lang.bodySettings') : t('lang.bodyChapter')}</div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {CONTENT_LANGS.map(l => row(l.code, (
+          {getContentLangs().map(l => row(l.code, (
             <span style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.3 }}>
               <span style={{ fontWeight: 700, fontSize: 15 }}>{l.native}</span>
               <span className="muted" style={{ fontSize: 12 }}>{l.name}</span>

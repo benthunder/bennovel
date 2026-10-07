@@ -1,4 +1,4 @@
-import { getNovel } from '../data/repository';
+import { findNovel } from '../data/repository';
 import { useT } from '../i18n';
 import { useApp, type Tab } from '../store/AppStore';
 import { BookOpenIcon, GridIcon, HeartIcon, HomeIcon, PlayIcon, UserIcon } from './Icons';
@@ -45,7 +45,7 @@ export function Sidebar() {
   const t = useT();
   const app = useApp();
   const continueLast = useContinue();
-  const last = app.last ? getNovel(app.last.id) : null;
+  const last = (app.last && findNovel(app.last.id)) ?? null;
   const item = (tab: Tab, label: string, icon: React.ReactNode, extra?: React.ReactNode) => (
     <button className="side__item" aria-current={app.tab === tab ? 'page' : undefined} onClick={() => app.switchTab(tab)}>
       {icon}{label}{extra}

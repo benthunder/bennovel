@@ -1,5 +1,5 @@
 import { CoverGrid } from '../components/ui';
-import { getNovel } from '../data/repository';
+import { getNovels } from '../data/repository';
 import { useT } from '../i18n';
 import { useApp } from '../store/AppStore';
 import { useLayout } from '../lib/useLayout';
@@ -8,7 +8,7 @@ export function LibraryScreen() {
   const t = useT();
   const app = useApp();
   const lay = useLayout();
-  const favs = app.favs.map(getNovel);
+  const favs = getNovels(app.favs);
 
   return (
     <div className="screen screen--tabbed" style={{ paddingTop: lay.topPlus, paddingLeft: lay.px, paddingRight: lay.px }}>

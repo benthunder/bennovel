@@ -203,5 +203,11 @@ export const vi: Record<MessageKey, string> = {
   'tr.desc.Casual': 'Đơn giản, hiện đại, dễ đọc.',
   'tr.applyDict': 'Áp dụng từ điển',
   'tr.applyDictSub': 'Giữ thống nhất {n} tên riêng trong thuật ngữ',
-  'tr.run': 'Dịch chương này'
+  'tr.run': 'Dịch chương này',
+  // loading from the server
+  'load.catalog': 'Đang tải thư viện…',
+  'load.failed': 'Không kết nối được thư viện. Kiểm tra mạng rồi thử lại.',
+  'load.retry': 'Thử lại',
+  'reader.loading': 'Đang tải chương…',
+  'reader.missing': 'Chương này chưa có bản ở ngôn ngữ này.'
 };

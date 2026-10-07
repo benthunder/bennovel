@@ -201,7 +201,13 @@ export const en = {
   'tr.desc.Casual': 'Plain, modern and easy-going.',
   'tr.applyDict': 'Apply dictionary',
   'tr.applyDictSub': 'Keep the {n} glossary names consistent',
-  'tr.run': 'Translate this chapter'
+  'tr.run': 'Translate this chapter',
+  // loading from the server
+  'load.catalog': 'Loading the library…',
+  'load.failed': 'Could not reach the library. Check your connection and try again.',
+  'load.retry': 'Try again',
+  'reader.loading': 'Loading chapter…',
+  'reader.missing': 'This chapter is not available in this language yet.'
 };
 
 export type MessageKey = keyof typeof en;
