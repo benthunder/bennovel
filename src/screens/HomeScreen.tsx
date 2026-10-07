@@ -13,10 +13,6 @@ const AUTOPLAY_MS = 4200;
 /** Autoplay pauses this long after the user swipes or taps a dot. */
 const TOUCH_PAUSE_MS = 6000;
 
-const popular = getPopular();
-const collections = getCollections();
-const topRated = getTopRated(5);
-
 export function HomeScreen() {
   const { t } = useI18n();
   const app = useApp();
@@ -66,14 +62,14 @@ export function HomeScreen() {
             <HeroSlider />
             {lay.showTop && <TopRated />}
           </div>
-          {collections.map(c => <CollectionShelf key={c.key} c={c} />)}
+          {getCollections().map(c => <CollectionShelf key={c.key} c={c} />)}
         </>
       )}
     </div>
   );
 }
 
-function CollectionShelf({ c }: { c: (typeof collections)[number] }) {
+function CollectionShelf({ c }: { c: ReturnType<typeof getCollections>[number] }) {
   const { t } = useI18n();
   const names = useCatalogNames();
   const app = useApp();
@@ -107,6 +103,7 @@ function CollectionShelf({ c }: { c: (typeof collections)[number] }) {
 
 /** Tablet landscape and desktop: ranked list next to the hero slider. */
 function TopRated() {
+  const topRated = getTopRated(5);
   const { t } = useI18n();
   const app = useApp();
   return (
@@ -141,6 +138,7 @@ function HeroSlider() {
   const touchedAt = useRef(0);
   const dragX = useRef<number | null>(null);
   const suppressClick = useRef(false);
+  const [popular] = useState(getPopular);
   const count = popular.length;
 
   useEffect(() => {
