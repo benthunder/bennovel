@@ -108,6 +108,19 @@ export const vi: Record<MessageKey, string> = {
   'library.emptyTitle': 'Chưa lưu truyện nào',
   'library.emptyBody': 'Chạm vào trái tim ở bất kỳ truyện nào để lưu vào đây.',
   'library.browse': 'Xem các thể loại',
+  'library.device': 'Sách trên máy',
+  'library.import': 'Nhập sách (EPUB, PDF, MOBI, TXT…)',
+  'library.openOnce': 'Mở nhanh, không lưu',
+  'library.importing': 'Đang nhập {done}/{total}…',
+  'library.imported': 'Đã thêm “{title}” vào thư viện.',
+  'library.importFailed': 'Không nhập được file này.',
+  'library.deviceEmpty': 'Sách bạn nhập được lưu trên máy và mở lại đúng chỗ đang đọc.',
+  'library.parts': '{n} phần',
+  'library.at': 'Phần {n} / {total}',
+  'library.read': 'Đọc',
+  'library.continue': 'Đọc tiếp',
+  'library.delete': 'Xoá khỏi thư viện',
+  'library.deleteAsk': 'Xoá “{title}” khỏi máy?',
 
   // profile
   'profile.signedInWith': 'Đăng nhập bằng {p}',
@@ -219,5 +232,15 @@ export const vi: Record<MessageKey, string> = {
   'load.failed': 'Không kết nối được thư viện. Kiểm tra mạng rồi thử lại.',
   'load.retry': 'Thử lại',
   'reader.loading': 'Đang tải chương…',
-  'reader.missing': 'Chương này chưa có bản ở ngôn ngữ này.'
+  'reader.missing': 'Chương này chưa có bản ở ngôn ngữ này.',
+  // local book files
+  'book.open': 'Mở file sách (EPUB, PDF, MOBI, TXT…)',
+  'book.openFailed': 'Không mở được file này.',
+  'book.untitled': 'Sách chưa có tên',
+  'book.part': 'Phần {n} / {total}',
+  'book.pages': 'Trang {from}–{to}',
+  'book.prev': '‹ Phần trước',
+  'book.next': 'Phần sau ›',
+  'book.loading': 'Đang tải…',
+  'book.empty': 'Phần này không có chữ.'
 };

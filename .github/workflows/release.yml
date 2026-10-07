@@ -26,6 +26,10 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: true
 
+# Pdfium (PDF text) is loaded by the app at runtime; these builds ship it alongside.
+env:
+  PDFIUM_URL: https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F8086
+
 jobs:
   linux:
     name: Linux (AppImage + deb)
@@ -51,8 +55,16 @@ jobs:
 
       - run: npm ci
 
+      - name: Download Pdfium
+        run: |
+          mkdir -p src-tauri/pdfium
+          curl -fsSL "$PDFIUM_URL/pdfium-linux-x64.tgz" | tar xz -C src-tauri/pdfium lib/libpdfium.so
+          mv src-tauri/pdfium/lib/libpdfium.so src-tauri/pdfium/
+
       - name: Build
-        run: npx tauri build --bundles appimage,deb
+        run: >
+          npx tauri build --bundles appimage,deb
+          --config '{"bundle":{"resources":{"pdfium/libpdfium.so":"pdfium/libpdfium.so"}}}'
 
       - uses: actions/upload-artifact@v4
         with:
@@ -101,6 +113,18 @@ jobs:
         run: |
           npx tauri android init --ci
           cp -r src-tauri/icons/android/* src-tauri/gen/android/app/src/main/res/
+
+      - name: Add Pdfium to the APK
+        run: |
+          set -euo pipefail
+          for pair in arm64:arm64-v8a arm:armeabi-v7a x64:x86_64; do
+            arch="${pair%%:*}"; abi="${pair##*:}"
+            dir="src-tauri/gen/android/app/src/main/jniLibs/$abi"
+            mkdir -p "$dir" tmp-pdfium
+            curl -fsSL "$PDFIUM_URL/pdfium-android-$arch.tgz" | tar xz -C tmp-pdfium lib/libpdfium.so
+            mv tmp-pdfium/lib/libpdfium.so "$dir/"
+          done
+          rm -rf tmp-pdfium
 
       - name: Build APK
         run: npx tauri android build --apk --target aarch64 --target armv7 --target x86_64

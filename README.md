@@ -69,6 +69,41 @@ npx supabase db push     # apply migrations to the linked remote project
 
 Catalog writes, chapter imports and the translation worker use the service role key, which bypasses RLS. The worker claims work with `claim_translation_job()`.
 
+## Offline book files
+
+In the native app, Library → **Open a book file** opens a book from the device (`src-tauri/src/book`).
+Only the current section, the 2 after it and the 1 before it are kept in memory; the next ones are read in the
+background and sections further away are freed (`KEEP_AHEAD` / `KEEP_BEHIND` in `book/mod.rs`).
+
+| Format | How it is read |
+| --- | --- |
+| EPUB | One chapter per section, read from the ZIP on demand |
+| PDF, DjVu | 10 pages per section; PDF via Pdfium, DjVu via its text layer (scans without OCR have no text) |
+| TXT | ~64 KB per section ending at a line break; encoding from the BOM, else UTF-8, else GB18030/GBK |
+| CHM | One page of the table of contents per section, decompressed on demand |
+| MOBI, AZW3, PRC, FB2, DOCX, ODT, RTF, HTML, MHT/MHTML, Markdown | Text extracted once, streaming, to a plain file in the cache folder (deleted on close), then read in sections; headings start chapters |
+| UMD | Not supported yet |
+
+### On-device library (SQLite)
+
+Library → **Import a book** copies a book file into a SQLite database on the device, one file per user
+(`<app data>/library/<email or guest>.sqlite3`, code in `src-tauri/src/library`). The tables are the
+novel part of the Supabase schema (`languages`, `authors`, `novels`, `novel_translations`, `chapters`,
+`chapter_translations`, `glossary_entries`, `reading_history`, `replace_rules`), so imported books can be
+synced or uploaded later without reshaping them.
+
+- The import reads the file one section at a time; each section becomes a chapter with its original text
+  (paragraphs separated by a blank line, as in Supabase), all in one transaction.
+- The language is guessed from the text (Hangul → ko, Chinese → zh, Vietnamese letters → vi, else en) and
+  the author is "Unknown" until it can be edited.
+- Reading a library book loads chapters from SQLite through the same in-memory window as a book file, and
+  `reading_history` keeps the part and scroll position, so **Continue** opens where you stopped.
+- **Open without saving** still reads a file directly without importing it.
+
+PDF text comes from [Pdfium](https://github.com/bblanchon/pdfium-binaries), loaded at runtime from next to
+the app, its resources folder (`pdfium/`) or the system. The release workflow ships it with the Linux and
+Android builds. To run the PDF test: `PDFIUM_DIR=/path/to/pdfium/lib cargo test` in `src-tauri`.
+
 ## Simulated for now
 
 - **Data**: everything comes from `src/data/mock.ts` through `src/data/repository.ts`. To connect a backend (for example a NestJS + Postgres API), you only replace that file.

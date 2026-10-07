@@ -8,3 +8,4 @@ src-tauri/gen/schemas
 .env.local
 test-results
 playwright-report
+src-tauri/pdfium
