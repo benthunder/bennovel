@@ -238,6 +238,15 @@ export type Database = {
           { foreignKeyName: "profiles_default_content_lang_fkey"; columns: ["default_content_lang"]; isOneToOne: false; referencedRelation: "languages"; referencedColumns: ["code"] },
         ]
       }
+      replace_rules: {
+        Row: { created_at: string; find: string; id: number; lang: string; novel_id: number; position: number; replace: string; updated_at: string; user_id: string }
+        Insert: { created_at?: string; find: string; id?: never; lang: string; novel_id: number; position?: number; replace?: string; updated_at?: string; user_id?: string }
+        Update: { created_at?: string; find?: string; id?: never; lang?: string; novel_id?: number; position?: number; replace?: string; updated_at?: string; user_id?: string }
+        Relationships: [
+          { foreignKeyName: "replace_rules_lang_fkey"; columns: ["lang"]; isOneToOne: false; referencedRelation: "languages"; referencedColumns: ["code"] },
+          { foreignKeyName: "replace_rules_novel_id_fkey"; columns: ["novel_id"]; isOneToOne: false; referencedRelation: "novels"; referencedColumns: ["id"] },
+        ]
+      }
       reading_history: {
         Row: { chapter_id: number; chapter_number: number; lang: string; last_read_at: string; novel_id: number; progress: number; user_id: string }
         Insert: { chapter_id: number; chapter_number: number; lang: string; last_read_at?: string; novel_id: number; progress?: number; user_id?: string }

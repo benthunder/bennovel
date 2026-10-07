@@ -3,9 +3,11 @@
 // from Supabase once at startup and served synchronously; chapters and glossaries are
 // fetched on demand.
 import { supabase } from '../lib/supabase';
+import { load, save } from '../lib/storage';
 import type {
-  Category, ChapterInfo, ChapterText, CollectionKey, ContentLang, ContentLangInfo, GlossaryTerm, Novel, NovelStatus, UiLang
+  Category, ChapterInfo, ChapterText, CollectionKey, ContentLang, ContentLangInfo, GlossaryTerm, Novel, NovelStatus, ReplaceRule, UiLang
 } from './types';
+import { CONTENT_LANGS } from './types';
 
 interface Catalog {
   novels: Novel[];
@@ -86,7 +88,9 @@ export async function loadCatalog(): Promise<void> {
       };
       return [c.key, { en: pick('en'), vi: pick('vi') }];
     })),
-    contentLangs: must(langsRes, 'languages').map(l => ({ code: l.code as ContentLang, name: l.name, native: l.native_name }))
+    contentLangs: must(langsRes, 'languages')
+      .filter(l => (CONTENT_LANGS as readonly string[]).includes(l.code))
+      .map(l => ({ code: l.code as ContentLang, name: l.name, native: l.native_name }))
   };
 }
 
@@ -194,3 +198,38 @@ export async function getGlossary(novelId: number): Promise<Record<string, Gloss
   for (const r of rows) (out[r.term_key] ??= {})[r.lang as ContentLang] = r.value;
   return out;
 }
+
+// Replace rules belong to the reader. Signed in to Supabase they live in `replace_rules`
+// (row level security keeps them private); otherwise they stay on this device.
+const rulesKey = (novelId: number, lang: ContentLang) => `replaceRules.${novelId}.${lang}`;
+
+async function signedInUserId(): Promise<string | null> {
+  const { data } = await supabase.auth.getSession();
+  return data.session?.user.id ?? null;
+}
+
+/** The reader's replace rules for a novel in one language, in the order they apply. */
+export async function getReplaceRules(novelId: number, lang: ContentLang): Promise<ReplaceRule[]> {
+  if (!(await signedInUserId())) return load<ReplaceRule[]>(rulesKey(novelId, lang), []);
+  const rows = must(await supabase.from('replace_rules')
+    .select('find, replace')
+    .eq('novel_id', novelId)
+    .eq('lang', lang)
+    .order('position'), 'replace rules');
+  return rows;
+}
+
+/** Replaces the reader's whole rule list for a novel in one language. */
+export async function saveReplaceRules(novelId: number, lang: ContentLang, rules: ReplaceRule[]): Promise<void> {
+  if (!(await signedInUserId())) return save(rulesKey(novelId, lang), rules.length ? rules : null);
+  const del = await supabase.from('replace_rules').delete().eq('novel_id', novelId).eq('lang', lang);
+  if (del.error) throw new Error(`Saving replace rules failed: ${del.error.message}`);
+  if (!rules.length) return;
+  const ins = await supabase.from('replace_rules')
+    .insert(rules.map((r, position) => ({ novel_id: novelId, lang, find: r.find, replace: r.replace, position })));
+  if (ins.error) throw new Error(`Saving replace rules failed: ${ins.error.message}`);
+}
+
+/** Applies each rule to `text` in order, replacing every occurrence (case-sensitive, plain text). */
+export const applyReplaceRules = (text: string, rules: ReplaceRule[]) =>
+  rules.reduce((s, r) => (r.find ? s.split(r.find).join(r.replace) : s), text);
