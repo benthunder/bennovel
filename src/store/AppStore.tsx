@@ -14,7 +14,8 @@ export type Route =
   | { s: 'library' }
   | { s: 'profile' }
   | { s: 'reader'; id: number; ch: number; lang: ContentLang }
-  | { s: 'book'; book: LocalBook; place?: LibraryPlace };
+  /** `path`: a file opened without saving, which can still be imported from the reader. */
+  | { s: 'book'; book: LocalBook; place?: LibraryPlace; path?: string };
 
 export type LangDialog =
   | { mode: 'chapter'; id: number; ch: number }

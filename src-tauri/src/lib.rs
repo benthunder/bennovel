@@ -23,6 +23,7 @@ pub fn run() {
             book::commands::book_close,
             library::commands::library_list,
             library::commands::library_import,
+            library::commands::library_import_folder,
             library::commands::library_open,
             library::commands::library_save_progress,
             library::commands::library_delete,

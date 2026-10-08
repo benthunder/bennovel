@@ -38,17 +38,23 @@ export const BOOK_EXTENSIONS = [
  */
 const isAndroid = () => /android/i.test(navigator.userAgent);
 
+/** Phones and tablets: no folder picker there. */
+export const isMobile = () => /android|iphone|ipad/i.test(navigator.userAgent);
+
 const pickBookFile = () =>
   open({ multiple: false, filters: isAndroid() ? undefined : [{ name: 'Books', extensions: BOOK_EXTENSIONS }] });
 
 /** Opens a book file by path or `file:`/`content:` URL, without saving it. */
 export const openBookFile = (path: string) => invoke<LocalBook>('book_open', { path });
 
-/** Asks for a book file and opens it. Resolves to null when the user cancels. */
-export async function pickLocalBook(): Promise<LocalBook | null> {
+/**
+ * Asks for a book file and opens it. Resolves to null when the user cancels. The path
+ * is kept so the book can still be imported from the reader.
+ */
+export async function pickLocalBook(): Promise<{ book: LocalBook; path: string } | null> {
   const path = await pickBookFile();
   if (!path) return null;
-  return openBookFile(path);
+  return { book: await openBookFile(path), path };
 }
 
 /** Book files the system asked the app to open ("Open with"), oldest first. */
@@ -106,20 +112,45 @@ let lastSave: Promise<unknown> = Promise.resolve();
 export const listLibrary = (user: string) =>
   lastSave.catch(() => undefined).then(() => invoke<LibraryBook[]>('library_list', { user }));
 
-/**
- * Asks for a book file and copies it into the library chapter by chapter.
- * `onProgress` gets each stored chapter. Resolves to null when the user cancels.
- */
-export async function importLocalBook(user: string, onProgress?: (done: number, total: number) => void): Promise<LibraryBook | null> {
-  const path = await pickBookFile();
-  if (!path) return null;
+export type ImportProgress = (done: number, total: number) => void;
+
+/** Runs an import command, passing each stored chapter to `onProgress`. */
+async function withProgress<T>(onProgress: ImportProgress | undefined, run: () => Promise<T>): Promise<T> {
   const { listen } = await import('@tauri-apps/api/event');
   const stop = await listen<{ done: number; total: number }>('library-import', e => onProgress?.(e.payload.done, e.payload.total));
   try {
-    return await invoke<LibraryBook>('library_import', { user, path });
+    return await run();
   } finally {
     stop();
   }
+}
+
+/** Copies a book file into the library chapter by chapter. */
+export const importBookPath = (user: string, path: string, onProgress?: ImportProgress) =>
+  withProgress(onProgress, () => invoke<LibraryBook>('library_import', { user, path }));
+
+/** Asks for a book file and imports it. Resolves to null when the user cancels. */
+export async function importLocalBook(user: string, onProgress?: ImportProgress): Promise<LibraryBook | null> {
+  const path = await pickBookFile();
+  return path ? importBookPath(user, path, onProgress) : null;
+}
+
+/**
+ * Imports a folder of chapter files as one book, a file per chapter, ordered by the
+ * chapter number in each file name. Phones have no folder picker, so there the user
+ * selects the chapter files instead. Resolves to null when the user cancels.
+ */
+export async function importLocalFolder(user: string, onProgress?: ImportProgress): Promise<LibraryBook | null> {
+  let paths: string[];
+  if (isMobile()) {
+    const picked = await open({ multiple: true, filters: isAndroid() ? undefined : [{ name: 'Books', extensions: BOOK_EXTENSIONS }] });
+    paths = picked ?? [];
+  } else {
+    const dir = await open({ directory: true, multiple: false });
+    paths = dir ? [dir] : [];
+  }
+  if (!paths.length) return null;
+  return withProgress(onProgress, () => invoke<LibraryBook>('library_import_folder', { user, paths }));
 }
 
 export async function openLibraryBook(user: string, novelId: number): Promise<{ book: LocalBook; place: LibraryPlace }> {
@@ -145,6 +176,6 @@ export function localCover(title: string) {
   let h = 0;
   for (const c of title) h = (h * 31 + c.charCodeAt(0)) >>> 0;
   const pal = COVER_PALETTES[h % COVER_PALETTES.length];
-  const [bg, fg, deco] = COVER_SHADES[(h >> 3) % COVER_SHADES.length];
+  const [bg, fg, deco] = COVER_SHADES[(h >>> 3) % COVER_SHADES.length];
   return { bg: `var(--color-${pal}-${bg})`, fg: `var(--color-${pal}-${fg})`, deco: `var(--color-${pal}-${deco})` };
 }

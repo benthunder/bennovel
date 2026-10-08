@@ -213,3 +213,28 @@ input[type='range'] { accent-color: var(--color-accent); width: 100%; }
 .dialog--sheet { width: 100%; border-radius: 36px; padding: 22px; animation: nxup .28s ease-out; }
 .app[data-device='tablet'] .dialog-backdrop--sheet, .app[data-device='desktop'] .dialog-backdrop--sheet { place-items: center; padding: 24px; }
 .app[data-device='tablet'] .dialog--sheet, .app[data-device='desktop'] .dialog--sheet { width: 440px; max-width: 100%; }
+
+/* — import actions (Library › On this device) — */
+.import-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; max-width: 560px; }
+.import-action {
+  display: flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: 8px;
+  min-height: 96px; padding: 16px 8px 14px; cursor: pointer; text-align: center;
+  font-family: var(--font-heading); font-weight: var(--font-heading-weight); font-size: 13px; line-height: 1.25;
+  color: var(--color-text); background: var(--color-surface);
+  border: 1px solid var(--color-divider); border-radius: var(--radius-md);
+  transition: background .15s ease, border-color .15s ease, transform .1s ease;
+}
+.import-action:hover { border-color: color-mix(in srgb, var(--color-accent) 45%, transparent); }
+.import-action:active { transform: scale(.98); }
+.import-action:disabled { opacity: .45; cursor: not-allowed; transform: none; }
+.import-action__icon {
+  display: grid; place-items: center; width: 38px; height: 38px; border-radius: 999px;
+  color: var(--color-accent-700); background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+}
+.import-action--primary { background: var(--color-accent); border-color: var(--color-accent); color: var(--color-bg); }
+.import-action--primary:hover { background: var(--color-accent-600); border-color: var(--color-accent-600); }
+.import-action--primary .import-action__icon { color: var(--color-bg); background: color-mix(in srgb, var(--color-bg) 22%, transparent); }
+.import-hint { font-size: 12px; margin: 10px 0 0; }
+.import-progress { display: flex; align-items: center; gap: 10px; margin-top: 12px; max-width: 560px; font-size: 13px; }
+.import-progress__bar { flex: 1; height: 4px; border-radius: 999px; overflow: hidden; background: var(--color-divider); }
+.import-progress__bar > div { height: 100%; background: var(--color-accent); border-radius: 999px; transition: width .2s ease; }

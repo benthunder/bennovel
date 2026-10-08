@@ -22,7 +22,7 @@ function renderRoute(r: Route) {
     case 'library': return <LibraryScreen />;
     case 'profile': return <ProfileScreen />;
     case 'reader': return <ReaderScreen id={r.id} ch={r.ch} lang={r.lang} />;
-    case 'book': return <LocalBookScreen book={r.book} place={r.place} />;
+    case 'book': return <LocalBookScreen book={r.book} place={r.place} path={r.path} />;
   }
 }
 
