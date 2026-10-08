@@ -153,7 +153,7 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', opacity: .65, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{book.title ?? t('book.untitled')}</div>
           <div className="display" style={{ fontSize: 16, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            {name}{meta?.number != null && <span style={{ opacity: .55, fontSize: 13 }}> · {index + 1}/{total}</span>}
+            {name}{meta?.number != null && !lay.isPhone && <span style={{ opacity: .55, fontSize: 13 }}> · {index + 1}/{total}</span>}
           </div>
         </div>
         {book.pageImages && (
@@ -202,6 +202,8 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
           {!showPages && sectionQ.status === 'failed' && <p role="alert">{String(sectionQ.error)}</p>}
           {!showPages && sectionQ.status === 'ready' && sectionQ.data.paragraphs.length === 0 && <p style={{ opacity: .7 }}>{t('book.empty')}</p>}
           {!showPages && sectionQ.status === 'ready' && sectionQ.data.paragraphs.map((para, i) => {
+            // The chapter's own "Chương 629." line repeats the heading shown above.
+            if (i === 0 && meta?.number != null && isHeadingLine(para, meta.number, meta.label)) return null;
             const key = imageKey(para);
             return key !== null ? (
               // A picture the book can't provide just disappears.
@@ -229,6 +231,14 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
       )}
     </div>
   );
+}
+
+/** Whether `line` is just "Chương 12", "Chapter 12: Title"… for chapter `n` titled `label`. */
+function isHeadingLine(line: string, n: number, label: string | null) {
+  const m = /^\s*(?:chương|chuong|chapter|chap|ch|hồi|hoi|第)\s*[.:#_-]?\s*(\d+(?:\.\d+)?)\s*[章回话話节節集]?(.*)$/i.exec(line);
+  if (!m || Number(m[1]) !== n) return false;
+  const rest = m[2].replace(/^[\s:：\-–—.、,)\]]+/, '').replace(/[\s.]+$/, '').trim();
+  return !rest || rest === label?.trim();
 }
 
 function currentProgress(el: HTMLElement | null) {
