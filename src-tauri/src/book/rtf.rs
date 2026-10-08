@@ -14,7 +14,6 @@ const SKIP_DESTINATIONS: &[&str] = &[
     "colortbl",
     "stylesheet",
     "info",
-    "pict",
     "object",
     "header",
     "headerl",
@@ -48,6 +47,8 @@ const SKIP_DESTINATIONS: &[&str] = &[
 #[derive(Clone, Copy)]
 struct Group {
     skip: bool,
+    /// Inside a `\pict` group (picture data as hex digits).
+    pict: bool,
     /// Characters to drop after `\uN` (the ANSI fallback).
     uc: usize,
 }
@@ -106,7 +107,15 @@ pub fn extract_rtf(
         skip_chars: 0,
     };
     let mut stack: Vec<Group> = Vec::new();
-    let mut g = Group { skip: false, uc: 1 };
+    let mut g = Group {
+        skip: false,
+        pict: false,
+        uc: 1,
+    };
+    // The picture being read: its format (PNG/JPEG; others can't be shown) and hex data.
+    let mut pict_kind: Option<&'static str> = None;
+    let mut pict_hex: Vec<u8> = Vec::new();
+    let mut pictures = 0usize;
     // `\*` marks the group being opened as skippable if its word is unknown.
     let mut star = false;
 
@@ -117,18 +126,58 @@ pub fn extract_rtf(
                 doc.flush_bytes();
                 stack.push(g);
                 star = false;
+                // Groups inside a picture (\blipuid …) are not picture data.
+                if g.pict {
+                    g.pict = false;
+                    g.skip = true;
+                }
             }
             b'}' => {
                 doc.flush_bytes();
+                let was_pict = g.pict;
                 g = stack.pop().unwrap_or(g);
                 star = false;
+                if was_pict && !g.pict {
+                    if pict_kind.is_some() {
+                        let bytes: Vec<u8> = pict_hex
+                            .chunks_exact(2)
+                            .filter_map(|h| {
+                                u8::from_str_radix(std::str::from_utf8(h).ok()?, 16).ok()
+                            })
+                            .collect();
+                        doc.par()?;
+                        pictures += 1;
+                        doc.sink.picture(&format!("pict{pictures}"), &bytes)?;
+                    }
+                    pict_kind = None;
+                    pict_hex.clear();
+                }
             }
             b'\\' => {
                 let Some(next) = input.next() else { break };
                 let next = next?;
                 if next.is_ascii_alphabetic() {
                     let (word, param) = control_word(next, &mut input)?;
+                    if g.pict {
+                        match word.as_str() {
+                            "pngblip" => pict_kind = Some("png"),
+                            "jpegblip" => pict_kind = Some("jpeg"),
+                            _ => {}
+                        }
+                        continue;
+                    }
                     if g.skip {
+                        continue;
+                    }
+                    // Word wraps pictures in {\*\shppict{\pict …}}: read inside it.
+                    if word == "shppict" {
+                        star = false;
+                        continue;
+                    }
+                    if word == "pict" {
+                        g.skip = true;
+                        g.pict = true;
+                        star = false;
                         continue;
                     }
                     if star || SKIP_DESTINATIONS.contains(&word.as_str()) {
@@ -191,6 +240,11 @@ pub fn extract_rtf(
                 }
             }
             b'\r' | b'\n' => {}
+            _ if g.pict => {
+                if b.is_ascii_hexdigit() {
+                    pict_hex.push(b);
+                }
+            }
             _ if g.skip => {}
             _ => {
                 star = false;
@@ -280,5 +334,18 @@ Vi\u7879?t Nam\par
         let mut book =
             extract_rtf(Cursor::new(rtf.as_bytes().to_vec()), &test_dir(), None).unwrap();
         assert_eq!(book.load(0).unwrap().paragraphs, vec!["第一章"]);
+    }
+
+    #[test]
+    fn rtf_png_pictures() {
+        let rtf = r"{\rtf1\ansi Before{\*\shppict{\pict{\*\blipuid ffff}\pngblip\picw10 89504e47
+0d0a}}{\nonshppict{\pict\wmetafile8 0102}}After\par}";
+        let mut book =
+            extract_rtf(Cursor::new(rtf.as_bytes().to_vec()), &test_dir(), None).unwrap();
+        assert_eq!(
+            book.load(0).unwrap().paragraphs,
+            vec!["Before", "\u{FFFC}pict1", "After"]
+        );
+        assert_eq!(book.image("pict1").unwrap().bytes, b"\x89PNG\r\n");
     }
 }

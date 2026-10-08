@@ -6,6 +6,7 @@
 pub mod commands;
 pub mod db;
 
+use crate::book::image::{self, Image};
 use crate::book::{BookError, BookFormat, BookSource, Section, SectionMeta};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
@@ -166,12 +167,31 @@ pub fn import(
             "insert into chapter_translations (chapter_id, lang, source, state, title, content, word_count)
              values (?1, ?2, 'original', 'published', ?3, ?4, ?5)",
         )?;
+        let mut picture = tx.prepare(
+            "insert or ignore into chapter_images (novel_id, key, mime, data) values (?1, ?2, ?3, ?4)",
+        )?;
+        let mut stored = std::collections::HashSet::new();
         let mut first = first.into_iter();
         for (i, meta) in sections.iter().enumerate() {
             let section = match first.next() {
                 Some(s) => s,
                 None => source.load(i)?,
             };
+            // Pictures are copied in as they are met, one at a time; a picture the
+            // book can't produce is skipped (the reader hides a missing one).
+            for key in section.paragraphs.iter().filter_map(|p| image::key_of(p)) {
+                if stored.insert(key.to_string()) {
+                    if let Ok(img) = source.image(key) {
+                        picture.execute(params![novel_id, key, img.mime, img.bytes])?;
+                    }
+                }
+            }
+            let words: i64 = section
+                .paragraphs
+                .iter()
+                .filter(|p| image::key_of(p).is_none())
+                .map(|p| word_count(p))
+                .sum();
             let content = section.paragraphs.join("\n\n");
             chapter.execute(params![novel_id, i as i64 + 1])?;
             let chapter_id = tx.last_insert_rowid();
@@ -180,7 +200,7 @@ pub fn import(
                 lang,
                 meta.label.clone().unwrap_or_default(),
                 content,
-                word_count(&content)
+                words
             ])?;
             on_progress(i + 1, total);
         }
@@ -279,7 +299,8 @@ pub fn save_progress(
     Ok(())
 }
 
-/// Removes a book with its chapters and history; drops authors left with no books.
+/// Removes a book with its chapters, pictures and history; drops authors left with
+/// no books. The caller removes a kept original file.
 pub fn delete(conn: &Connection, novel_id: i64) -> rusqlite::Result<()> {
     conn.execute("delete from novels where id = ?1", [novel_id])?;
     conn.execute(
@@ -293,13 +314,34 @@ pub fn delete(conn: &Connection, novel_id: i64) -> rusqlite::Result<()> {
 /// chapter's text is queried when the reader's window reaches it.
 pub struct DbBook {
     conn: Connection,
+    novel_id: i64,
     title: String,
     lang: String,
     chapters: Vec<(i64, String)>,
+    /// The kept original of a PDF/DjVu book, for drawing its pages.
+    original: Option<Box<dyn BookSource>>,
+}
+
+/// Folder next to the library file holding kept originals (`{novel_id}.pdf`).
+pub fn originals_dir(db_path: &Path) -> std::path::PathBuf {
+    db_path.with_extension("files")
+}
+
+/// The kept original of a book, if there is one.
+pub fn original_file(db_path: &Path, novel_id: i64) -> Option<std::path::PathBuf> {
+    ["pdf", "djvu"]
+        .iter()
+        .map(|ext| originals_dir(db_path).join(format!("{novel_id}.{ext}")))
+        .find(|p| p.is_file())
 }
 
 impl DbBook {
-    pub fn open(path: &Path, novel_id: i64) -> Result<(BookFormat, Self), BookError> {
+    /// `original` is the kept PDF/DjVu file opened as a book, when there is one.
+    pub fn open(
+        path: &Path,
+        novel_id: i64,
+        original: Option<Box<dyn BookSource>>,
+    ) -> Result<(BookFormat, Self), BookError> {
         let conn = db::open(path)?;
         let (title, lang, format): (String, String, Option<String>) = conn
             .query_row(
@@ -327,9 +369,11 @@ impl DbBook {
             format,
             Self {
                 conn,
+                novel_id,
                 title,
                 lang,
                 chapters,
+                original,
             },
         ))
     }
@@ -341,13 +385,42 @@ impl BookSource for DbBook {
     }
 
     fn sections(&self) -> Vec<SectionMeta> {
+        // Page ranges come from the original; chapters were stored in its order.
+        let pages = self
+            .original
+            .as_ref()
+            .map(|o| o.sections())
+            .filter(|s| s.len() == self.chapters.len());
         self.chapters
             .iter()
-            .map(|(_, title)| SectionMeta {
+            .enumerate()
+            .map(|(i, (_, title))| SectionMeta {
                 label: (!title.is_empty()).then(|| title.clone()),
-                pages: None,
+                pages: pages.as_ref().and_then(|p| p[i].pages),
             })
             .collect()
+    }
+
+    fn image(&mut self, key: &str) -> Result<Image, BookError> {
+        self.conn
+            .query_row(
+                "select mime, data from chapter_images where novel_id = ?1 and key = ?2",
+                params![self.novel_id, key],
+                |r| Ok(Image::sniff(r.get::<_, Vec<u8>>(1)?)),
+            )
+            .optional()?
+            .ok_or_else(|| BookError::NoImage(key.to_string()))
+    }
+
+    fn page_images(&self) -> bool {
+        self.original.as_ref().is_some_and(|o| o.page_images())
+    }
+
+    fn render_page(&mut self, page: u32, width: u32) -> Result<Image, BookError> {
+        match &mut self.original {
+            Some(o) => o.render_page(page, width),
+            None => Err(BookError::NoImage(format!("page {page}"))),
+        }
     }
 
     fn load(&mut self, index: usize) -> Result<Section, BookError> {
@@ -402,6 +475,12 @@ mod tests {
                 paragraphs: self.0[index].1.iter().map(|p| p.to_string()).collect(),
             })
         }
+        fn image(&mut self, key: &str) -> Result<Image, BookError> {
+            match key {
+                "a.png" => Ok(Image::sniff(b"\x89PNG".to_vec())),
+                _ => Err(BookError::NoImage(key.into())),
+            }
+        }
     }
 
     fn temp_db(name: &str) -> std::path::PathBuf {
@@ -453,7 +532,7 @@ mod tests {
         assert_eq!(listed[0].chapter_count, 3);
         assert_eq!(listed[0].last_read, None);
 
-        let (format, mut db_book) = DbBook::open(&path, id).unwrap();
+        let (format, mut db_book) = DbBook::open(&path, id, None).unwrap();
         assert_eq!(format, BookFormat::Epub);
         let labels: Vec<_> = db_book.sections().into_iter().map(|s| s.label).collect();
         assert_eq!(
@@ -508,12 +587,33 @@ mod tests {
         );
         assert!(book.title.starts_with("truyen-"));
 
-        let (_, mut db_book) = DbBook::open(&path, id).unwrap();
+        let (_, mut db_book) = DbBook::open(&path, id, None).unwrap();
         assert_eq!(
             db_book.load(0).unwrap().paragraphs,
             source.load(0).unwrap().paragraphs
         );
         std::fs::remove_file(file).unwrap();
+    }
+
+    #[test]
+    fn imports_pictures_into_the_database() {
+        let path = temp_db("pictures");
+        let mut conn = db::open(&path).unwrap();
+        let mut book = Fake(vec![
+            (None, vec!["Mở đầu", "\u{FFFC}a.png", "\u{FFFC}missing.png"]),
+            (None, vec!["\u{FFFC}a.png", "Hết"]),
+        ]);
+        let id = import(&mut conn, BookFormat::Epub, &mut book, "a.epub", |_, _| {}).unwrap();
+        let (_, mut db_book) = DbBook::open(&path, id, None).unwrap();
+        assert_eq!(db_book.load(0).unwrap().paragraphs[1], "\u{FFFC}a.png");
+        assert_eq!(db_book.image("a.png").unwrap().mime, "image/png");
+        assert!(db_book.image("missing.png").is_err());
+        assert!(!db_book.page_images());
+        delete(&conn, id).unwrap();
+        let left: i64 = conn
+            .query_row("select count(*) from chapter_images", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, 0);
     }
 
     #[test]
@@ -524,7 +624,7 @@ mod tests {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 1);
+        assert_eq!(version, 2);
         let langs: i64 = conn
             .query_row("select count(*) from languages", [], |r| r.get(0))
             .unwrap();

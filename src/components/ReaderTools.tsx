@@ -8,6 +8,7 @@ import { BookIcon, SparklesIcon, XIcon } from './Icons';
 import { Checkbox, Segmented } from './ui';
 import { useLayout } from '../lib/useLayout';
 
+export type ToolsTab = 'reading' | 'replace' | 'ai';
 export interface Translation { lang: ContentLang; style: TranslateStyle; dict: boolean }
 
 const FONT_MIN = 14, FONT_MAX = 26;
@@ -16,7 +17,7 @@ const FONT_MIN = 14, FONT_MAX = 26;
  * Reading settings and the (simulated) AI dictionary / translator.
  * Phone: bottom sheet over the chapter. Tablet and desktop: a side panel the chapter makes room for.
  */
-export function ReaderTools({ glossary, lang, rules, onRulesChange, onClose, onTranslate }: {
+export function ReaderTools({ glossary, lang, rules, onRulesChange, onClose, onTranslate, initialTab = 'reading' }: {
   glossary: Record<string, GlossaryTerm>;
   /** Language of the text on screen; replace rules are kept per language. */
   lang: ContentLang;
@@ -24,10 +25,11 @@ export function ReaderTools({ glossary, lang, rules, onRulesChange, onClose, onT
   onRulesChange: (rules: ReplaceRule[]) => void;
   onClose: () => void;
   onTranslate: (t: Translation) => void;
+  initialTab?: ToolsTab;
 }) {
   const { t } = useI18n();
   const lay = useLayout();
-  const [tab, setTab] = useState<'reading' | 'replace' | 'ai'>('reading');
+  const [tab, setTab] = useState<ToolsTab>(initialTab);
 
   return (
     <div style={{
@@ -47,7 +49,7 @@ export function ReaderTools({ glossary, lang, rules, onRulesChange, onClose, onT
         <div className="nx-scroll" style={{ overflowY: 'auto', padding: '0 20px calc(env(safe-area-inset-bottom) + 30px)', display: 'flex', flexDirection: 'column', gap: 18 }}>
           {tab === 'reading' && <ReadingTab />}
           {tab === 'replace' && <ReplaceTab lang={lang} rules={rules} onChange={onRulesChange} />}
-          {tab === 'ai' && <AiTab glossary={glossary} onTranslate={onTranslate} />}
+          {tab === 'ai' && <AiTab glossary={glossary} currentLang={lang} onTranslate={onTranslate} />}
         </div>
       </div>
     </div>
@@ -156,10 +158,8 @@ function ReplaceTab({ lang, rules, onChange }: { lang: ContentLang; rules: Repla
 const panel: React.CSSProperties = { borderRadius: 30, background: 'var(--color-surface)', padding: 16, display: 'flex', flexDirection: 'column', gap: 12 };
 const panelIcon = (bg: string, fg: string): React.CSSProperties => ({ width: 34, height: 34, borderRadius: '50%', background: bg, color: fg, display: 'grid', placeItems: 'center' });
 
-function AiTab({ glossary: terms, onTranslate }: { glossary: Record<string, GlossaryTerm>; onTranslate: (t: Translation) => void }) {
+function AiTab({ glossary: terms, currentLang, onTranslate }: { glossary: Record<string, GlossaryTerm>; currentLang: ContentLang; onTranslate: (t: Translation) => void }) {
   const { t } = useI18n();
-  const app = useApp();
-  const currentLang = app.top.s === 'reader' ? app.top.lang : 'en';
   const [word, setWord] = useState('');
   const [result, setResult] = useState<(DictEntry & { word: string }) | null>(null);
   const [trLang, setTrLang] = useState<ContentLang>(currentLang === 'vi' ? 'en' : 'vi');

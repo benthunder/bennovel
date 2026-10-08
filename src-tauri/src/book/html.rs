@@ -70,6 +70,7 @@ pub fn extract_html(
     mut r: impl Read,
     cache_dir: &Path,
     title: Option<String>,
+    base: Option<&Path>,
 ) -> Result<ExtractedBook, BookError> {
     let mut sink = Sink::new(cache_dir)?;
     sink.title = title;
@@ -86,6 +87,9 @@ pub fn extract_html(
         feeder.bytes(&mut sink, &buf[..n], false)?;
     }
     feeder.bytes(&mut sink, &[], true)?;
+    if let Some(base) = base {
+        sink.load_linked_images(base)?;
+    }
     sink.finish()
 }
 
@@ -197,7 +201,108 @@ pub fn extract_mht(
         feeder.bytes(&mut sink, &decoded, false)?;
     }
     feeder.bytes(&mut sink, &[], true)?;
+    if let Some(b) = &boundary {
+        read_mht_images(&mut r, b, &mut sink)?;
+    }
     sink.finish()
+}
+
+/// Saves the picture parts that follow the page, keyed by Content-Location and
+/// `cid:` Content-ID, then matches the page's links to them (by full URL, else by
+/// file name, as pages often link relatively).
+fn read_mht_images(
+    r: &mut impl BufRead,
+    boundary: &[u8],
+    sink: &mut Sink,
+) -> Result<(), BookError> {
+    let mut line = Vec::new();
+    let mut headers = String::new();
+    let mut in_body = false;
+    let mut body = Vec::new();
+    let mut saved: Vec<String> = Vec::new();
+    let mut finish_part = |headers: &str, body: &[u8], sink: &mut Sink| -> Result<(), BookError> {
+        let lower = headers.to_ascii_lowercase();
+        if !header(&lower, "content-type")
+            .unwrap_or_default()
+            .starts_with("image/")
+        {
+            return Ok(());
+        }
+        let mut bytes = Vec::new();
+        match header(&lower, "content-transfer-encoding").as_deref() {
+            Some("base64") => decode_base64(
+                &body
+                    .iter()
+                    .copied()
+                    .filter(|c| !c.is_ascii_whitespace())
+                    .collect::<Vec<_>>(),
+                &mut bytes,
+            ),
+            Some("quoted-printable") => {
+                for l in body.split_inclusive(|&c| c == b'\n') {
+                    decode_qp_line(l, &mut bytes);
+                }
+            }
+            _ => bytes.extend_from_slice(body),
+        }
+        let mut keys = Vec::new();
+        if let Some(loc) = header(headers, "content-location") {
+            keys.push(loc);
+        }
+        if let Some(id) = header(headers, "content-id") {
+            keys.push(format!("cid:{}", id.trim_matches(['<', '>'])));
+        }
+        for k in keys {
+            sink.save_image(&k, &bytes)?;
+            saved.push(k);
+        }
+        Ok(())
+    };
+    loop {
+        line.clear();
+        let eof = r.read_until(b'\n', &mut line)? == 0;
+        let is_boundary = line.starts_with(b"--") && line[2..].starts_with(boundary);
+        if eof || is_boundary {
+            if in_body {
+                finish_part(&headers, &body, sink)?;
+            }
+            if eof {
+                break;
+            }
+            headers.clear();
+            body.clear();
+            in_body = false;
+            continue;
+        }
+        if in_body {
+            body.extend_from_slice(&line);
+            continue;
+        }
+        let text = String::from_utf8_lossy(&line);
+        let trimmed = text.trim_end();
+        if trimmed.is_empty() {
+            in_body = !headers.is_empty();
+        } else {
+            headers.push(if trimmed.starts_with([' ', '\t']) {
+                ' '
+            } else {
+                '\n'
+            });
+            headers.push_str(trimmed.trim());
+        }
+    }
+    for key in sink.missing_images() {
+        let name = super::image::resolve("", &key);
+        let name = name.rsplit('/').next().unwrap_or_default().to_string();
+        let found = saved.iter().find(|s| {
+            let s = super::image::percent_decode(s.split(['#', '?']).next().unwrap_or_default());
+            !name.is_empty() && (s == name || s.ends_with(&format!("/{name}")))
+        });
+        if let Some(existing) = found.cloned() {
+            sink.alias(&key, &existing);
+        }
+    }
+    Ok(())
 }
 
 fn header(headers: &str, name: &str) -> Option<String> {
@@ -286,7 +391,8 @@ mod tests {
     fn html_headings_start_chapters() {
         let html = "<html><head><meta charset=\"windows-1252\"><title>x</title></head><body><h1>One</h1><p>caf\u{e9}</p><h2>Two</h2><p>b</p></body></html>";
         let (bytes, _, _) = encoding_rs::WINDOWS_1252.encode(html);
-        let mut book = extract_html(Cursor::new(bytes.into_owned()), &test_dir(), None).unwrap();
+        let mut book =
+            extract_html(Cursor::new(bytes.into_owned()), &test_dir(), None, None).unwrap();
         let labels: Vec<_> = book.sections().into_iter().map(|s| s.label).collect();
         assert_eq!(labels, vec![Some("One".into()), Some("Two".into())]);
         assert_eq!(texts(&mut book), vec!["One", "café", "Two", "b"]);
@@ -323,5 +429,28 @@ mod tests {
         }
         let mut book = extract_mht(Cursor::new(msg), &test_dir(), None).unwrap();
         assert_eq!(texts(&mut book), vec!["Tựa", "Nội dung"]);
+    }
+
+    #[test]
+    fn html_and_mht_pictures() {
+        let base = test_dir().join(format!("html-{}", std::process::id()));
+        std::fs::create_dir_all(base.join("img")).unwrap();
+        std::fs::write(base.join("img/a b.png"), b"\x89PNG").unwrap();
+        let html = r#"<p>Một</p><img src="img/a%20b.png"><img src="data:image/gif;base64,R0lGOA=="><img src="http://x/y.png">"#;
+        let mut book =
+            extract_html(Cursor::new(html.as_bytes().to_vec()), &test_dir(), None, Some(&base))
+                .unwrap();
+        let paras = texts(&mut book);
+        assert_eq!(paras.len(), 4);
+        assert_eq!(book.image("img/a%20b.png").unwrap().mime, "image/png");
+        let data_key = paras[2].trim_start_matches('\u{FFFC}');
+        assert_eq!(book.image(data_key).unwrap().mime, "image/gif");
+        assert!(book.image("http://x/y.png").is_err());
+
+        let msg = "MIME-Version: 1.0\r\nContent-Type: multipart/related; boundary=\"B\"\r\n\r\n--B\r\nContent-Type: text/html; charset=utf-8\r\nContent-Location: http://site/page/index.html\r\n\r\n<p>Trang</p><img src=\"pics/p.png\"><img src=\"cid:c1\">\r\n--B\r\nContent-Type: image/png\r\nContent-Transfer-Encoding: base64\r\nContent-Location: http://site/page/pics/p.png\r\n\r\niVBORw==\r\n--B\r\nContent-Type: image/jpeg\r\nContent-Transfer-Encoding: base64\r\nContent-ID: <c1>\r\n\r\n/9g=\r\n--B--\r\n";
+        let mut book = extract_mht(Cursor::new(msg.as_bytes().to_vec()), &test_dir(), None).unwrap();
+        assert_eq!(texts(&mut book).len(), 3);
+        assert_eq!(book.image("pics/p.png").unwrap().mime, "image/png");
+        assert_eq!(book.image("cid:c1").unwrap().mime, "image/jpeg");
     }
 }

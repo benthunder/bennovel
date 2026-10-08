@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "BenNovel",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "identifier": "com.bennovel.app",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -32,6 +32,143 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
+    ],
+    "fileAssociations": [
+      {
+        "ext": [
+          "epub"
+        ],
+        "mimeType": "application/epub+zip",
+        "name": "EPUB",
+        "description": "EPUB book",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": [
+          "pdf"
+        ],
+        "mimeType": "application/pdf",
+        "name": "PDF",
+        "description": "PDF book",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": [
+          "mobi",
+          "prc"
+        ],
+        "mimeType": "application/x-mobipocket-ebook",
+        "name": "MOBI",
+        "description": "MOBI book",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": [
+          "azw",
+          "azw3"
+        ],
+        "mimeType": "application/vnd.amazon.ebook",
+        "name": "Kindle",
+        "description": "Kindle book",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": [
+          "fb2"
+        ],
+        "mimeType": "application/x-fictionbook+xml",
+        "name": "FictionBook",
+        "description": "FictionBook book",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": [
+          "djvu",
+          "djv"
+        ],
+        "mimeType": "image/vnd.djvu",
+        "name": "DjVu",
+        "description": "DjVu book",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": [
+          "chm"
+        ],
+        "mimeType": "application/vnd.ms-htmlhelp",
+        "name": "CHM",
+        "description": "CHM book",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": [
+          "txt"
+        ],
+        "mimeType": "text/plain",
+        "name": "Text",
+        "description": "Text book",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": [
+          "md",
+          "markdown"
+        ],
+        "mimeType": "text/markdown",
+        "name": "Markdown",
+        "description": "Markdown book",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": [
+          "docx"
+        ],
+        "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "name": "Word",
+        "description": "Word book",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": [
+          "odt"
+        ],
+        "mimeType": "application/vnd.oasis.opendocument.text",
+        "name": "OpenDocument",
+        "description": "OpenDocument book",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": [
+          "rtf"
+        ],
+        "mimeType": "application/rtf",
+        "name": "RTF",
+        "description": "RTF book",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": [
+          "mht",
+          "mhtml"
+        ],
+        "mimeType": "message/rfc822",
+        "name": "MHT",
+        "description": "MHT book",
+        "role": "Viewer",
+        "rank": "Alternate"
+      }
     ]
   }
 }

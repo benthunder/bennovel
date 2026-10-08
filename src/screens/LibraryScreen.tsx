@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ask } from '@tauri-apps/plugin-dialog';
 import { CoverGrid, Spinner } from '../components/ui';
+import { NovelCover } from '../components/NovelCover';
+import { XIcon } from '../components/Icons';
 import { getNovels } from '../data/repository';
 import { useT } from '../i18n';
 import { useApp } from '../store/AppStore';
 import { useLayout } from '../lib/useLayout';
 import {
-  canOpenLocalBooks, deleteLibraryBook, importLocalBook, libraryUser, listLibrary, openLibraryBook, pickLocalBook,
+  canOpenLocalBooks, deleteLibraryBook, importLocalBook, libraryUser, listLibrary, localCover, openLibraryBook, pickLocalBook,
   type LibraryBook
 } from '../lib/localBook';
 
@@ -50,6 +52,7 @@ export function LibraryScreen() {
 function DeviceBooks({ onOpenFile }: { onOpenFile: () => void }) {
   const t = useT();
   const app = useApp();
+  const lay = useLayout();
   const user = libraryUser(app.user);
   const [books, setBooks] = useState<LibraryBook[] | null>(null);
   const [importing, setImporting] = useState<{ done: number; total: number } | null>(null);
@@ -92,6 +95,7 @@ function DeviceBooks({ onOpenFile }: { onOpenFile: () => void }) {
     if (!(await ask(t('library.deleteAsk', { title: b.title }), { kind: 'warning' }))) return;
     try {
       await deleteLibraryBook(user, b.novelId);
+      app.forgetLocal(b.novelId);
       reload();
     } catch (e) {
       fail('book.openFailed', e);
@@ -108,25 +112,19 @@ function DeviceBooks({ onOpenFile }: { onOpenFile: () => void }) {
         <button className="btn btn-secondary" disabled={!!importing} onClick={onOpenFile}>{t('library.openOnce')}</button>
       </div>
       {books?.length === 0 && <p className="muted" style={{ fontSize: 13, margin: 0 }}>{t('library.deviceEmpty')}</p>}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {books?.map(b => {
-          const at = b.lastRead ? b.lastRead.index + 1 : 0;
-          return (
-            <div key={b.novelId} className="card" style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14 }}>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div className="card-title" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{b.title}</div>
-                <div className="muted" style={{ fontSize: 12 }}>
-                  {[b.format?.toUpperCase(), b.lang.toUpperCase(), b.lastRead ? t('library.at', { n: at, total: b.chapterCount }) : t('library.parts', { n: b.chapterCount })].filter(Boolean).join(' · ')}
-                </div>
-                <div style={{ height: 4, marginTop: 8, borderRadius: 999, background: 'var(--color-neutral-200)', overflow: 'hidden' }}>
-                  <div style={{ height: '100%', width: `${Math.round((at / Math.max(b.chapterCount, 1)) * 100)}%`, background: 'var(--color-accent)' }} />
-                </div>
-              </div>
-              <button className="btn btn-primary" onClick={() => read(b)}>{b.lastRead ? t('library.continue') : t('library.read')}</button>
-              <button className="btn btn-secondary" aria-label={t('library.delete')} onClick={() => remove(b)}>✕</button>
-            </div>
-          );
-        })}
+      {/* Shown like the online novels; Continue in the navigation resumes the one read last. */}
+      <div className="cover-grid" style={{ gridTemplateColumns: lay.libCols, gap: lay.libGap }}>
+        {books?.map(b => (
+          <div key={b.novelId} style={{ position: 'relative', minWidth: 0 }}>
+            <button className="shelf-item" style={{ minWidth: 0, width: '100%' }} onClick={() => read(b)}>
+              <NovelCover novel={{ title: b.title, cover: localCover(b.title) }} w="100%" h="auto" fs={lay.libFs} style={{ aspectRatio: 0.7 }} />
+              <div className="shelf-item__title" style={{ fontSize: 12 }}>{b.title}</div>
+              <div className="shelf-item__author muted">{[b.format?.toUpperCase(), b.lang.toUpperCase()].filter(Boolean).join(' · ')}</div>
+            </button>
+            <button className="btn btn-icon btn-secondary" aria-label={t('library.delete')} onClick={() => remove(b)}
+              style={{ position: 'absolute', top: 6, right: 6, width: 30, height: 30, fontSize: 12 }}><XIcon size={14} /></button>
+          </div>
+        ))}
       </div>
     </section>
   );

@@ -1,3 +1,4 @@
+use super::image::{self, Image};
 use super::text::html_to_paragraphs;
 use super::{BookError, BookSource, Section, SectionMeta};
 use ::epub::doc::{EpubDoc, NavPoint};
@@ -69,10 +70,27 @@ impl<R: Read + Seek + Send> BookSource for EpubBook<R> {
             .doc
             .get_resource_str(&idref)
             .ok_or_else(|| BookError::Parse(format!("missing chapter {idref}")))?;
+        // Picture links are relative to the chapter file; keys are paths in the ZIP.
+        let chapter = self
+            .doc
+            .resources
+            .get(&idref)
+            .map(|r| r.path.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
         Ok(Section {
             index,
-            paragraphs: html_to_paragraphs(&html),
+            paragraphs: html_to_paragraphs(&html, |src| {
+                (!src.contains("://") && !src.starts_with("data:"))
+                    .then(|| image::resolve(&chapter, src))
+            }),
         })
+    }
+
+    fn image(&mut self, key: &str) -> Result<Image, BookError> {
+        self.doc
+            .get_resource_by_path(key)
+            .map(Image::sniff)
+            .ok_or_else(|| BookError::NoImage(key.to_string()))
     }
 }
 
@@ -123,6 +141,11 @@ pub(crate) mod tests {
                 &format!("<html><body><h1>Chương {i}</h1><p>Nội dung {i}.</p></body></html>"),
             );
         }
+        put(
+            "OEBPS/text/pic.xhtml",
+            r#"<html><body><p>Trước</p><svg><image xlink:href="../img/cover.png"/></svg><img src="../img/a.png"/><img src="http://x/y.png"/></body></html>"#,
+        );
+        put("OEBPS/img/a.png", "\u{89}PNG fake");
         zip.finish().unwrap().into_inner()
     }
 
@@ -144,5 +167,31 @@ pub(crate) mod tests {
             vec!["Chương 2", "Nội dung 2."]
         );
         assert!(matches!(book.load(3), Err(BookError::NoSection(3))));
+    }
+
+    #[test]
+    fn pictures_resolve_against_the_chapter() {
+        let mut book = EpubBook::open(Cursor::new(sample_epub(1))).unwrap();
+        let html = book
+            .doc
+            .get_resource_str_by_path("OEBPS/text/pic.xhtml")
+            .unwrap();
+        let paras = html_to_paragraphs(&html, |src| {
+            (!src.contains("://")).then(|| image::resolve("OEBPS/text/pic.xhtml", src))
+        });
+        assert_eq!(
+            paras,
+            vec![
+                "Trước".to_string(),
+                image::paragraph("OEBPS/img/cover.png"),
+                image::paragraph("OEBPS/img/a.png")
+            ]
+        );
+        assert!(book
+            .image("OEBPS/img/a.png")
+            .unwrap()
+            .bytes
+            .ends_with(b"PNG fake"));
+        assert!(book.image("OEBPS/img/missing.png").is_err());
     }
 }

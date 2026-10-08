@@ -2,6 +2,7 @@
 //! The file is memory-mapped, so the OS only loads the pages that are read.
 
 use super::extract::TempCopy;
+use super::image::{self, Image};
 use super::text::pdf_text_to_paragraphs;
 use super::{BookError, BookSource, Section, SectionMeta};
 use djvu_rs::djvu_document::MmapDocument;
@@ -70,6 +71,20 @@ impl BookSource for DjvuBook {
         }
         Ok(Section { index, paragraphs })
     }
+
+    fn page_images(&self) -> bool {
+        true
+    }
+
+    fn render_page(&mut self, page: u32, width: u32) -> Result<Image, BookError> {
+        if page == 0 || page as usize > self.pages {
+            return Err(BookError::NoImage(format!("page {page}")));
+        }
+        let page = self.doc.page(page as usize - 1).map_err(err)?;
+        let opts = djvu_rs::djvu_render::RenderOptions::fit_to_width(page, width.clamp(200, 3000));
+        let pix = djvu_rs::djvu_render::render_pixmap(page, &opts).map_err(err)?;
+        image::encode_jpeg(pix.width, pix.height, &pix.data)
+    }
 }
 
 #[cfg(test)]
@@ -96,5 +111,8 @@ mod tests {
                 "Kết thúc trang 12."
             ]
         );
+        let page = book.render_page(12, 400).unwrap();
+        assert_eq!(image::mime_of(&page.bytes), "image/jpeg");
+        assert!(book.render_page(13, 400).is_err());
     }
 }

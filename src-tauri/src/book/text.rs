@@ -30,14 +30,23 @@ pub enum Block {
     Text(String),
     /// Text of an `<h1>`–`<h3>`.
     Heading(String),
+    /// `src` of an `<img>` (or `href` of an SVG `<image>`), as written in the document.
+    Image(String),
 }
 
 /// Paragraph texts of an (X)HTML document, ignoring markup, scripts and styles.
-pub fn html_to_paragraphs(html: &str) -> Vec<String> {
+/// Pictures become image paragraphs keyed by `image_key(src)`; it returns None to
+/// drop a picture (an external link, say).
+pub fn html_to_paragraphs(html: &str, image_key: impl Fn(&str) -> Option<String>) -> Vec<String> {
     let mut out = Vec::new();
     let mut parser = HtmlText::default();
     let mut push = |b: Block| match b {
         Block::Text(t) | Block::Heading(t) => out.push(t),
+        Block::Image(src) => {
+            if let Some(key) = image_key(&src) {
+                out.push(super::image::paragraph(&key));
+            }
+        }
     };
     parser.feed(html, &mut push);
     parser.finish(&mut push);
@@ -114,6 +123,24 @@ impl HtmlText {
         // Namespaced tags such as <svg:svg> count by their local name.
         let name = name.rsplit(':').next().unwrap_or("").to_string();
 
+        if !closing && matches!(name.as_str(), "img" | "image") {
+            let src = if name == "img" {
+                // MOBI pictures are <img recindex="00001"> (record number), no src.
+                super::image::attr(tag, "src").or_else(|| {
+                    super::image::attr(tag, "recindex").map(|n| format!("recindex:{n}"))
+                })
+            } else {
+                super::image::attr(tag, "href")
+            };
+            // Covers are often an <image> inside an otherwise skipped <svg>.
+            if self.skip_until.is_none() || self.skip_until.as_deref() == Some("svg") {
+                if let Some(src) = src.filter(|s| !s.trim().is_empty()) {
+                    self.flush(out);
+                    out(Block::Image(src.trim().to_string()));
+                }
+            }
+            return;
+        }
         if let Some(skipped) = &self.skip_until {
             if closing && *skipped == name {
                 self.skip_until = None;
@@ -189,7 +216,7 @@ fn flush(out: &mut Vec<String>, cur: &mut String) {
     cur.clear();
 }
 
-fn decode_entities(s: &str) -> String {
+pub(super) fn decode_entities(s: &str) -> String {
     if !s.contains('&') {
         return s.to_string();
     }
@@ -248,15 +275,15 @@ mod tests {
             <body><h1>Chương 1</h1><p>Xin <b>chào</b>
             thế giới.</p><!-- note --><p>A&amp;B &#x4E2D; &#20013;&nbsp;x</p><br/>tail</body></html>"#;
         assert_eq!(
-            html_to_paragraphs(html),
+            html_to_paragraphs(html, |_| None),
             vec!["Chương 1", "Xin chào thế giới.", "A&B 中 中 x", "tail"]
         );
     }
 
     #[test]
     fn streaming_matches_whole_document_at_any_split() {
-        let html = "<html><head><style>x{}</style></head><body><h2>Tiêu đề</h2><p>A &amp; B<!-- c --> c</p><p>dài</p></body></html>";
-        let whole = html_to_paragraphs(html);
+        let html = "<html><head><style>x{}</style></head><body><h2>Tiêu đề</h2><p>A &amp; B<!-- c --> c</p><img src=\"a.png\"/><p>dài</p></body></html>";
+        let whole = html_to_paragraphs(html, |s| Some(s.to_string()));
         for size in 1..html.len() {
             let mut parser = HtmlText::default();
             let mut got = Vec::new();
@@ -276,6 +303,7 @@ mod tests {
                 .into_iter()
                 .map(|b| match b {
                     Block::Text(t) | Block::Heading(t) => t,
+                    Block::Image(src) => super::super::image::paragraph(&src),
                 })
                 .collect();
             assert_eq!(texts, whole, "split {size}");
@@ -285,7 +313,7 @@ mod tests {
     #[test]
     fn unknown_entities_stay_as_text() {
         assert_eq!(
-            html_to_paragraphs("<p>a &foo; & b</p>"),
+            html_to_paragraphs("<p>a &foo; & b</p>", |_| None),
             vec!["a &foo; & b"]
         );
     }
