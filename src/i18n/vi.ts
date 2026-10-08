@@ -112,7 +112,7 @@ export const vi: Record<MessageKey, string> = {
   'library.import': 'Nhập sách',
   'library.openOnce': 'Đọc không lưu',
   'library.importHintMobile': 'EPUB, PDF, MOBI, TXT và nhiều định dạng khác. Để nhập thư mục, chọn tất cả file chương trong đó: chúng thành một truyện, xếp theo số chương trong tên file.',
-  'library.importHint': 'EPUB, PDF, MOBI, TXT và nhiều định dạng khác. Thư mục được nhập thành một truyện, mỗi file là một chương, xếp theo số chương trong tên file.',
+  'library.importHint': 'EPUB, PDF, MOBI, TXT và nhiều định dạng khác. Thư mục (kể cả thư mục con) được nhập thành một truyện, mỗi file là một chương, xếp theo số chương trong tên file.',
   'library.importFolder': 'Nhập thư mục',
   'library.importing': 'Đang nhập {done}/{total}…',
   'library.imported': 'Đã thêm “{title}” vào thư viện.',

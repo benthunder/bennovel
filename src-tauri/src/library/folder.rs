@@ -13,6 +13,28 @@ pub const BOOK_EXTENSIONS: &[&str] = &[
     "docx", "odt", "rtf", "html", "htm", "xhtml", "mht", "mhtml", "md", "markdown",
 ];
 
+/// Collects the book files in `dir` and, recursively, its subfolders. Hidden entries
+/// and symbolic links (which could loop) are skipped.
+pub fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().to_lowercase();
+        if name.starts_with('.') {
+            continue;
+        }
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            walk(&entry.path(), out)?;
+        } else if kind.is_file() {
+            let ext = name.rsplit_once('.').map(|(_, e)| e).unwrap_or_default();
+            if BOOK_EXTENSIONS.contains(&ext) {
+                out.push(entry.path());
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Opens file `i` (in the order given to `FolderBook::new`) as a book.
 pub type Opener =
     Box<dyn FnMut(usize) -> Result<(BookFormat, Box<dyn BookSource>), BookError> + Send>;
@@ -21,6 +43,9 @@ pub type Opener =
 struct Chapter {
     /// Index for the opener.
     file: usize,
+    /// The folder part of the file's path: subfolders are read in order
+    /// ("Quyển 1/…" before "Quyển 2/…"), files right in the folder first.
+    dir: String,
     label: String,
     number: Option<f64>,
 }
@@ -50,8 +75,13 @@ impl FolderBook {
             let stem = super::file_stem(name);
             // Android may hand out names like "msf:1234"; then the text has to tell.
             let opaque = name.starts_with("content://") && stem.contains(':');
+            let dir = match name.rsplit_once(['/', '\\']) {
+                Some((dir, _)) if !name.starts_with("content://") => dir.to_string(),
+                _ => String::new(),
+            };
             let mut chapter = Chapter {
                 file,
+                dir,
                 number: (!opaque).then(|| chapter_number(&stem)).flatten(),
                 label: stem,
             };
@@ -65,14 +95,16 @@ impl FolderBook {
             }
             chapters.push(chapter);
         }
-        chapters.sort_by(|a, b| match (a.number, b.number) {
-            (Some(x), Some(y)) => x
-                .partial_cmp(&y)
-                .unwrap_or(Ordering::Equal)
-                .then_with(|| natural_cmp(&a.label, &b.label)),
-            (Some(_), None) => Ordering::Less,
-            (None, Some(_)) => Ordering::Greater,
-            (None, None) => natural_cmp(&a.label, &b.label),
+        chapters.sort_by(|a, b| {
+            natural_cmp(&a.dir, &b.dir).then_with(|| match (a.number, b.number) {
+                (Some(x), Some(y)) => x
+                    .partial_cmp(&y)
+                    .unwrap_or(Ordering::Equal)
+                    .then_with(|| natural_cmp(&a.label, &b.label)),
+                (Some(_), None) => Ordering::Less,
+                (None, Some(_)) => Ordering::Greater,
+                (None, None) => natural_cmp(&a.label, &b.label),
+            })
         });
         let (format, first) = open(chapters[0].file)?;
         Ok((
@@ -477,11 +509,11 @@ mod tests {
     fn orders_files_by_chapter() {
         let (_, mut book) = fake_folder(
             &[
-                "/t/Chương 10.txt",
-                "/t/Lời bạt.txt",
-                "/t/Chương 2.txt",
+                "content://x/document/primary%3AT%2FCh%C6%B0%C6%A1ng%2010.txt",
+                "content://x/document/primary%3AT%2FL%E1%BB%9Di%20b%E1%BA%A1t.txt",
+                "content://x/document/primary%3AT%2FCh%C6%B0%C6%A1ng%202.txt",
                 "content://x/msf%3A55",
-                "/t/Chương 1.txt",
+                "content://x/document/primary%3AT%2FCh%C6%B0%C6%A1ng%201.txt",
             ],
             vec![
                 ["Mười", "hết"],
@@ -582,5 +614,50 @@ mod tests {
             ["Ngày xưa có một cô bé.", "Hết chương."]
         );
         assert_eq!(db_book.image("1/a.png").unwrap().mime, "image/png");
+    }
+
+    #[test]
+    fn walks_subfolders_in_order() {
+        let root = crate::book::test_dir().join(format!("walk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for f in [
+            "Quyển 10/Chương 1.txt",
+            "Quyển 2/Chương 2.txt",
+            "Quyển 2/Chương 1.txt",
+            "Mở đầu.txt",
+            "Quyển 2/ghi chú.jpg",
+            ".an/Chương 9.txt",
+        ] {
+            let p = root.join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, "x").unwrap();
+        }
+        let mut found = Vec::new();
+        walk(&root, &mut found).unwrap();
+        let names: Vec<String> = found.iter().map(|p| p.display().to_string()).collect();
+        assert_eq!(names.len(), 4);
+        let texts = vec![["x", "y"]; 4];
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let (_, book) = fake_folder(&refs, texts);
+        let order: Vec<String> = book
+            .chapters
+            .iter()
+            .map(|c| {
+                names[c.file]
+                    .strip_prefix(&root.display().to_string())
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(
+            order,
+            [
+                "/Mở đầu.txt",
+                "/Quyển 2/Chương 1.txt",
+                "/Quyển 2/Chương 2.txt",
+                "/Quyển 10/Chương 1.txt"
+            ]
+        );
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

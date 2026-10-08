@@ -110,7 +110,7 @@ export const en = {
   'library.import': 'Import a book',
   'library.openOnce': 'Read without saving',
   'library.importHintMobile': 'EPUB, PDF, MOBI, TXT and more. For a folder, select all its chapter files: they become one book, ordered by the chapter numbers in their names.',
-  'library.importHint': 'EPUB, PDF, MOBI, TXT and more. A folder becomes one book, one chapter per file, in the order of the chapter numbers in the file names.',
+  'library.importHint': 'EPUB, PDF, MOBI, TXT and more. A folder, subfolders included, becomes one book, one chapter per file, in the order of the chapter numbers in the file names.',
   'library.importFolder': 'Import a folder',
   'library.importing': 'Importing {done}/{total}…',
   'library.imported': 'Added “{title}” to your library.',

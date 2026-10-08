@@ -107,7 +107,8 @@ pub async fn library_import<R: Runtime>(
 
 /// Imports a folder of chapter files as one book, a file per chapter, ordered by the
 /// chapter numbers in their names (`folder.rs`). `paths` is either the picked folder
-/// (desktop) or the picked files (Android, which has no folder picker).
+/// (desktop; its subfolders are read too) or the picked files (Android, which has
+/// no folder picker).
 #[tauri::command]
 pub async fn library_import_folder<R: Runtime>(
     app: AppHandle<R>,
@@ -141,7 +142,7 @@ pub async fn library_import_folder<R: Runtime>(
 }
 
 /// The book files to import and the book title (the folder's name). A folder is
-/// expanded to the book files directly inside it.
+/// expanded to every book file in it and its subfolders.
 fn folder_files(paths: Vec<FilePath>) -> Result<(String, Vec<FilePath>), BookError> {
     let mut files = Vec::new();
     let mut title = None;
@@ -149,20 +150,9 @@ fn folder_files(paths: Vec<FilePath>) -> Result<(String, Vec<FilePath>), BookErr
         match &path {
             FilePath::Path(dir) if dir.is_dir() => {
                 title = dir.file_name().map(|n| n.to_string_lossy().into_owned());
-                for entry in std::fs::read_dir(dir)? {
-                    let p = entry?.path();
-                    let name = p
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_lowercase())
-                        .unwrap_or_default();
-                    let ext = name.rsplit_once('.').map(|(_, e)| e).unwrap_or_default();
-                    if p.is_file()
-                        && !name.starts_with('.')
-                        && folder::BOOK_EXTENSIONS.contains(&ext)
-                    {
-                        files.push(FilePath::Path(p));
-                    }
-                }
+                let mut found = Vec::new();
+                folder::walk(dir, &mut found)?;
+                files.extend(found.into_iter().map(FilePath::Path));
             }
             _ => files.push(path),
         }
