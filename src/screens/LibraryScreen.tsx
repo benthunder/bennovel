@@ -2,13 +2,13 @@ import { useCallback, useEffect, useState } from 'react';
 import { ask } from '@tauri-apps/plugin-dialog';
 import { CoverGrid, Spinner } from '../components/ui';
 import { NovelCover } from '../components/NovelCover';
-import { XIcon } from '../components/Icons';
+import { EyeIcon, FilePlusIcon, FolderOpenIcon, XIcon } from '../components/Icons';
 import { getNovels } from '../data/repository';
 import { useT } from '../i18n';
 import { useApp } from '../store/AppStore';
 import { useLayout } from '../lib/useLayout';
 import {
-  canOpenLocalBooks, deleteLibraryBook, importLocalBook, libraryUser, listLibrary, localCover, openLibraryBook, pickLocalBook,
+  canOpenLocalBooks, deleteLibraryBook, importLocalBook, importLocalFolder, isMobile, libraryUser, listLibrary, localCover, openLibraryBook, pickLocalBook,
   type LibraryBook
 } from '../lib/localBook';
 
@@ -20,8 +20,8 @@ export function LibraryScreen() {
 
   const openFile = async () => {
     try {
-      const book = await pickLocalBook();
-      if (book) app.push({ s: 'book', book });
+      const picked = await pickLocalBook();
+      if (picked) app.push({ s: 'book', book: picked.book, path: picked.path });
     } catch (e) {
       console.error(e);
       app.showToast(`${t('book.openFailed')} ${String(e)}`);
@@ -67,10 +67,10 @@ function DeviceBooks({ onOpenFile }: { onOpenFile: () => void }) {
     app.showToast(`${t(key)} ${String(e)}`);
   };
 
-  const importFile = async () => {
+  const runImport = async (pick: typeof importLocalBook) => {
     setImporting({ done: 0, total: 0 });
     try {
-      const book = await importLocalBook(user, (done, total) => setImporting({ done, total }));
+      const book = await pick(user, (done, total) => setImporting({ done, total }));
       if (book) {
         app.showToast(t('library.imported', { title: book.title }));
         reload();
@@ -105,12 +105,26 @@ function DeviceBooks({ onOpenFile }: { onOpenFile: () => void }) {
   return (
     <section style={{ marginBottom: 26 }}>
       <h3 style={{ margin: '0 0 10px', fontSize: 18 }}>{t('library.device')}</h3>
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
-        <button className="btn btn-primary" disabled={!!importing} onClick={importFile}>
-          {importing ? <><Spinner size={14} /> {importing.total ? t('library.importing', { done: importing.done, total: importing.total }) : t('book.loading')}</> : t('library.import')}
+      <div className="import-actions">
+        <button className="import-action import-action--primary" disabled={!!importing} onClick={() => runImport(importLocalBook)}>
+          <span className="import-action__icon"><FilePlusIcon size={19} /></span>{t('library.import')}
         </button>
-        <button className="btn btn-secondary" disabled={!!importing} onClick={onOpenFile}>{t('library.openOnce')}</button>
+        <button className="import-action" disabled={!!importing} onClick={() => runImport(importLocalFolder)}>
+          <span className="import-action__icon"><FolderOpenIcon size={19} /></span>{t('library.importFolder')}
+        </button>
+        <button className="import-action" disabled={!!importing} onClick={onOpenFile}>
+          <span className="import-action__icon"><EyeIcon size={19} /></span>{t('library.openOnce')}
+        </button>
       </div>
+      {importing ? (
+        <div className="import-progress" role="status" style={{ marginBottom: 14 }}>
+          <Spinner size={14} />
+          <span>{importing.total ? t('library.importing', { done: importing.done, total: importing.total }) : t('book.loading')}</span>
+          <div className="import-progress__bar"><div style={{ width: `${importing.total ? Math.round((importing.done / importing.total) * 100) : 0}%` }} /></div>
+        </div>
+      ) : (
+        <p className="muted import-hint" style={{ marginBottom: 14 }}>{t(isMobile() ? 'library.importHintMobile' : 'library.importHint')}</p>
+      )}
       {books?.length === 0 && <p className="muted" style={{ fontSize: 13, margin: 0 }}>{t('library.deviceEmpty')}</p>}
       {/* Shown like the online novels; Continue in the navigation resumes the one read last. */}
       <div className="cover-grid" style={{ gridTemplateColumns: lay.libCols, gap: lay.libGap }}>

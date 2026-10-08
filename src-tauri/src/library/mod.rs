@@ -5,6 +5,7 @@
 
 pub mod commands;
 pub mod db;
+pub mod folder;
 
 use crate::book::image::{self, Image};
 use crate::book::{BookError, BookFormat, BookSource, Section, SectionMeta};
