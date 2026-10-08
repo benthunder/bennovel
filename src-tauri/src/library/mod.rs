@@ -214,7 +214,11 @@ fn file_stem(name: &str) -> String {
     // `name` can be a path or a content:// URI; keep the last segment, minus extension.
     // Android document ids encode the folders too ("primary%3ANovels%2FChuong%201.txt").
     let decoded = urlish_decode(name);
-    let last = decoded.rsplit(['/', '\\']).next().unwrap_or(&decoded).to_string();
+    let last = decoded
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(&decoded)
+        .to_string();
     match last.rsplit_once('.') {
         Some((stem, _)) if !stem.is_empty() => stem.to_string(),
         _ => last,

@@ -13,6 +13,13 @@ pub const BOOK_EXTENSIONS: &[&str] = &[
     "docx", "odt", "rtf", "html", "htm", "xhtml", "mht", "mhtml", "md", "markdown",
 ];
 
+/// Whether a file name has one of the book extensions.
+pub fn is_book_file(name: &str) -> bool {
+    let name = name.to_lowercase();
+    let ext = name.rsplit_once('.').map(|(_, e)| e).unwrap_or_default();
+    BOOK_EXTENSIONS.contains(&ext)
+}
+
 /// Collects the book files in `dir` and, recursively, its subfolders. Hidden entries
 /// and symbolic links (which could loop) are skipped.
 pub fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) -> std::io::Result<()> {
@@ -25,11 +32,8 @@ pub fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) -> std::io
         let kind = entry.file_type()?;
         if kind.is_dir() {
             walk(&entry.path(), out)?;
-        } else if kind.is_file() {
-            let ext = name.rsplit_once('.').map(|(_, e)| e).unwrap_or_default();
-            if BOOK_EXTENSIONS.contains(&ext) {
-                out.push(entry.path());
-            }
+        } else if kind.is_file() && is_book_file(&name) {
+            out.push(entry.path());
         }
     }
     Ok(())

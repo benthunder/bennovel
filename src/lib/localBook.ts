@@ -36,10 +36,10 @@ export const BOOK_EXTENSIONS = [
  * type it doesn't know (MOBI, FB2, DjVu…), so there the picker shows all files and the
  * app tells the format from the file itself.
  */
-const isAndroid = () => /android/i.test(navigator.userAgent);
+export const isAndroid = () => /android/i.test(navigator.userAgent);
 
-/** Phones and tablets: no folder picker there. */
-export const isMobile = () => /android|iphone|ipad/i.test(navigator.userAgent);
+/** iPhone and iPad have no folder picker; there the chapter files are selected instead. */
+export const canPickFolder = () => !/iphone|ipad/i.test(navigator.userAgent);
 
 const pickBookFile = () =>
   open({ multiple: false, filters: isAndroid() ? undefined : [{ name: 'Books', extensions: BOOK_EXTENSIONS }] });
@@ -136,15 +136,18 @@ export async function importLocalBook(user: string, onProgress?: ImportProgress)
 }
 
 /**
- * Imports a folder of chapter files as one book, a file per chapter, ordered by the
- * chapter number in each file name. Phones have no folder picker, so there the user
- * selects the chapter files instead. Resolves to null when the user cancels.
+ * Imports a folder (with its subfolders) of chapter files as one book, a file per
+ * chapter, ordered by the chapter number in each file name. On Android the folder is
+ * picked and walked by the app (`library_import_android_folder`); iOS has no folder
+ * picker, so there the chapter files are selected. Resolves to null when cancelled.
  */
 export async function importLocalFolder(user: string, onProgress?: ImportProgress): Promise<LibraryBook | null> {
+  if (isAndroid()) {
+    return withProgress(onProgress, () => invoke<LibraryBook | null>('library_import_android_folder', { user }));
+  }
   let paths: string[];
-  if (isMobile()) {
-    const picked = await open({ multiple: true, filters: isAndroid() ? undefined : [{ name: 'Books', extensions: BOOK_EXTENSIONS }] });
-    paths = picked ?? [];
+  if (!canPickFolder()) {
+    paths = (await open({ multiple: true, filters: [{ name: 'Books', extensions: BOOK_EXTENSIONS }] })) ?? [];
   } else {
     const dir = await open({ directory: true, multiple: false });
     paths = dir ? [dir] : [];

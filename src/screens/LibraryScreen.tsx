@@ -8,7 +8,7 @@ import { useT } from '../i18n';
 import { useApp } from '../store/AppStore';
 import { useLayout } from '../lib/useLayout';
 import {
-  canOpenLocalBooks, deleteLibraryBook, importLocalBook, importLocalFolder, isMobile, libraryUser, listLibrary, localCover, openLibraryBook, pickLocalBook,
+  canOpenLocalBooks, deleteLibraryBook, importLocalBook, importLocalFolder, canPickFolder, libraryUser, listLibrary, localCover, openLibraryBook, pickLocalBook,
   type LibraryBook
 } from '../lib/localBook';
 
@@ -123,7 +123,7 @@ function DeviceBooks({ onOpenFile }: { onOpenFile: () => void }) {
           <div className="import-progress__bar"><div style={{ width: `${importing.total ? Math.round((importing.done / importing.total) * 100) : 0}%` }} /></div>
         </div>
       ) : (
-        <p className="muted import-hint" style={{ marginBottom: 14 }}>{t(isMobile() ? 'library.importHintMobile' : 'library.importHint')}</p>
+        <p className="muted import-hint" style={{ marginBottom: 14 }}>{t(canPickFolder() ? 'library.importHint' : 'library.importHintMobile')}</p>
       )}
       {books?.length === 0 && <p className="muted" style={{ fontSize: 13, margin: 0 }}>{t('library.deviceEmpty')}</p>}
       {/* Shown like the online novels; Continue in the navigation resumes the one read last. */}
