@@ -118,27 +118,107 @@ pub async fn library_import_folder<R: Runtime>(
     let db_file = db_path(&app, &user)?;
     blocking(move || {
         let (title, files) = folder_files(paths)?;
-        let names: Vec<String> = files.iter().map(|f| f.to_string()).collect();
-        let app2 = app.clone();
-        let open: Opener = Box::new(move |i| {
-            let (file, ctx) = open_picked(&app2, files[i].clone())?;
-            open_source(file, &ctx)
-        });
-        let (format, mut book) = FolderBook::new(title.clone(), &names, open)?;
-        let mut conn = db::open(&db_file)?;
-        let id = super::import(&mut conn, format, &mut book, &title, |done, total| {
-            let _ = app.emit(
-                "library-import",
-                ImportProgress {
-                    name: &title,
-                    done,
-                    total,
-                },
-            );
-        })?;
-        super::get(&conn, id)?.ok_or(BookError::Parse("import failed".into()))
+        let named = files.into_iter().map(|f| (f.to_string(), f)).collect();
+        import_files(&app, &db_file, title, named)
     })
     .await
+}
+
+/// Android: picks a folder in the system picker, walks it and its subfolders (each
+/// folder is listed through the document tree, see `plugins/folder-picker`) and
+/// imports its book files as one book. Resolves to None when the picker is cancelled.
+#[tauri::command]
+pub async fn library_import_android_folder<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+) -> Result<Option<LibraryBook>, BookError> {
+    #[cfg(target_os = "android")]
+    {
+        use tauri_plugin_folder_picker::FolderPicker;
+        let db_file = db_path(&app, &user)?;
+        blocking(move || {
+            let picker = app.state::<FolderPicker<R>>();
+            let Some(root) = picker.pick().map_err(BookError::Parse)? else {
+                return Ok(None);
+            };
+            let mut files = Vec::new();
+            walk_tree(&picker, &root.tree, &root.id, &root.name, &mut files)?;
+            if files.is_empty() {
+                return Err(BookError::Parse("no book files in this folder".into()));
+            }
+            let title = if root.name.is_empty() {
+                let names: Vec<String> = files.iter().map(|(n, _)| n.clone()).collect();
+                folder::common_title(&names)
+            } else {
+                root.name.clone()
+            };
+            import_files(&app, &db_file, title, files).map(Some)
+        })
+        .await
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (app, user);
+        Err(BookError::NotYet(
+            "Folder picking through the document tree",
+        ))
+    }
+}
+
+/// Collects the book files of a document-tree folder and its subfolders, named by
+/// their path inside the picked folder ("Truyện/Quyển 1/Chương 1.txt").
+#[cfg(target_os = "android")]
+fn walk_tree<R: Runtime>(
+    picker: &tauri_plugin_folder_picker::FolderPicker<R>,
+    tree: &str,
+    id: &str,
+    path: &str,
+    out: &mut Vec<(String, FilePath)>,
+) -> Result<(), BookError> {
+    for entry in picker.list(tree, id).map_err(BookError::Parse)? {
+        if entry.name.starts_with('.') {
+            continue;
+        }
+        let name = format!("{path}/{}", entry.name);
+        if entry.dir {
+            walk_tree(picker, tree, &entry.id, &name, out)?;
+        } else if folder::is_book_file(&entry.name) {
+            let uri = entry
+                .uri
+                .parse::<FilePath>()
+                .map_err(|e| BookError::Parse(e.to_string()))?;
+            out.push((name, uri));
+        }
+    }
+    Ok(())
+}
+
+/// Imports `files` (display name, file) as one book, a file per chapter.
+fn import_files<R: Runtime>(
+    app: &AppHandle<R>,
+    db_file: &std::path::Path,
+    title: String,
+    files: Vec<(String, FilePath)>,
+) -> Result<LibraryBook, BookError> {
+    let (names, files): (Vec<String>, Vec<FilePath>) = files.into_iter().unzip();
+    let app2 = app.clone();
+    let open: Opener = Box::new(move |i| {
+        let (file, ctx) = open_picked(&app2, files[i].clone())?;
+        open_source(file, &ctx)
+    });
+    let (format, mut book) = FolderBook::new(title.clone(), &names, open)?;
+    let mut conn = db::open(db_file)?;
+    let id = super::import(&mut conn, format, &mut book, &title, |done, total| {
+        let _ = app.emit(
+            "library-import",
+            ImportProgress {
+                name: &title,
+                done,
+                total,
+            },
+        );
+    })?;
+    super::get(&conn, id)?.ok_or(BookError::Parse("import failed".into()))
 }
 
 /// The book files to import and the book title (the folder's name). A folder is
