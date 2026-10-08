@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { ChevronLeftIcon, DownloadIcon, SlidersIcon } from '../components/Icons';
+import { ChapterSheet, useSectionName } from '../components/ChapterSheet';
+import { ChevronLeftIcon, DownloadIcon, ListIcon, SlidersIcon } from '../components/Icons';
 import { ReaderTools, type ToolsTab } from '../components/ReaderTools';
 import { Segmented, Spinner } from '../components/ui';
 import { applyReplaceRules } from '../data/repository';
@@ -51,6 +52,8 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
 
   const [index, setIndex] = useState(place?.index ?? 0);
   const [tools, setTools] = useState<ToolsTab | null>(null);
+  const [toc, setToc] = useState(false);
+  const sectionName = useSectionName();
   const [readPct, setReadPct] = useState(0);
   // Library books know their language; a file opened once falls back to the reading language.
   const known = CONTENT_LANGS.find(l => l === place?.lang);
@@ -137,7 +140,9 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
   // How far into the whole book: finished parts plus the share of this one.
   const bookPct = (index + readPct) / Math.max(total, 1);
 
-  const heading = meta?.label ?? (meta?.pages ? t('book.pages', { from: meta.pages[0], to: meta.pages[1] }) : t('book.part', { n: index + 1, total }));
+  // "Chương 12" above the chapter's own title; a chapter without one shows "Chương 12" once.
+  const name = sectionName(meta, index, total);
+  const heading = meta?.label ?? name;
 
   return (
     <div className="screen" style={{ overflow: 'hidden', background: theme.bg, color: theme.fg }}>
@@ -147,7 +152,9 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
         <button className="icon-btn icon-btn--plain" aria-label={t('common.back')} onClick={app.back}><ChevronLeftIcon size={22} /></button>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', opacity: .65, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{book.title ?? t('book.untitled')}</div>
-          <div className="display" style={{ fontSize: 16 }}>{t('book.part', { n: index + 1, total })}</div>
+          <div className="display" style={{ fontSize: 16, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {name}{meta?.number != null && <span style={{ opacity: .55, fontSize: 13 }}> · {index + 1}/{total}</span>}
+          </div>
         </div>
         {book.pageImages && (
           <Segmented<View> value={view} onChange={setView} style={{ flex: '0 0 auto' }} optStyle={{ padding: '6px 10px', fontSize: 13 }}
@@ -166,6 +173,9 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
             {lang.toUpperCase()}
           </button>
         )}
+        {total > 1 && (
+          <button className="icon-btn icon-btn--plain" aria-label={t('book.tocAria')} title={t('book.tocAria')} onClick={() => setToc(true)}><ListIcon size={22} /></button>
+        )}
         <button className="icon-btn icon-btn--accent" aria-label={t('reader.tools')} onClick={() => setTools(o => (lay.wide && o ? null : 'reading'))}><SlidersIcon /></button>
       </div>
       <div style={{ height: 5, margin: `0 ${lay.readerBarPx}px`, borderRadius: 999, background: line, overflow: 'hidden' }}>
@@ -175,9 +185,11 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
       <div ref={scrollRef} className="nx-scroll" onScroll={onScroll}
         style={{ flex: 1, overflowY: 'auto', padding: `${lay.readerPadTop}px ${MARGIN_PX[p.margin]}px calc(env(safe-area-inset-bottom) + 40px)` }}>
         <div style={{ maxWidth: lay.readerMax, margin: '0 auto' }}>
-          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: night ? 'var(--color-accent-400)' : 'var(--color-accent-700)' }}>
-            {t('book.part', { n: index + 1, total })}
-          </div>
+          {heading !== name && (
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: night ? 'var(--color-accent-400)' : 'var(--color-accent-700)' }}>
+              {name}
+            </div>
+          )}
           <h2 style={{ margin: '4px 0 18px', fontSize: lay.readerH, color: theme.fg }}>{fix(heading)}</h2>
           {showPages && meta?.pages && pageRange(meta.pages).map(n => (
             <img key={n} src={bookPageUrl(book.id, n, PAGE_WIDTH)} alt={t('book.page', { n })} loading="lazy" decoding="async"
@@ -208,6 +220,8 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
         </div>
       </div>
       </div>
+
+      {toc && <ChapterSheet sections={book.sections} current={index} onPick={setIndex} onClose={() => setToc(false)} />}
 
       {tools && (
         <ReaderTools key={tools} initialTab={tools} glossary={NO_GLOSSARY} lang={lang} rules={rules} onRulesChange={changeRules}

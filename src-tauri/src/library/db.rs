@@ -128,6 +128,11 @@ create table chapter_images (
   primary key (novel_id, key)
 );
 "#,
+    r#"
+-- Local only: the chapter number to show ("Chương 12"), from the file name for
+-- folder imports or a "Chương 12: …" heading. `number` stays the reading order.
+alter table chapters add column display_number real;
+"#,
 ];
 
 pub fn open(path: &Path) -> rusqlite::Result<Connection> {

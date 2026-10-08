@@ -50,8 +50,12 @@ struct Chapter {
     /// The folder part of the file's path: subfolders are read in order
     /// ("Quyển 1/…" before "Quyển 2/…"), files right in the folder first.
     dir: String,
-    label: String,
+    /// File name without extension, for ordering files that have no number.
+    name: String,
+    /// Chapter number from the file name (or the first lines when the name has none).
     number: Option<f64>,
+    /// Chapter title from the first lines, known once the file has been read.
+    title: Option<String>,
 }
 
 /// A folder of chapter files read as one book. Only the file being read is open.
@@ -87,13 +91,14 @@ impl FolderBook {
                 file,
                 dir,
                 number: (!opaque).then(|| chapter_number(&stem)).flatten(),
-                label: stem,
+                name: stem,
+                title: None,
             };
             if chapter.number.is_none() {
                 if let Some(first) = first_line(open.as_mut(), file) {
                     chapter.number = chapter_number(&first);
                     if opaque || chapter.number.is_some() {
-                        chapter.label = first;
+                        chapter.name = first;
                     }
                 }
             }
@@ -104,10 +109,10 @@ impl FolderBook {
                 (Some(x), Some(y)) => x
                     .partial_cmp(&y)
                     .unwrap_or(Ordering::Equal)
-                    .then_with(|| natural_cmp(&a.label, &b.label)),
+                    .then_with(|| natural_cmp(&a.name, &b.name)),
                 (Some(_), None) => Ordering::Less,
                 (None, Some(_)) => Ordering::Greater,
-                (None, None) => natural_cmp(&a.label, &b.label),
+                (None, None) => natural_cmp(&a.name, &b.name),
             })
         });
         let (format, first) = open(chapters[0].file)?;
@@ -169,8 +174,9 @@ impl BookSource for FolderBook {
         self.chapters
             .iter()
             .map(|c| SectionMeta {
-                label: Some(c.label.clone()),
+                label: c.title.clone(),
                 pages: None,
+                number: c.number,
             })
             .collect()
     }
@@ -188,7 +194,12 @@ impl BookSource for FolderBook {
                 }
             }
         }
+        self.chapters[index].title = chapter_title(&paragraphs);
         Ok(Section { index, paragraphs })
+    }
+
+    fn section_title(&self, index: usize) -> Option<String> {
+        self.chapters.get(index)?.title.clone()
     }
 
     fn image(&mut self, key: &str) -> Result<Image, BookError> {
@@ -259,6 +270,98 @@ pub fn common_title(names: &[String]) -> String {
         title
     } else {
         first
+    }
+}
+
+/// The chapter title from the first lines of its text: the first line without its
+/// "Chương 12:" part, or the line itself when it is short and reads like a heading.
+/// None when the text starts straight with the story.
+pub fn chapter_title(paragraphs: &[String]) -> Option<String> {
+    let mut lines = paragraphs
+        .iter()
+        .take(5)
+        .filter(|p| image::key_of(p).is_none())
+        .flat_map(|p| p.lines())
+        .map(str::trim)
+        .filter(|l| !l.is_empty());
+    let line = lines.next()?;
+    let heading = |l: &str| {
+        l.chars().count() <= 80
+            && !l.ends_with(['.', '!', '?', '。', '！', '？', '…', '"', '”', ',', ';'])
+    };
+    if let Some(rest) = strip_chapter_prefix(line) {
+        let rest = trim_separators(rest);
+        if !rest.is_empty() {
+            return Some(rest.chars().take(120).collect());
+        }
+        // "Chương 12" alone on its line, the title on the next one.
+        return lines
+            .next()
+            .filter(|l| heading(l) && strip_chapter_prefix(l).is_none())
+            .map(String::from);
+    }
+    heading(line).then(|| line.to_string())
+}
+
+/// `rest` without the separators between a chapter number and its title.
+pub fn trim_separators(rest: &str) -> &str {
+    rest.trim_start_matches(|c: char| c.is_whitespace() || ":：-–—.、,)]".contains(c))
+        .trim()
+}
+
+/// The rest of `line` after a leading "Chương 12" / "Chapter 12" / "第十二章";
+/// None when the line doesn't start with one.
+pub fn strip_chapter_prefix(line: &str) -> Option<&str> {
+    let lower = line.to_lowercase();
+    if lower.len() != line.len() {
+        // Lowercasing changed byte offsets; only the 第…章 form is matched then.
+        return strip_han_prefix(line);
+    }
+    if let Some(rest) = strip_han_prefix(line) {
+        return Some(rest);
+    }
+    for word in CHAPTER_WORDS[0].iter().filter(|w| w.len() > 1) {
+        if let Some(after) = lower.strip_prefix(word) {
+            let offset = line.len() - after.len();
+            let rest = &line[offset..];
+            let rest = rest.trim_start_matches([' ', '.', ':', '_', '-', '#', '\u{a0}']);
+            if let Some((_, len)) = leading_number(rest) {
+                return Some(&rest[len..]);
+            }
+        }
+    }
+    None
+}
+
+fn strip_han_prefix(line: &str) -> Option<&str> {
+    let rest = line.trim_start().strip_prefix('第')?;
+    let end = rest.find(['章', '回', '话', '話', '节', '節', '集'])?;
+    let num = rest[..end].trim();
+    let c = rest[end..].chars().next()?;
+    (leading_number(num).is_some() || chinese_number(num).is_some())
+        .then(|| &rest[end + c.len_utf8()..])
+}
+
+/// A chapter number written as a heading ("Chương 12: …", "第十二章"), not just any
+/// number: for labels of books imported from one file.
+pub fn heading_number(label: &str) -> Option<f64> {
+    strip_chapter_prefix(label)?;
+    chapter_number(label)
+}
+
+/// Splits a "Chương 12: Gặp lại" label into its title ("Gặp lại", or None when
+/// nothing is left) and number; other labels stay as they are, without a number.
+pub fn split_heading(label: Option<String>) -> (Option<String>, Option<f64>) {
+    match label.as_deref().and_then(heading_number) {
+        Some(n) => {
+            let rest = label
+                .as_deref()
+                .and_then(strip_chapter_prefix)
+                .map(|r| trim_separators(r).to_string())
+                .filter(|r| !r.is_empty());
+            (rest, Some(n))
+        }
+        None => (label, None),
     }
 }
 
@@ -474,10 +577,12 @@ mod tests {
                 SectionMeta {
                     label: None,
                     pages: None,
+                    number: None,
                 },
                 SectionMeta {
                     label: None,
                     pages: None,
+                    number: None,
                 },
             ]
         }
@@ -527,26 +632,34 @@ mod tests {
                 ["Một", "hết"],
             ],
         );
-        let labels: Vec<_> = book
-            .sections()
-            .into_iter()
-            .map(|s| s.label.unwrap())
-            .collect();
-        assert_eq!(
-            labels,
-            [
-                "Chương 1",
-                "Chương 2",
-                "Chương 3: Ba",
-                "Chương 10",
-                "Lời bạt"
-            ]
-        );
+        let numbers: Vec<_> = book.sections().into_iter().map(|s| s.number).collect();
+        assert_eq!(numbers, [Some(1.0), Some(2.0), Some(3.0), Some(10.0), None]);
+        assert_eq!(book.sections()[2].label, None); // titles come once read
         assert_eq!(book.load(0).unwrap().paragraphs, ["Một", "hết"]);
+        assert_eq!(book.section_title(0).as_deref(), Some("Một"));
+        book.load(2).unwrap();
+        assert_eq!(book.sections()[2].label.as_deref(), Some("Ba"));
         assert_eq!(book.load(1).unwrap().paragraphs, ["Hai", "\u{FFFC}1/a.png"]);
         assert_eq!(book.image("1/a.png").unwrap().mime, "image/png");
         assert!(book.image("a.png").is_err());
         assert!(book.load(5).is_err());
+    }
+
+    #[test]
+    fn chapter_titles_from_first_lines() {
+        let t = |v: &[&str]| chapter_title(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(t(&["Chương 12: Gặp lại", "..."]), Some("Gặp lại".into()));
+        assert_eq!(t(&["Chapter 3 - The Road", "..."]), Some("The Road".into()));
+        assert_eq!(t(&["第十二章 重逢", "..."]), Some("重逢".into()));
+        assert_eq!(
+            t(&["Chương 5", "", "Mưa đêm", "Trời mưa."]),
+            Some("Mưa đêm".into())
+        );
+        assert_eq!(t(&["Chương 5", "Trời mưa rất to."]), None);
+        assert_eq!(t(&["Mưa đêm", "..."]), Some("Mưa đêm".into()));
+        assert_eq!(t(&["Ngày xưa có một cô bé."]), None);
+        assert_eq!(heading_number("Chương 7: Bão"), Some(7.0));
+        assert_eq!(heading_number("Năm 1990"), None);
     }
 
     #[test]
@@ -612,7 +725,14 @@ mod tests {
             ("Truyện", 2, "vi")
         );
         let (_, mut db_book) = super::super::DbBook::open(&path, id, None).unwrap();
-        assert_eq!(db_book.sections()[1].label.as_deref(), Some("Chương 2"));
+        let sections = db_book.sections();
+        assert_eq!(
+            sections.iter().map(|s| s.number).collect::<Vec<_>>(),
+            [Some(1.0), Some(2.0)]
+        );
+        // Titles from the first line: a story sentence is not one, "Hai" is.
+        assert_eq!(sections[0].label, None);
+        assert_eq!(sections[1].label.as_deref(), Some("Hai"));
         assert_eq!(
             db_book.load(0).unwrap().paragraphs,
             ["Ngày xưa có một cô bé.", "Hết chương."]

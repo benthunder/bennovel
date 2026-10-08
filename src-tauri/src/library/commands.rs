@@ -360,6 +360,30 @@ pub async fn library_save_progress<R: Runtime>(
     .await
 }
 
+/// Saves a book's title, author and description; returns the book as listed.
+#[tauri::command]
+pub async fn library_update<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+    title: String,
+    author: String,
+    description: String,
+) -> Result<super::LibraryBook, BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || {
+        super::update_details(
+            &mut db::open(&path)?,
+            novel_id,
+            &title,
+            &author,
+            &description,
+        )?
+        .ok_or_else(|| BookError::Parse("book not found".into()))
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn library_delete<R: Runtime>(
     app: AppHandle<R>,

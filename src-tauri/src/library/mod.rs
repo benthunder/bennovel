@@ -19,6 +19,9 @@ use std::path::Path;
 pub struct LibraryBook {
     pub novel_id: i64,
     pub title: String,
+    /// None for books whose author is not known.
+    pub author: Option<String>,
+    pub description: String,
     pub lang: String,
     pub format: Option<String>,
     pub source_name: Option<String>,
@@ -162,7 +165,8 @@ pub fn import(
     )?;
     {
         let mut chapter = tx.prepare(
-            "insert into chapters (novel_id, number, published_at) values (?1, ?2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+            "insert into chapters (novel_id, number, display_number, published_at)
+             values (?1, ?2, ?3, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         )?;
         let mut text = tx.prepare(
             "insert into chapter_translations (chapter_id, lang, source, state, title, content, word_count)
@@ -194,12 +198,19 @@ pub fn import(
                 .map(|p| word_count(p))
                 .sum();
             let content = section.paragraphs.join("\n\n");
-            chapter.execute(params![novel_id, i as i64 + 1])?;
+            // Folder imports know the number from the file name and the title from the
+            // first lines; one-file books may have "Chương 12: …" headings.
+            let mut title = meta.label.clone().or_else(|| source.section_title(i));
+            let mut number = meta.number;
+            if number.is_none() {
+                (title, number) = folder::split_heading(title);
+            }
+            chapter.execute(params![novel_id, i as i64 + 1, number])?;
             let chapter_id = tx.last_insert_rowid();
             text.execute(params![
                 chapter_id,
                 lang,
-                meta.label.clone().unwrap_or_default(),
+                title.unwrap_or_default(),
                 content,
                 words
             ])?;
@@ -246,9 +257,11 @@ fn urlish_decode(s: &str) -> String {
 
 const LIST_SQL: &str = "
     select n.id, t.title, n.original_lang, n.source_format, n.source_name, n.chapter_count,
-           n.created_at, h.chapter_number, h.progress, h.last_read_at
+           n.created_at, h.chapter_number, h.progress, h.last_read_at,
+           nullif(a.slug, 'unknown'), a.name, t.description
     from novels n
     join novel_translations t on t.novel_id = n.id and t.lang = n.original_lang
+    join authors a on a.id = n.author_id
     left join reading_history h on h.novel_id = n.id";
 
 fn row_to_book(r: &rusqlite::Row) -> rusqlite::Result<LibraryBook> {
@@ -256,6 +269,11 @@ fn row_to_book(r: &rusqlite::Row) -> rusqlite::Result<LibraryBook> {
     Ok(LibraryBook {
         novel_id: r.get(0)?,
         title: r.get(1)?,
+        author: match r.get::<_, Option<String>>(10)? {
+            Some(_) => Some(r.get(11)?),
+            None => None,
+        },
+        description: r.get(12)?,
         lang: r.get(2)?,
         format: r.get(3)?,
         source_name: r.get(4)?,
@@ -305,6 +323,70 @@ pub fn save_progress(
     Ok(())
 }
 
+/// Changes a book's title, author and description (in its original language).
+/// An empty author makes it "Unknown"; authors left with no books are dropped.
+pub fn update_details(
+    conn: &mut Connection,
+    novel_id: i64,
+    title: &str,
+    author: &str,
+    description: &str,
+) -> rusqlite::Result<Option<LibraryBook>> {
+    let title = title.trim();
+    let author = author.trim();
+    let tx = conn.transaction()?;
+    let author_id: i64 = if author.is_empty() {
+        tx.execute(
+            "insert or ignore into authors (slug, name) values ('unknown', 'Unknown')",
+            [],
+        )?;
+        tx.query_row("select id from authors where slug = 'unknown'", [], |r| {
+            r.get(0)
+        })?
+    } else {
+        let found: Option<i64> = tx
+            .query_row(
+                "select id from authors where name = ?1 and slug <> 'unknown' order by id limit 1",
+                [author],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match found {
+            Some(id) => id,
+            None => {
+                tx.execute(
+                    "insert into authors (slug, name) values (?1, ?2)",
+                    params![slug(author), author],
+                )?;
+                tx.last_insert_rowid()
+            }
+        }
+    };
+    tx.execute(
+        "update novels set author_id = ?2, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         where id = ?1",
+        params![novel_id, author_id],
+    )?;
+    if !title.is_empty() {
+        tx.execute(
+            "update novel_translations set title = ?2, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             where novel_id = ?1 and lang = (select original_lang from novels where id = ?1)",
+            params![novel_id, title],
+        )?;
+    }
+    tx.execute(
+        "update novel_translations set description = ?2
+         where novel_id = ?1 and lang = (select original_lang from novels where id = ?1)",
+        params![novel_id, description.trim()],
+    )?;
+    tx.execute(
+        "delete from authors where id not in (select author_id from novels)",
+        [],
+    )?;
+    tx.commit()?;
+    get(conn, novel_id)
+}
+
 /// Removes a book with its chapters, pictures and history; drops authors left with
 /// no books. The caller removes a kept original file.
 pub fn delete(conn: &Connection, novel_id: i64) -> rusqlite::Result<()> {
@@ -323,7 +405,8 @@ pub struct DbBook {
     novel_id: i64,
     title: String,
     lang: String,
-    chapters: Vec<(i64, String)>,
+    /// (chapter id, title, number shown)
+    chapters: Vec<(i64, String, Option<f64>)>,
     /// The kept original of a PDF/DjVu book, for drawing its pages.
     original: Option<Box<dyn BookSource>>,
 }
@@ -364,11 +447,13 @@ impl DbBook {
             .unwrap_or(BookFormat::Txt);
         let chapters = {
             let mut stmt = conn.prepare(
-                "select c.id, coalesce(t.title, '') from chapters c
+                "select c.id, coalesce(t.title, ''), c.display_number from chapters c
                  left join chapter_translations t on t.chapter_id = c.id and t.lang = ?2 and t.source = 'original'
                  where c.novel_id = ?1 order by c.number",
             )?;
-            let rows = stmt.query_map(params![novel_id, lang], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            let rows = stmt.query_map(params![novel_id, lang], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })?;
             rows.collect::<rusqlite::Result<Vec<_>>>()?
         };
         Ok((
@@ -400,9 +485,18 @@ impl BookSource for DbBook {
         self.chapters
             .iter()
             .enumerate()
-            .map(|(i, (_, title))| SectionMeta {
-                label: (!title.is_empty()).then(|| title.clone()),
-                pages: pages.as_ref().and_then(|p| p[i].pages),
+            .map(|(i, (_, title, number))| {
+                let label = (!title.is_empty()).then(|| title.clone());
+                // Books imported before numbers were stored: read them off the title.
+                let (label, number) = match number {
+                    Some(_) => (label, *number),
+                    None => folder::split_heading(label),
+                };
+                SectionMeta {
+                    label,
+                    pages: pages.as_ref().and_then(|p| p[i].pages),
+                    number,
+                }
             })
             .collect()
     }
@@ -430,7 +524,7 @@ impl BookSource for DbBook {
     }
 
     fn load(&mut self, index: usize) -> Result<Section, BookError> {
-        let (chapter_id, _) = self
+        let (chapter_id, _, _) = self
             .chapters
             .get(index)
             .ok_or(BookError::NoSection(index))?;
@@ -472,6 +566,7 @@ mod tests {
                 .map(|(l, _)| SectionMeta {
                     label: l.map(String::from),
                     pages: None,
+                    number: None,
                 })
                 .collect()
         }
@@ -540,11 +635,12 @@ mod tests {
 
         let (format, mut db_book) = DbBook::open(&path, id, None).unwrap();
         assert_eq!(format, BookFormat::Epub);
-        let labels: Vec<_> = db_book.sections().into_iter().map(|s| s.label).collect();
-        assert_eq!(
-            labels,
-            vec![None, Some("Chương 1".into()), Some("Chương 2".into())]
-        );
+        // "Chương 1" headings become chapter numbers, with nothing left for a title.
+        let sections = db_book.sections();
+        let labels: Vec<_> = sections.iter().map(|s| s.label.clone()).collect();
+        let numbers: Vec<_> = sections.iter().map(|s| s.number).collect();
+        assert_eq!(labels, vec![None, None, None]);
+        assert_eq!(numbers, vec![None, Some(1.0), Some(2.0)]);
         assert_eq!(
             db_book.load(1).unwrap().paragraphs,
             vec!["Chương 1", "Ngày xưa có một cô bé.", "Hết chương."]
@@ -556,6 +652,20 @@ mod tests {
         save_progress(&conn, id, 2, 1.5).unwrap();
         let last = get(&conn, id).unwrap().unwrap().last_read.unwrap();
         assert_eq!((last.index, last.progress), (2, 1.0));
+
+        assert_eq!(listed[0].author, None);
+        let edited = update_details(&mut conn, id, " Tấm và Cám ", "Khuyết danh", "Truyện cổ.")
+            .unwrap()
+            .unwrap();
+        assert_eq!(edited.title, "Tấm và Cám");
+        assert_eq!(edited.author.as_deref(), Some("Khuyết danh"));
+        assert_eq!(edited.description, "Truyện cổ.");
+        let edited = update_details(&mut conn, id, "", "", "").unwrap().unwrap();
+        assert_eq!((edited.title.as_str(), edited.author), ("Tấm và Cám", None));
+        let authors: i64 = conn
+            .query_row("select count(*) from authors", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(authors, 1); // "Khuyết danh" went with its last book
 
         delete(&conn, id).unwrap();
         assert!(list(&conn).unwrap().is_empty());
@@ -630,7 +740,7 @@ mod tests {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
         let langs: i64 = conn
             .query_row("select count(*) from languages", [], |r| r.get(0))
             .unwrap();

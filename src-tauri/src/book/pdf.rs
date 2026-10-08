@@ -63,6 +63,7 @@ impl BookSource for PdfBook {
                 SectionMeta {
                     label: None,
                     pages: Some([first, last]),
+                    number: None,
                 }
             })
             .collect()
