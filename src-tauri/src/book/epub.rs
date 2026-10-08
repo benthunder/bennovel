@@ -54,6 +54,7 @@ impl<R: Read + Seek + Send> BookSource for EpubBook<R> {
             .map(|label| SectionMeta {
                 label: label.clone(),
                 pages: None,
+                number: None,
             })
             .collect()
     }

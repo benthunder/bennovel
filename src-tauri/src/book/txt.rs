@@ -126,6 +126,7 @@ impl<R: Read + Seek + Send> BookSource for TxtBook<R> {
             .map(|_| SectionMeta {
                 label: None,
                 pages: None,
+                number: None,
             })
             .collect()
     }
