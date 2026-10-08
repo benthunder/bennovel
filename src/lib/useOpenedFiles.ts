@@ -25,7 +25,7 @@ export function useOpenedFiles() {
       if (!path) return;
       const { app, t } = ref.current;
       try {
-        app.push({ s: 'book', book: await openBookFile(path) });
+        app.push({ s: 'book', book: await openBookFile(path), path });
       } catch (e) {
         console.error(e);
         app.showToast(`${t('book.openFailed')} ${String(e)}`);

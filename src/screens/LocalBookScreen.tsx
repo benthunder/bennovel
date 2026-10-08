@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
-import { ChevronLeftIcon, SlidersIcon } from '../components/Icons';
+import { ChevronLeftIcon, DownloadIcon, SlidersIcon } from '../components/Icons';
 import { ReaderTools, type ToolsTab } from '../components/ReaderTools';
 import { Segmented, Spinner } from '../components/ui';
 import { applyReplaceRules } from '../data/repository';
 import { CONTENT_LANGS, type ContentLang, type ReplaceRule } from '../data/types';
 import { useT } from '../i18n';
-import { bookImageUrl, bookPageUrl, closeLocalBook, getLocalSection, imageKey, saveLibraryProgress, type LibraryPlace, type LocalBook } from '../lib/localBook';
+import {
+  bookImageUrl, bookPageUrl, closeLocalBook, getLocalSection, imageKey, importBookPath, libraryUser, openLibraryBook, saveLibraryProgress,
+  type LibraryPlace, type LocalBook
+} from '../lib/localBook';
 import { load, save as store } from '../lib/storage';
 import { useAsync } from '../lib/useAsync';
 import { useLayout } from '../lib/useLayout';
@@ -33,8 +36,10 @@ const NO_GLOSSARY = {};
  * Reads a book file opened from the device, or a book from the on-device library
  * (`place` set: it resumes where it was left and saves the position as you read).
  * Same layout and tools as the online reader; the replace list is kept on the device.
+ * A file opened without saving (`path` set) can be imported from here; the reader then
+ * switches to the library copy at the same place.
  */
-export function LocalBookScreen({ book, place }: { book: LocalBook; place?: LibraryPlace }) {
+export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?: LibraryPlace; path?: string }) {
   const t = useT();
   const app = useApp();
   const lay = useLayout();
@@ -109,6 +114,26 @@ export function LocalBookScreen({ book, place }: { book: LocalBook; place?: Libr
     setReadPct(progress);
     if (place && ready) save(progress);
   };
+  const [importing, setImporting] = useState<{ done: number; total: number } | null>(null);
+  const importHere = async () => {
+    if (!path || importing) return;
+    setImporting({ done: 0, total: 0 });
+    try {
+      const user = libraryUser(app.user);
+      const saved = await importBookPath(user, path, (done, total) => setImporting({ done, total }));
+      // Chapters are the file's sections, so the place carries over as is.
+      await saveLibraryProgress(user, saved.novelId, index, currentProgress(scrollRef.current));
+      const opened = await openLibraryBook(user, saved.novelId);
+      app.showToast(t('library.imported', { title: saved.title }));
+      app.back();
+      app.push({ s: 'book', book: opened.book, place: opened.place });
+    } catch (e) {
+      console.error(e);
+      app.showToast(`${t('library.importFailed')} ${String(e)}`);
+      setImporting(null);
+    }
+  };
+
   // How far into the whole book: finished parts plus the share of this one.
   const bookPct = (index + readPct) / Math.max(total, 1);
 
@@ -127,6 +152,13 @@ export function LocalBookScreen({ book, place }: { book: LocalBook; place?: Libr
         {book.pageImages && (
           <Segmented<View> value={view} onChange={setView} style={{ flex: '0 0 auto' }} optStyle={{ padding: '6px 10px', fontSize: 13 }}
             options={[{ value: 'pages', label: t('book.viewPages') }, { value: 'text', label: t('book.viewText') }]} />
+        )}
+        {path && !place && (
+          <button onClick={importHere} disabled={!!importing} aria-label={t('book.importAria')} title={t('book.importAria')}
+            style={{ height: 38, padding: '0 14px', display: 'inline-flex', alignItems: 'center', gap: 6, borderRadius: 999, border: 'none', background: 'var(--color-accent)', color: 'var(--color-bg)', font: 'inherit', fontSize: 12, fontWeight: 700, cursor: importing ? 'default' : 'pointer', flex: '0 0 auto', whiteSpace: 'nowrap' }}>
+            {importing ? <Spinner size={13} /> : <DownloadIcon size={15} />}
+            {importing?.total ? `${importing.done}/${importing.total}` : (!lay.isPhone || !book.pageImages) && t('book.import')}
+          </button>
         )}
         {known && (
           <button onClick={() => setTools('ai')}

@@ -1,3 +1,4 @@
+use super::folder::{self, FolderBook, Opener};
 use super::{db, DbBook, LibraryBook};
 use crate::book::commands::{open_picked, pdfium_dirs, Books};
 use crate::book::{detect, open_source, BookError, BookFormat, BookInfo, BookSource, OpenCtx};
@@ -102,6 +103,68 @@ pub async fn library_import<R: Runtime>(
         }
     })
     .await
+}
+
+/// Imports a folder of chapter files as one book, a file per chapter, ordered by the
+/// chapter numbers in their names (`folder.rs`). `paths` is either the picked folder
+/// (desktop; its subfolders are read too) or the picked files (Android, which has
+/// no folder picker).
+#[tauri::command]
+pub async fn library_import_folder<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    paths: Vec<FilePath>,
+) -> Result<LibraryBook, BookError> {
+    let db_file = db_path(&app, &user)?;
+    blocking(move || {
+        let (title, files) = folder_files(paths)?;
+        let names: Vec<String> = files.iter().map(|f| f.to_string()).collect();
+        let app2 = app.clone();
+        let open: Opener = Box::new(move |i| {
+            let (file, ctx) = open_picked(&app2, files[i].clone())?;
+            open_source(file, &ctx)
+        });
+        let (format, mut book) = FolderBook::new(title.clone(), &names, open)?;
+        let mut conn = db::open(&db_file)?;
+        let id = super::import(&mut conn, format, &mut book, &title, |done, total| {
+            let _ = app.emit(
+                "library-import",
+                ImportProgress {
+                    name: &title,
+                    done,
+                    total,
+                },
+            );
+        })?;
+        super::get(&conn, id)?.ok_or(BookError::Parse("import failed".into()))
+    })
+    .await
+}
+
+/// The book files to import and the book title (the folder's name). A folder is
+/// expanded to every book file in it and its subfolders.
+fn folder_files(paths: Vec<FilePath>) -> Result<(String, Vec<FilePath>), BookError> {
+    let mut files = Vec::new();
+    let mut title = None;
+    for path in paths {
+        match &path {
+            FilePath::Path(dir) if dir.is_dir() => {
+                title = dir.file_name().map(|n| n.to_string_lossy().into_owned());
+                let mut found = Vec::new();
+                folder::walk(dir, &mut found)?;
+                files.extend(found.into_iter().map(FilePath::Path));
+            }
+            _ => files.push(path),
+        }
+    }
+    if files.is_empty() {
+        return Err(BookError::Parse("no book files in this folder".into()));
+    }
+    let names: Vec<String> = files.iter().map(|f| f.to_string()).collect();
+    let title = title
+        .or_else(|| folder::common_parent(&names))
+        .unwrap_or_else(|| folder::common_title(&names));
+    Ok((title, files))
 }
 
 /// PDF and DjVu pages can be shown as pictures, which needs the file itself, so a
