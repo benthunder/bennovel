@@ -1,5 +1,6 @@
 import { useT } from '../i18n';
 import { useApp, type Tab } from '../store/AppStore';
+import { useContinue } from '../lib/useContinue';
 import { GridIcon, HeartIcon, HomeIcon, PlayIcon, UserIcon } from './Icons';
 
 export function BottomNav() {
@@ -10,7 +11,7 @@ export function BottomNav() {
       {icon}{label}
     </button>
   );
-  const continueLast = () => (app.last ? app.openChapter(app.last.id, app.last.ch) : app.showToast(t('nav.nothing')));
+  const continueLast = useContinue();
 
   return (
     <nav className="bottom-nav">

@@ -12,6 +12,7 @@ mod djvu;
 mod epub;
 mod extract;
 mod html;
+pub mod image;
 mod markdown;
 mod mobi;
 mod pdf;
@@ -48,6 +49,8 @@ pub enum BookError {
     NoSection(usize),
     #[error("book {0} is not open")]
     NotOpen(u32),
+    #[error("picture {0} is not in this book")]
+    NoImage(String),
     #[error("library error: {0}")]
     Db(#[from] rusqlite::Error),
 }
@@ -95,14 +98,32 @@ pub trait BookSource: Send {
     fn title(&self) -> Option<String>;
     fn sections(&self) -> Vec<SectionMeta>;
     fn load(&mut self, index: usize) -> Result<Section, BookError>;
+
+    /// Bytes of a picture named by an image paragraph of a loaded section.
+    fn image(&mut self, key: &str) -> Result<image::Image, BookError> {
+        Err(BookError::NoImage(key.to_string()))
+    }
+
+    /// Whether whole pages can be shown as pictures (`render_page`).
+    fn page_images(&self) -> bool {
+        false
+    }
+
+    /// Page `page` (1-based) drawn `width` pixels wide.
+    fn render_page(&mut self, page: u32, _width: u32) -> Result<image::Image, BookError> {
+        Err(BookError::NoImage(format!("page {page}")))
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BookInfo {
     pub id: u32,
     pub format: BookFormat,
     pub title: Option<String>,
     pub sections: Vec<SectionMeta>,
+    /// Pages can be shown as pictures (PDF, DjVu).
+    pub page_images: bool,
 }
 
 /// An open book: the file handle plus the few sections around the reading position.
@@ -120,6 +141,7 @@ impl OpenBook {
             format,
             title: source.title(),
             sections: source.sections(),
+            page_images: source.page_images(),
         };
         Self {
             info,
@@ -184,6 +206,15 @@ impl OpenBook {
         Ok(section)
     }
 
+    /// A picture of the book; read from the file each time (the webview caches it).
+    pub fn image(&self, key: &str) -> Result<image::Image, BookError> {
+        self.source.lock().unwrap().image(key)
+    }
+
+    pub fn render_page(&self, page: u32, width: u32) -> Result<image::Image, BookError> {
+        self.source.lock().unwrap().render_page(page, width)
+    }
+
     #[cfg(test)]
     fn cached(&self) -> Vec<usize> {
         self.cache.lock().unwrap().cached()
@@ -211,7 +242,7 @@ impl OpenCtx {
         (!stem.is_empty()).then(|| stem.to_string())
     }
 
-    fn extension(&self) -> String {
+    pub(crate) fn extension(&self) -> String {
         let file = self.name.rsplit(['/', '\\']).next().unwrap_or_default();
         file.rsplit_once('.')
             .map(|(_, e)| e.to_ascii_lowercase())
@@ -318,6 +349,8 @@ pub fn open_source(
     let format = detect(&ctx.extension(), &head)?;
     let title = ctx.file_title();
     let cache = &ctx.cache_dir;
+    // Folder that relative picture links in HTML/Markdown files point into.
+    let base = ctx.path.as_deref().and_then(|p| p.parent());
     // CHM and DjVu readers need a file path; content URIs are copied to the cache first.
     let local = |file: std::fs::File,
                  ext: &str|
@@ -334,9 +367,9 @@ pub fn open_source(
         BookFormat::Pdf => Box::new(pdf::PdfBook::open(file, &ctx.pdfium_dirs)?),
         BookFormat::Epub => Box::new(epub::EpubBook::open(BufReader::new(file))?),
         BookFormat::Txt => Box::new(txt::TxtBook::open(file, title)?),
-        BookFormat::Html => Box::new(html::extract_html(file, cache, title)?),
+        BookFormat::Html => Box::new(html::extract_html(file, cache, title, base)?),
         BookFormat::Mht => Box::new(html::extract_mht(file, cache, title)?),
-        BookFormat::Markdown => Box::new(markdown::extract_markdown(file, cache, title)?),
+        BookFormat::Markdown => Box::new(markdown::extract_markdown(file, cache, title, base)?),
         BookFormat::Fb2 => Box::new(xmldoc::extract_fb2(file, cache, title)?),
         BookFormat::Docx => Box::new(xmldoc::extract_docx(BufReader::new(file), cache, title)?),
         BookFormat::Odt => Box::new(xmldoc::extract_odt(BufReader::new(file), cache, title)?),

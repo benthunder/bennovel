@@ -6,7 +6,8 @@ use rusqlite::Connection;
 use std::path::Path;
 
 /// Bump when adding a migration below; `PRAGMA user_version` records what ran.
-const MIGRATIONS: &[&str] = &[r#"
+const MIGRATIONS: &[&str] = &[
+    r#"
 -- Same tables and columns as Supabase (Postgres types mapped to SQLite ones),
 -- minus the server-only parts (RLS, published flags for the catalog, counters).
 create table languages (
@@ -115,7 +116,19 @@ create table replace_rules (
   replace    text not null default '' check (length(replace) <= 200),
   position   integer not null default 0
 );
-"#];
+"#,
+    r#"
+-- Local only: pictures of imported books, named by the image paragraphs
+-- (U+FFFC + key) in chapter_translations.content.
+create table chapter_images (
+  novel_id integer not null references novels (id) on delete cascade,
+  key      text not null,
+  mime     text not null,
+  data     blob not null,
+  primary key (novel_id, key)
+);
+"#,
+];
 
 pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     if let Some(dir) = path.parent() {

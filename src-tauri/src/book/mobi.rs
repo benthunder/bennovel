@@ -58,6 +58,14 @@ pub fn extract_mobi<R: Read + Seek>(
         return Err(bad("HUFF/CDIC compressed MOBI is not supported yet"));
     }
     let has_mobi = r0.get(16..20) == Some(b"MOBI");
+    // Picture records follow the text; links count from this one.
+    let first_image = if has_mobi {
+        be32(&r0, 0x6C)
+            .filter(|&n| n != 0 && n != 0xFFFF_FFFF)
+            .map(|n| n as usize)
+    } else {
+        None
+    };
     let (utf8, extra_flags, title) = if has_mobi {
         let header_len = be32(&r0, 20).unwrap_or(0);
         let utf8 = be32(&r0, 28) == Some(65001);
@@ -130,7 +138,31 @@ pub fn extract_mobi<R: Read + Seek>(
     });
     err?;
     sink.paragraph(&plain)?;
+    if let Some(first) = first_image {
+        for key in sink.missing_images() {
+            let Some(n) = image_number(&key) else {
+                continue;
+            };
+            if n == 0 {
+                continue;
+            }
+            if let Ok(data) = record(&mut r, first + n - 1) {
+                sink.save_image(&key, &data)?;
+            }
+        }
+    }
     sink.finish()
+}
+
+/// 1-based picture number of a MOBI link: `recindex:00012` (MOBI 7) or
+/// `kindle:embed:000C?mime=image/jpeg` (KF8/AZW3, base 32).
+fn image_number(link: &str) -> Option<usize> {
+    if let Some(n) = link.strip_prefix("recindex:") {
+        return n.trim().parse().ok();
+    }
+    let n = link.strip_prefix("kindle:embed:")?;
+    let n = n.split(['?', '#']).next()?;
+    usize::from_str_radix(n, 32).ok()
 }
 
 /// Bytes at the end of a text record that are index data, not text.
@@ -217,6 +249,11 @@ pub(crate) mod tests {
     /// A MOBI file with UTF-8 HTML split over 4 KB text records, each with one
     /// multibyte trailing entry (extra flags = 0b10).
     pub fn sample_mobi(html: &str) -> Vec<u8> {
+        sample_mobi_with_images(html, &[])
+    }
+
+    /// Same, followed by picture records.
+    pub fn sample_mobi_with_images(html: &str, images: &[&[u8]]) -> Vec<u8> {
         let records: Vec<Vec<u8>> = html
             .as_bytes()
             .chunks(4096)
@@ -238,9 +275,16 @@ pub(crate) mod tests {
         r0[0x54..0x58].copy_from_slice(&(0x100u32).to_be_bytes());
         r0[0x58..0x5C].copy_from_slice(&(title.len() as u32).to_be_bytes());
         r0[0xF2..0xF4].copy_from_slice(&2u16.to_be_bytes());
+        if !images.is_empty() {
+            r0[0x6C..0x70].copy_from_slice(&(records.len() as u32 + 1).to_be_bytes());
+        }
         r0.extend_from_slice(title.as_bytes());
+        let images: Vec<Vec<u8>> = images.iter().map(|i| i.to_vec()).collect();
 
-        let all: Vec<&Vec<u8>> = std::iter::once(&r0).chain(records.iter()).collect();
+        let all: Vec<&Vec<u8>> = std::iter::once(&r0)
+            .chain(records.iter())
+            .chain(images.iter())
+            .collect();
         let mut out = vec![0u8; 78];
         out[..8].copy_from_slice(b"pdbname\0");
         out[60..68].copy_from_slice(b"BOOKMOBI");
@@ -290,5 +334,20 @@ pub(crate) mod tests {
         assert_eq!(all[1], "Đoạn văn số 0 với chữ tiếng Việt.");
         assert_eq!(all[400], "Đoạn văn số 399 với chữ tiếng Việt.");
         assert_eq!(all[402], "Hết.");
+    }
+
+    #[test]
+    fn links_picture_records() {
+        let html =
+            r#"<p>Bìa</p><img recindex="00002"/><img src="kindle:embed:0001?mime=image/png"/>"#;
+        let mobi = sample_mobi_with_images(html, &[b"\x89PNG one", b"\xFF\xD8 two"]);
+        let mut book = extract_mobi(Cursor::new(mobi), &test_dir(), None).unwrap();
+        let paras = book.load(0).unwrap().paragraphs;
+        assert_eq!(paras[1], "\u{FFFC}recindex:00002");
+        assert_eq!(book.image("recindex:00002").unwrap().mime, "image/jpeg");
+        assert_eq!(
+            book.image("kindle:embed:0001?mime=image/png").unwrap().mime,
+            "image/png"
+        );
     }
 }

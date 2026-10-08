@@ -3,14 +3,19 @@
 //! folder (one paragraph per line), and the reader then loads sections of that
 //! file on demand like any other book.
 
+use super::image::{self, Image};
 use super::txt::SECTION_BYTES;
 use super::{BookError, BookSource, Section, SectionMeta};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
+
+/// Pictures larger than this are not copied out of a book.
+pub const MAX_IMAGE: u64 = 32 * 1024 * 1024;
 
 struct Range {
     start: u64,
@@ -27,6 +32,10 @@ pub struct Sink {
     start: u64,
     label: Option<String>,
     sections: Vec<Range>,
+    /// Pictures saved next to the text file, by key.
+    images: HashMap<String, PathBuf>,
+    /// Picture keys used by image paragraphs, in order.
+    referenced: Vec<String>,
     pub title: Option<String>,
 }
 
@@ -43,8 +52,76 @@ impl Sink {
             start: 0,
             label: None,
             sections: Vec::new(),
+            images: HashMap::new(),
+            referenced: Vec::new(),
             title: None,
         })
+    }
+
+    /// Adds an image paragraph for picture `key` (saved now or later with `save_image`).
+    pub fn image(&mut self, key: &str) -> Result<(), BookError> {
+        if !self.referenced.iter().any(|k| k == key) {
+            self.referenced.push(key.to_string());
+        }
+        let mut line = image::paragraph(key);
+        line.push('\n');
+        self.out.write_all(line.as_bytes())?;
+        self.pos += line.len() as u64;
+        Ok(())
+    }
+
+    /// Saves picture bytes under `key`, in a file next to the extracted text.
+    pub fn save_image(&mut self, key: &str, bytes: &[u8]) -> Result<(), BookError> {
+        if bytes.is_empty() || self.images.contains_key(key) {
+            return Ok(());
+        }
+        let file = PathBuf::from(format!("{}.img{}", self.path.display(), self.images.len()));
+        std::fs::write(&file, bytes)?;
+        self.images.insert(key.to_string(), file);
+        Ok(())
+    }
+
+    /// Saves a picture and adds its paragraph.
+    pub fn picture(&mut self, key: &str, bytes: &[u8]) -> Result<(), BookError> {
+        self.save_image(key, bytes)?;
+        self.image(key)
+    }
+
+    /// Keys of image paragraphs whose picture has not been saved.
+    pub fn missing_images(&self) -> Vec<String> {
+        self.referenced
+            .iter()
+            .filter(|k| !self.images.contains_key(*k))
+            .cloned()
+            .collect()
+    }
+
+    /// Lets `key` name the same picture as the saved `existing` key.
+    pub fn alias(&mut self, key: &str, existing: &str) -> bool {
+        match self.images.get(existing).cloned() {
+            Some(file) => {
+                self.images.insert(key.to_string(), file);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Saves pictures linked by relative path from a document in folder `base`.
+    pub fn load_linked_images(&mut self, base: &Path) -> Result<(), BookError> {
+        for key in self.missing_images() {
+            if key.contains("://") {
+                continue;
+            }
+            let rel = image::percent_decode(key.split(['#', '?']).next().unwrap_or_default());
+            let path = base.join(rel.trim_start_matches('/'));
+            let small = std::fs::metadata(&path).is_ok_and(|m| m.is_file() && m.len() < MAX_IMAGE);
+            if small {
+                let bytes = std::fs::read(&path)?;
+                self.save_image(&key, &bytes)?;
+            }
+        }
+        Ok(())
     }
 
     /// Adds a paragraph; whitespace (including line breaks) is collapsed.
@@ -106,6 +183,7 @@ impl Sink {
             path: self.path,
             file,
             sections: self.sections,
+            images: self.images,
             title: self.title,
         })
     }
@@ -116,12 +194,16 @@ pub struct ExtractedBook {
     path: PathBuf,
     file: File,
     sections: Vec<Range>,
+    images: HashMap<String, PathBuf>,
     title: Option<String>,
 }
 
 impl Drop for ExtractedBook {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
+        for f in self.images.values() {
+            let _ = std::fs::remove_file(f);
+        }
     }
 }
 
@@ -153,6 +235,14 @@ impl BookSource for ExtractedBook {
             paragraphs: text.lines().map(String::from).collect(),
         })
     }
+
+    fn image(&mut self, key: &str) -> Result<Image, BookError> {
+        let file = self
+            .images
+            .get(key)
+            .ok_or_else(|| BookError::NoImage(key.to_string()))?;
+        Ok(Image::sniff(std::fs::read(file)?))
+    }
 }
 
 /// Writes HTML blocks into the sink: headings start chapters.
@@ -160,6 +250,14 @@ pub fn html_block(sink: &mut Sink, block: super::text::Block) -> Result<(), Book
     match block {
         super::text::Block::Heading(t) => sink.chapter(&t),
         super::text::Block::Text(t) => sink.paragraph(&t),
+        super::text::Block::Image(src) => match image::data_uri(&src) {
+            // Inline pictures are saved right away; linked ones are left to the caller.
+            Some(bytes) => {
+                let key = format!("data{}", sink.images.len());
+                sink.picture(&key, &bytes)
+            }
+            None => sink.image(&src),
+        },
     }
 }
 

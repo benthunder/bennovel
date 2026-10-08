@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import { load, save } from '../lib/storage';
 import type { Category, CollectionKey, ContentLang, HistoryEntry, User } from '../data/types';
 import type { ListSource } from '../data/repository';
-import type { LibraryPlace, LocalBook } from '../lib/localBook';
+import { libraryUser, type LibraryPlace, type LocalBook } from '../lib/localBook';
 
 export type Tab = 'home' | 'category' | 'library' | 'profile';
 
@@ -39,6 +39,17 @@ export const READER_THEMES: Record<ReaderTheme, { bg: string; fg: string }> = {
 
 export const DEFAULT_READER_PREFS: ReaderPrefs = { fontSize: 18, theme: 'cream', lineH: 1.75, gap: 'normal', margin: 'normal', align: 'left' };
 
+/** The imported book read last, so Continue can reopen it. */
+export interface LocalLast {
+  user: string;
+  novelId: number;
+  title: string;
+  index: number;
+  total: number;
+  /** Epoch ms of the last read. */
+  at: number;
+}
+
 /** Search fires at most once per this window while typing. */
 export const SEARCH_THROTTLE_MS = 400;
 
@@ -63,6 +74,7 @@ function useAppState() {
   /** Reading language saved on the device. null = ask on each new chapter. */
   const [contentLang, setContentLang] = useStored<ContentLang | null>('defaultLang', null);
   const [readerPrefs, setReaderPrefs] = useStored<ReaderPrefs>('readerPrefs', DEFAULT_READER_PREFS);
+  const [localLast, setLocalLast] = useStored<LocalLast | null>('localLast', null);
 
   const [stack, setStack] = useState<Route[]>(() => [load('onboarded', false) || user ? { s: 'home' } : { s: 'login' }]);
   const [tab, setTab] = useState<Tab | null>(() => (stack[0].s === 'home' ? 'home' : null));
@@ -132,14 +144,19 @@ function useAppState() {
     return !was;
   }, [favs, setFavs]);
 
+  const markLocalRead = useCallback((e: Omit<LocalLast, 'at'>) => setLocalLast({ ...e, at: Date.now() }), [setLocalLast]);
+  const forgetLocal = useCallback((novelId: number) => setLocalLast(l => (l?.novelId === novelId ? null : l)), [setLocalLast]);
+
   const last = history[0] ?? null;
+  /** The imported book, when it was read more recently than any online novel. */
+  const lastLocal = localLast && localLast.user === libraryUser(user) && (!last || localLast.at >= last.at) ? localLast : null;
 
   return {
-    user, favs, history, contentLang, readerPrefs, stack, tab, langDialog, authLoading, toast, last,
+    user, favs, history, contentLang, readerPrefs, stack, tab, langDialog, authLoading, toast, last, lastLocal,
     top: stack[stack.length - 1], canBack: stack.length > 1,
     push, back, switchTab, openDetail, openCategory, openAuthor, openCollection,
     openChapter, goReader, setReaderLang, setContentLang, setLangDialog, setReaderPrefs,
-    login, skipLogin, logout, toggleFav, showToast
+    login, skipLogin, logout, toggleFav, showToast, markLocalRead, forgetLocal
   };
 }
 

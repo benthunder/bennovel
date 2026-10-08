@@ -84,6 +84,23 @@ background and sections further away are freed (`KEEP_AHEAD` / `KEEP_BEHIND` in 
 | MOBI, AZW3, PRC, FB2, DOCX, ODT, RTF, HTML, MHT/MHTML, Markdown | Text extracted once, streaming, to a plain file in the cache folder (deleted on close), then read in sections; headings start chapters |
 | UMD | Not supported yet |
 
+**Pictures.** A picture inside the text becomes a paragraph `U+FFFC + key`. The reader shows it as
+`<img loading="lazy">` from the app's `bookimg:` scheme (`book/commands.rs::serve_image`), so the bytes are
+read from the book only when the picture scrolls into view and never travel through IPC.
+
+| Format | Pictures |
+| --- | --- |
+| EPUB, CHM | `<img>` / SVG `<image>` read from the archive on demand |
+| PDF, DjVu | Each page drawn as a JPEG at screen width (Pdfium / djvu-rs); the reader has a **Pages / Text** switch |
+| MOBI, AZW3, PRC | Picture records (`recindex`, `kindle:embed`) |
+| FB2 | `<binary>` pictures, including the cover |
+| DOCX, ODT | Pictures in the ZIP (`word/media`, `Pictures/`) |
+| HTML, Markdown | Files linked by relative path next to the book, and `data:` URIs |
+| MHT/MHTML | Picture parts of the archive (by `Content-Location` or `cid:`) |
+| RTF | PNG and JPEG `\pict` data (WMF/EMF are skipped) |
+
+Pictures of extracted formats are saved next to the extracted text in the cache folder and deleted with it.
+
 ### On-device library (SQLite)
 
 Library → **Import a book** copies a book file into a SQLite database on the device, one file per user
@@ -97,8 +114,18 @@ synced or uploaded later without reshaping them.
 - The language is guessed from the text (Hangul → ko, Chinese → zh, Vietnamese letters → vi, else en) and
   the author is "Unknown" until it can be edited.
 - Reading a library book loads chapters from SQLite through the same in-memory window as a book file, and
-  `reading_history` keeps the part and scroll position, so **Continue** opens where you stopped.
+  `reading_history` keeps the part and scroll position. The Library shows imported books as covers, like
+  online novels, and the navigation's **Continue** reopens whichever was read last, an online chapter or an
+  imported book, at the place you stopped.
+- Imported books open in the same reader as online novels, with the reading settings and the replace list
+  (kept on the device per book and language). AI translation of imported books comes with the translate pipeline.
+- Pictures are copied into a local-only `chapter_images` table. For PDF and DjVu a copy of the file is kept in
+  `<user>.files/` next to the database, so pages can still be drawn as pictures.
 - **Open without saving** still reads a file directly without importing it.
+- On Android the file picker lists every file (its type filter greys out MOBI, FB2, DjVu…), and the app tells
+  the format from the file's first bytes.
+- The app registers for the book types (`bundle.fileAssociations` in `tauri.conf.json`), so "Open with
+  BenNovel" or tapping a book in a file manager opens it in the reader (`src-tauri/src/opened.rs`).
 
 PDF text comes from [Pdfium](https://github.com/bblanchon/pdfium-binaries), loaded at runtime from next to
 the app, its resources folder (`pdfium/`) or the system. The release workflow ships it with the Linux and
