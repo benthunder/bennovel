@@ -9,6 +9,8 @@ export interface LocalSectionMeta {
   label: string | null;
   /** First and last page (1-based) for PDF sections. */
   pages: [number, number] | null;
+  /** Chapter number to show ("Chương 12"): from the file name for folder imports, or a "Chương 12:" heading. */
+  number?: number;
 }
 
 export interface LocalBook {
@@ -87,6 +89,9 @@ export const libraryUser = (user: { email: string } | null) => user?.email ?? ''
 export interface LibraryBook {
   novelId: number;
   title: string;
+  /** Null while the author is not known. */
+  author: string | null;
+  description: string;
   /** Language guessed from the text: en, vi, zh or ko. */
   lang: string;
   format: LocalBook['format'] | null;
@@ -166,6 +171,10 @@ export function saveLibraryProgress(user: string, novelId: number, index: number
   lastSave = p;
   return p;
 }
+
+/** Saves a library book's title, author (empty: unknown) and description. */
+export const updateLibraryBook = (user: string, novelId: number, details: { title: string; author: string; description: string }) =>
+  invoke<LibraryBook>('library_update', { user, novelId, ...details });
 
 export const deleteLibraryBook = (user: string, novelId: number) => invoke<void>('library_delete', { user, novelId });
 

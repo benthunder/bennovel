@@ -138,6 +138,7 @@ impl BookSource for ChmBook {
             .map(|(_, label)| SectionMeta {
                 label: label.clone(),
                 pages: None,
+                number: None,
             })
             .collect()
     }

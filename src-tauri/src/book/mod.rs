@@ -85,6 +85,9 @@ pub struct SectionMeta {
     pub label: Option<String>,
     /// First and last page (1-based) for PDF sections.
     pub pages: Option<[u32; 2]>,
+    /// Chapter number to show ("Chương 12"), when the book knows it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub number: Option<f64>,
 }
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -107,6 +110,12 @@ pub trait BookSource: Send {
     /// Whether whole pages can be shown as pictures (`render_page`).
     fn page_images(&self) -> bool {
         false
+    }
+
+    /// Chapter title found while loading section `index` (folder imports read it from
+    /// the first lines of each file), for sections listed without a label.
+    fn section_title(&self, _index: usize) -> Option<String> {
+        None
     }
 
     /// Page `page` (1-based) drawn `width` pixels wide.
@@ -406,6 +415,7 @@ mod tests {
                 .map(|_| SectionMeta {
                     label: None,
                     pages: None,
+                    number: None,
                 })
                 .collect()
         }

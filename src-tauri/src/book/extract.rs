@@ -218,6 +218,7 @@ impl BookSource for ExtractedBook {
             .map(|r| SectionMeta {
                 label: r.label.clone(),
                 pages: None,
+                number: None,
             })
             .collect()
     }

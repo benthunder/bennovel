@@ -52,6 +52,7 @@ impl BookSource for DjvuBook {
                 SectionMeta {
                     label: None,
                     pages: Some([first as u32, last as u32]),
+                    number: None,
                 }
             })
             .collect()
