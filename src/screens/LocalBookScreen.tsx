@@ -105,7 +105,13 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
     window.clearTimeout(saveTimer.current);
     saveTimer.current = window.setTimeout(flush, 600);
   };
-  useEffect(() => { if (ready) save(currentProgress(scrollRef.current)); }, [index, ready]);
+  // The bar shows how far into this chapter, like the online reader.
+  useEffect(() => {
+    if (!ready) return;
+    const progress = currentProgress(scrollRef.current);
+    setReadPct(progress);
+    save(progress);
+  }, [index, ready]);
   // Continue (bottom bar / sidebar) reopens the library book read last.
   useEffect(() => {
     if (place) app.markLocalRead({ user: place.user, novelId: place.novelId, title: book.title ?? t('book.untitled'), index, total });
@@ -137,8 +143,6 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
     }
   };
 
-  // How far into the whole book: finished parts plus the share of this one.
-  const bookPct = (index + readPct) / Math.max(total, 1);
 
   // "Chương 12" above the chapter's own title; a chapter without one shows "Chương 12" once.
   const name = sectionName(meta, index, total);
@@ -179,7 +183,7 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
         <button className="icon-btn icon-btn--accent" aria-label={t('reader.tools')} onClick={() => setTools(o => (lay.wide && o ? null : 'reading'))}><SlidersIcon /></button>
       </div>
       <div style={{ height: 5, margin: `0 ${lay.readerBarPx}px`, borderRadius: 999, background: line, overflow: 'hidden' }}>
-        <div style={{ height: '100%', width: `${Math.round(bookPct * 100)}%`, background: 'var(--color-accent)', borderRadius: 999 }} />
+        <div style={{ height: '100%', width: `${Math.round(readPct * 100)}%`, background: 'var(--color-accent)', borderRadius: 999 }} />
       </div>
 
       <div ref={scrollRef} className="nx-scroll" onScroll={onScroll}
