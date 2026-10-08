@@ -7,6 +7,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_folder_picker::init())
         .manage(book::commands::Books::default())
         .manage(opened::OpenedFiles::from_args())
         .register_asynchronous_uri_scheme_protocol("bookimg", |ctx, request, responder| {
@@ -24,6 +25,7 @@ pub fn run() {
             library::commands::library_list,
             library::commands::library_import,
             library::commands::library_import_folder,
+            library::commands::library_import_android_folder,
             library::commands::library_open,
             library::commands::library_save_progress,
             library::commands::library_delete,

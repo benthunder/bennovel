@@ -1,0 +1,14 @@
+[package]
+name = "tauri-plugin-folder-picker"
+version = "0.1.0"
+description = "Folder picking and listing through the Android document tree (BenNovel)"
+edition = "2021"
+links = "tauri-plugin-folder-picker"
+publish = false
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+
+[build-dependencies]
+tauri-plugin = { version = "2.7.1", features = ["build"] }

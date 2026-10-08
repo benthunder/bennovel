@@ -111,7 +111,7 @@ checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
 name = "bennovel"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "djvu-rs",
  "encoding_rs",
@@ -126,6 +126,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
+ "tauri-plugin-folder-picker",
  "tauri-plugin-fs",
  "thiserror 2.0.21",
  "zip",
@@ -3588,6 +3589,15 @@ dependencies = [
  "tauri-plugin-fs",
  "thiserror 2.0.21",
  "url",
+]
+
+[[package]]
+name = "tauri-plugin-folder-picker"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "tauri",
+ "tauri-plugin",
 ]
 
 [[package]]
