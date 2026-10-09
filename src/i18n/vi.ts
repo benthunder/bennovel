@@ -205,6 +205,7 @@ export const vi: Record<MessageKey, string> = {
   'theme.paper': 'Giấy',
   'theme.sage': 'Xanh lá',
   'theme.night': 'Ban đêm',
+  'theme.eink': 'E-ink',
   'gap.tight': 'Hẹp',
   'gap.normal': 'Vừa',
   'gap.airy': 'Rộng',

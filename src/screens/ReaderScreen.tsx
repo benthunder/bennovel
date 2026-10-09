@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { ChevronLeftIcon, SlidersIcon, SparklesIcon } from '../components/Icons';
+import { ReaderChrome, useImmersive } from '../components/ReaderChrome';
 import { ReaderTools, type Translation } from '../components/ReaderTools';
 import { Spinner } from '../components/ui';
 import { applyReplaceRules, getChapterText, getContentLangs, getGlossary, getNovel, getReplaceRules, saveReplaceRules } from '../data/repository';
@@ -27,6 +28,8 @@ export function ReaderScreen({ id, ch, lang }: { id: number; ch: number; lang: C
   const [translated, setTranslated] = useState<Translation | null>(null);
   const [trStep, setTrStep] = useState<number | null>(null);
   const [readPct, setReadPct] = useState(0);
+  const [chromeH, setChromeH] = useState(0);
+  const immersive = useImmersive(toolsOpen || trStep !== null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
   useEffect(() => () => timers.current.forEach(clearTimeout), []);
@@ -68,13 +71,14 @@ export function ReaderScreen({ id, ch, lang }: { id: number; ch: number; lang: C
   const onScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const el = e.currentTarget, max = el.scrollHeight - el.clientHeight;
     setReadPct(max > 0 ? el.scrollTop / max : 1);
+    immersive.onScroll(el);
   };
 
   return (
-    <div className="screen" style={{ overflow: 'hidden', background: theme.bg, color: theme.fg }}>
+    <div className="screen" style={{ overflow: 'hidden', background: theme.bg, color: theme.fg, ...theme.vars }}>
       {/* On wide screens the open tools panel sits beside the chapter instead of over it. */}
       <div style={{ position: 'absolute', top: 0, bottom: 0, left: 0, right: lay.wide && toolsOpen ? lay.toolsW : 0, display: 'flex', flexDirection: 'column', transition: 'right .28s ease' }}>
-        <div style={{ padding: `${lay.readerTop} ${lay.readerPx}px 8px`, display: 'flex', alignItems: 'center', gap: 10 }}>
+        <ReaderChrome hidden={immersive.hidden} theme={theme} readPct={readPct} line={line} onHeight={setChromeH}>
           <button className="icon-btn icon-btn--plain" aria-label={t('common.back')} onClick={app.back}><ChevronLeftIcon size={22} /></button>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', opacity: .65, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{novel.title}</div>
@@ -85,13 +89,10 @@ export function ReaderScreen({ id, ch, lang }: { id: number; ch: number; lang: C
             {dispLang.toUpperCase()}
           </button>
           <button className="icon-btn icon-btn--accent" aria-label={t('reader.tools')} onClick={() => setToolsOpen(o => lay.wide ? !o : true)}><SlidersIcon /></button>
-        </div>
-        <div style={{ height: 5, margin: `0 ${lay.readerBarPx}px`, borderRadius: 999, background: line, overflow: 'hidden' }}>
-          <div style={{ height: '100%', width: `${Math.round(readPct * 100)}%`, background: 'var(--color-accent)', borderRadius: 999 }} />
-        </div>
+        </ReaderChrome>
 
-        <div ref={scrollRef} className="nx-scroll" onScroll={onScroll}
-          style={{ flex: 1, overflowY: 'auto', padding: `${lay.readerPadTop}px ${MARGIN_PX[p.margin]}px calc(env(safe-area-inset-bottom) + 40px)` }}>
+        <div ref={scrollRef} className="nx-scroll" onScroll={onScroll} onClick={immersive.onTap}
+          style={{ flex: 1, overflowY: 'auto', padding: `${chromeH + lay.readerPadTop}px ${MARGIN_PX[p.margin]}px calc(env(safe-area-inset-bottom) + 40px)`, fontFamily: theme.font }}>
           <div style={{ maxWidth: lay.readerMax, margin: '0 auto' }}>
             <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: night ? 'var(--color-accent-400)' : 'var(--color-accent-700)' }}>
               {t('common.chapter', { n: ch })}

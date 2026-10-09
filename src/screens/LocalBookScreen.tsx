@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ChapterSheet, useSectionName } from '../components/ChapterSheet';
 import { ChevronLeftIcon, DownloadIcon, ListIcon, SlidersIcon } from '../components/Icons';
+import { ReaderChrome, useImmersive } from '../components/ReaderChrome';
 import { ReaderTools, type ToolsTab } from '../components/ReaderTools';
 import { Segmented, Spinner } from '../components/ui';
 import { applyReplaceRules } from '../data/repository';
@@ -55,6 +56,8 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
   const [toc, setToc] = useState(false);
   const sectionName = useSectionName();
   const [readPct, setReadPct] = useState(0);
+  const [chromeH, setChromeH] = useState(0);
+  const immersive = useImmersive(!!tools || toc);
   // Library books know their language; a file opened once falls back to the reading language.
   const known = CONTENT_LANGS.find(l => l === place?.lang);
   const lang: ContentLang = known ?? app.contentLang ?? 'vi';
@@ -121,6 +124,7 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
   const onScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const progress = currentProgress(e.currentTarget);
     setReadPct(progress);
+    immersive.onScroll(e.currentTarget);
     if (place && ready) save(progress);
   };
   const [importing, setImporting] = useState<{ done: number; total: number } | null>(null);
@@ -149,10 +153,10 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
   const heading = meta?.label ?? name;
 
   return (
-    <div className="screen" style={{ overflow: 'hidden', background: theme.bg, color: theme.fg }}>
+    <div className="screen" style={{ overflow: 'hidden', background: theme.bg, color: theme.fg, ...theme.vars }}>
       {/* On wide screens the open tools panel sits beside the text instead of over it. */}
       <div style={{ position: 'absolute', top: 0, bottom: 0, left: 0, right: lay.wide && tools ? lay.toolsW : 0, display: 'flex', flexDirection: 'column', transition: 'right .28s ease' }}>
-      <div style={{ padding: `${lay.readerTop} ${lay.readerPx}px 8px`, display: 'flex', alignItems: 'center', gap: 10 }}>
+      <ReaderChrome hidden={immersive.hidden} theme={theme} readPct={readPct} line={line} onHeight={setChromeH}>
         <button className="icon-btn icon-btn--plain" aria-label={t('common.back')} onClick={app.back}><ChevronLeftIcon size={22} /></button>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', opacity: .65, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{book.title ?? t('book.untitled')}</div>
@@ -181,13 +185,10 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
           <button className="icon-btn icon-btn--plain" aria-label={t('book.tocAria')} title={t('book.tocAria')} onClick={() => setToc(true)}><ListIcon size={22} /></button>
         )}
         <button className="icon-btn icon-btn--accent" aria-label={t('reader.tools')} onClick={() => setTools(o => (lay.wide && o ? null : 'reading'))}><SlidersIcon /></button>
-      </div>
-      <div style={{ height: 5, margin: `0 ${lay.readerBarPx}px`, borderRadius: 999, background: line, overflow: 'hidden' }}>
-        <div style={{ height: '100%', width: `${Math.round(readPct * 100)}%`, background: 'var(--color-accent)', borderRadius: 999 }} />
-      </div>
+      </ReaderChrome>
 
-      <div ref={scrollRef} className="nx-scroll" onScroll={onScroll}
-        style={{ flex: 1, overflowY: 'auto', padding: `${lay.readerPadTop}px ${MARGIN_PX[p.margin]}px calc(env(safe-area-inset-bottom) + 40px)` }}>
+      <div ref={scrollRef} className="nx-scroll" onScroll={onScroll} onClick={immersive.onTap}
+        style={{ flex: 1, overflowY: 'auto', padding: `${chromeH + lay.readerPadTop}px ${MARGIN_PX[p.margin]}px calc(env(safe-area-inset-bottom) + 40px)`, fontFamily: theme.font }}>
         <div style={{ maxWidth: lay.readerMax, margin: '0 auto' }}>
           {heading !== name && (
             <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: night ? 'var(--color-accent-400)' : 'var(--color-accent-700)' }}>
