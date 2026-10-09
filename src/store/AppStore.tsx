@@ -22,7 +22,7 @@ export type LangDialog =
   | { mode: 'reader' }
   | { mode: 'settings' };
 
-export type ReaderTheme = 'cream' | 'paper' | 'sage' | 'night';
+export type ReaderTheme = 'cream' | 'paper' | 'sage' | 'night' | 'eink';
 export interface ReaderPrefs {
   fontSize: number;
   theme: ReaderTheme;
@@ -31,11 +31,36 @@ export interface ReaderPrefs {
   margin: 'narrow' | 'normal' | 'wide';
   align: 'left' | 'justify';
 }
-export const READER_THEMES: Record<ReaderTheme, { bg: string; fg: string }> = {
+export interface ReaderThemeStyle {
+  /** CSS background (may include a texture). */
+  bg: string;
+  fg: string;
+  /** Text face for the chapter, when the theme has its own. */
+  font?: string;
+  /** Design tokens overridden inside the reader (the e-ink theme drops the colour accent). */
+  vars?: Record<string, string>;
+  /** No motion: e-ink screens don't animate. */
+  still?: boolean;
+}
+
+/** Faint grain so the e-ink page reads as paper rather than a flat grey. */
+const PAPER_GRAIN = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 .09 0 0 0 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")`;
+
+export const READER_THEMES: Record<ReaderTheme, ReaderThemeStyle> = {
   cream: { bg: 'var(--color-bg)', fg: 'var(--color-text)' },
   paper: { bg: 'var(--color-neutral-100)', fg: 'var(--color-text)' },
   sage: { bg: 'var(--color-accent-2-200)', fg: 'var(--color-accent-2-900)' },
-  night: { bg: 'var(--color-neutral-900)', fg: 'var(--color-neutral-200)' }
+  night: { bg: 'var(--color-neutral-900)', fg: 'var(--color-neutral-200)' },
+  eink: {
+    bg: `${PAPER_GRAIN} #ecebe6`,
+    fg: '#1c1c1c',
+    font: "Literata, Georgia, 'Noto Serif', 'Times New Roman', serif",
+    still: true,
+    vars: {
+      '--color-accent': '#2a2a2a', '--color-accent-600': '#3a3a3a', '--color-accent-700': '#3a3a3a', '--color-accent-800': '#1c1c1c',
+      '--color-accent-400': '#6b6b6b', '--color-accent-200': '#d4d2cb', '--color-accent-100': '#e0dfd9'
+    }
+  }
 };
 
 export const DEFAULT_READER_PREFS: ReaderPrefs = { fontSize: 18, theme: 'cream', lineH: 1.75, gap: 'normal', margin: 'normal', align: 'left' };
