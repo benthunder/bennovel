@@ -203,6 +203,7 @@ export const en = {
   'theme.paper': 'Paper',
   'theme.sage': 'Sage',
   'theme.night': 'Night',
+  'theme.eink': 'E-ink',
   'gap.tight': 'Tight',
   'gap.normal': 'Normal',
   'gap.airy': 'Airy',

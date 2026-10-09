@@ -81,7 +81,7 @@ function ReadingTab() {
       </div>
       <div>
         <Label>{t('tools.background')}</Label>
-        <div style={{ display: 'flex', gap: 14 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14 }}>
           {(Object.keys(READER_THEMES) as (keyof typeof READER_THEMES)[]).map(k => (
             <button key={k} aria-pressed={p.theme === k} onClick={() => set({ theme: k })}
               style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, border: 'none', background: 'none', cursor: 'pointer', font: 'inherit', fontSize: 11, color: 'var(--color-text)' }}>
