@@ -400,3 +400,24 @@ pub async fn library_delete<R: Runtime>(
     })
     .await
 }
+
+/// Favourites and history of online novels, with their snapshots; null before the
+/// first save.
+#[tauri::command]
+pub async fn reading_load<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+) -> Result<Option<super::reading::ReadingState>, BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || Ok(super::reading::load(&db::open(&path)?)?)).await
+}
+
+#[tauri::command]
+pub async fn reading_save<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    state: super::reading::ReadingState,
+) -> Result<(), BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || Ok(super::reading::save(&mut db::open(&path)?, &state)?)).await
+}

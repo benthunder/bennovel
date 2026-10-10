@@ -1,11 +1,9 @@
 import { useState } from 'react';
 import { GlobeIcon, LanguagesIcon, LogOutIcon } from '../components/Icons';
 import { NovelCover } from '../components/NovelCover';
-import { OfflineNote } from '../components/OfflineNote';
 import { UiLangDialog, uiLangLabel } from '../components/UiLangDialog';
 import { CoverGrid, Segmented } from '../components/ui';
 import { findNovel, getContentLangs, getNovels } from '../data/repository';
-import { useCatalog } from '../data/useCatalog';
 import { relativeTime, useI18n } from '../i18n';
 import { useApp } from '../store/AppStore';
 import { useLayout } from '../lib/useLayout';
@@ -16,7 +14,6 @@ export function ProfileScreen() {
   const lay = useLayout();
   const [tab, setTab] = useState<'history' | 'favs'>('history');
   const [uiLangOpen, setUiLangOpen] = useState(false);
-  const offline = useCatalog().status === 'offline';
   const user = app.user;
   const initials = user ? user.name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase() : 'G';
   const langLabel = getContentLangs().find(l => l.code === app.contentLang)?.native ?? t('lang.askEach');
@@ -51,7 +48,7 @@ export function ProfileScreen() {
           options={[{ label: t('profile.history'), value: 'history' }, { label: t('profile.favourites'), value: 'favs' }]} />
 
         <div style={{ gridArea: 'content', minWidth: 0 }}>
-          {offline ? <OfflineNote /> : tab === 'history' ? (
+          {tab === 'history' ? (
             <div style={{ display: 'grid', gridTemplateColumns: lay.histCols, gap: '4px 12px', marginTop: -6 }}>
               {app.history.map(h => {
                 const n = findNovel(h.id);

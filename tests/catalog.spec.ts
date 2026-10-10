@@ -107,3 +107,21 @@ test('shows a retry when Supabase is unreachable', async ({ page }) => {
   await page.getByRole('button', { name: 'Try again' }).filter({ visible: true }).click();
   await expect(visibleText(page, novel.title)).toBeVisible();
 });
+
+test('saved novels are kept on the device for offline use', async ({ page }) => {
+  const [novel] = await mostReadNovels();
+  await boot(page);
+  await page.addInitScript(id => {
+    localStorage.setItem('bennovel.favs', JSON.stringify([id]));
+    localStorage.setItem('bennovel.history', '[]');
+  }, novel.id);
+  await page.goto('/');
+  await expect(visibleText(page, novel.title)).toBeVisible();
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('bennovel.novelCache') ?? '[]')))
+    .toEqual([expect.objectContaining({ id: novel.id, data: expect.objectContaining({ title: novel.title }) })]);
+
+  // With Supabase unreachable the saved novel still shows in the library.
+  await page.route('**/rest/v1/**', route => route.abort());
+  await page.reload();
+  await expect(visibleText(page, novel.title)).toBeVisible({ timeout: 20_000 });
+});

@@ -1,10 +1,11 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { load, save } from '../lib/storage';
 import type { Category, CollectionKey, ContentLang, HistoryEntry, User } from '../data/types';
-import type { ListSource } from '../data/repository';
+import { findNovel, rememberNovels, type ListSource } from '../data/repository';
 import { useCatalog } from '../data/useCatalog';
 import { useT } from '../i18n';
 import { libraryUser, type LibraryPlace, type LocalBook } from '../lib/localBook';
+import { loadReading, saveReading } from '../lib/readingStore';
 
 export type Tab = 'home' | 'category' | 'library' | 'profile';
 
@@ -95,6 +96,49 @@ function useStored<T>(key: string, init: T | (() => T)) {
   return [v, setV] as const;
 }
 
+/**
+ * Keeps favourites and history in the user's reading store (SQLite in the native app)
+ * with a snapshot of each novel, so they show offline. Loads when the user changes;
+ * a user with nothing saved yet starts from the current lists.
+ */
+function useReadingStore(
+  user: string,
+  favs: number[], setFavs: (v: number[]) => void,
+  history: HistoryEntry[], setHistory: (v: HistoryEntry[]) => void,
+  status: string
+) {
+  const loadedFor = useRef<string | null>(null);
+  const [loads, setLoads] = useState(0);
+
+  useEffect(() => {
+    let gone = false;
+    loadedFor.current = null;
+    const done = () => {
+      if (gone) return;
+      loadedFor.current = user;
+      setLoads(n => n + 1);
+    };
+    loadReading(user).then(state => {
+      if (gone) return;
+      if (state) {
+        rememberNovels(state.novels);
+        setFavs(state.favs);
+        setHistory(state.history);
+      }
+      done();
+    }, e => { console.error(e); done(); });
+    return () => { gone = true; };
+  }, [user]);
+
+  // Saves after every change, and again once the catalog has loaded to refresh the snapshots.
+  useEffect(() => {
+    if (loadedFor.current !== user) return;
+    const ids = [...new Set([...favs, ...history.map(h => h.id)])];
+    const novels = ids.map(id => ({ id, data: findNovel(id) ?? null }));
+    saveReading(user, { favs, history, novels }).catch(console.error);
+  }, [user, favs, history, status, loads]);
+}
+
 function useAppState() {
   const catalog = useCatalog();
   const tr = useT();
@@ -105,6 +149,7 @@ function useAppState() {
   const [contentLang, setContentLang] = useStored<ContentLang | null>('defaultLang', null);
   const [readerPrefs, setReaderPrefs] = useStored<ReaderPrefs>('readerPrefs', DEFAULT_READER_PREFS);
   const [localLast, setLocalLast] = useStored<LocalLast | null>('localLast', null);
+  useReadingStore(libraryUser(user), favs, setFavs, history, setHistory, catalog.status);
 
   // The app opens on the library (books on the device and saved novels).
   const [stack, setStack] = useState<Route[]>(() => [load('onboarded', false) || user ? { s: 'library' } : { s: 'login' }]);
@@ -124,7 +169,11 @@ function useAppState() {
   const back = useCallback(() => setStack(s => (s.length > 1 ? s.slice(0, -1) : s)), []);
   const switchTab = useCallback((t: Tab) => { setTab(t); setStack([tabRoot(t)]); }, []);
 
-  const openDetail = useCallback((id: number) => push({ s: 'detail', id }), [push]);
+  // Chapters come from the server, so a novel's page needs a connection.
+  const openDetail = useCallback((id: number) => {
+    if (catalog.status === 'ready') push({ s: 'detail', id });
+    else showToast(tr('load.needsConnection'));
+  }, [catalog.status, push, showToast, tr]);
   const openCategory = useCallback((value: Category) => push({ s: 'list', src: { type: 'category', value } }), [push]);
   const openAuthor = useCallback((value: string) => push({ s: 'list', src: { type: 'author', value } }), [push]);
   const openCollection = useCallback((value: CollectionKey) => push({ s: 'list', src: { type: 'collection', value } }), [push]);

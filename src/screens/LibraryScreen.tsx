@@ -19,7 +19,8 @@ export function LibraryScreen() {
   const app = useApp();
   const lay = useLayout();
   const favs = getNovels(app.favs);
-  const offline = useCatalog().status === 'offline';
+  // Saved before this device kept snapshots: those show once the catalog loads.
+  const missing = useCatalog().status === 'offline' && favs.length < app.favs.length;
 
   const openFile = async () => {
     try {
@@ -35,23 +36,19 @@ export function LibraryScreen() {
     <div className="screen screen--tabbed" style={{ paddingTop: lay.topPlus, paddingLeft: lay.px, paddingRight: lay.px }}>
       <div className="kicker">{t('library.kicker')}</div>
       <h2 style={{ margin: '0 0 4px', fontSize: lay.libH }}>{t('library.title')}</h2>
-      {!offline && (
-        <div className="muted" style={{ fontSize: 13, marginBottom: 18 }}>
-          {favs.length === 1 ? t('library.countOne') : t('library.count', { n: favs.length })}
-        </div>
-      )}
+      <div className="muted" style={{ fontSize: 13, marginBottom: 18 }}>
+        {favs.length === 1 ? t('library.countOne') : t('library.count', { n: favs.length })}
+      </div>
       {canOpenLocalBooks() && <DeviceBooks onOpenFile={openFile} />}
-      {/* Saved online novels need the catalog; books on the device above still open. */}
-      {offline ? <div style={{ marginTop: 8 }}><OfflineNote /></div> : <>
       <CoverGrid novels={favs} onOpen={app.openDetail} cols={lay.libCols} gap={lay.libGap} fs={lay.libFs} />
-      {favs.length === 0 && (
+      {missing && <div style={{ marginTop: 8 }}><OfflineNote /></div>}
+      {favs.length === 0 && !missing && (
         <div className="card" style={{ alignItems: 'flex-start', padding: 22, marginTop: 8, maxWidth: 420 }}>
           <div className="card-title">{t('library.emptyTitle')}</div>
           <p className="card-body">{t('library.emptyBody')}</p>
           <button className="btn btn-primary" onClick={() => app.switchTab('category')}>{t('library.browse')}</button>
         </div>
       )}
-      </>}
     </div>
   );
 }

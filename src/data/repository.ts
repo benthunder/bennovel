@@ -97,7 +97,14 @@ export async function loadCatalog(): Promise<void> {
 
 const DEFAULT_COVER: Novel['cover'] = { bg: 'var(--color-accent-300)', fg: 'var(--color-accent-900)', deco: 'var(--color-accent-500)' };
 
-export const findNovel = (id: number): Novel | undefined => cat().byId.get(id);
+/** Novels saved or read before, as last seen, so they show without a connection. */
+const remembered = new Map<number, Novel>();
+
+export function rememberNovels(novels: { id: number; data: Novel | null }[]) {
+  for (const n of novels) if (n.data) remembered.set(n.id, n.data);
+}
+
+export const findNovel = (id: number): Novel | undefined => cat().byId.get(id) ?? remembered.get(id);
 
 export const getNovel = (id: number): Novel => {
   const n = findNovel(id);

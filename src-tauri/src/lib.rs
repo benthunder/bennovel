@@ -30,6 +30,8 @@ pub fn run() {
             library::commands::library_save_progress,
             library::commands::library_update,
             library::commands::library_delete,
+            library::commands::reading_load,
+            library::commands::reading_save,
             opened::take_opened_files,
         ])
         .build(tauri::generate_context!())
