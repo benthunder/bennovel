@@ -13,10 +13,16 @@ async function boot(page: Page, { ui = 'en', content = 'en' }: { ui?: string; co
   }, [ui, content]);
 }
 
+/** Goes to Home once the catalog has loaded (saved novels already show in the sidebar before that). */
+async function goHome(page: Page) {
+  await page.getByRole('button', { name: 'Home' }).filter({ visible: true }).first().click();
+  await expect(page.getByText('Loading the library…')).toHaveCount(0);
+}
+
 /** Opens the app (it starts on the library) and goes to Home. */
 async function openHome(page: Page) {
   await page.goto('/');
-  await page.getByRole('button', { name: 'Home' }).filter({ visible: true }).first().click();
+  await goHome(page);
 }
 
 test('home lists the most-read novels from Supabase', async ({ page }) => {
@@ -72,7 +78,7 @@ test('replace rules change the chapter text and are kept', async ({ page }) => {
   await expect(page.getByText(replaced, { exact: true })).toBeVisible();
 
   await page.reload();
-  await page.getByRole('button', { name: 'Home' }).filter({ visible: true }).first().click();
+  await goHome(page);
   await visibleText(page, novel.title).click();
   await visibleText(page, ch1.title).click();
   await expect(page.getByText(replaced, { exact: true })).toBeVisible();
