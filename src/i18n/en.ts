@@ -129,8 +129,8 @@ export const en = {
 
   // profile
   'profile.signedInWith': 'Signed in with {p}',
-  'profile.guestTitle': 'Log in to see your profile',
-  'profile.guestBody': 'Your history, favourites and settings are kept with your account.',
+  'profile.guestTitle': 'Reading as a guest',
+  'profile.guestBody': 'Log in to sync your favourites and history across devices and unlock more features.',
   'profile.loginCta': 'Log in or register',
   'profile.history': 'History',
   'profile.favourites': 'Favourites',

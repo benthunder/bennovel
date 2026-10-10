@@ -79,16 +79,15 @@ test('a book opened from the system goes straight to the reader, even offline', 
   expect(calls).toEqual([]);
 });
 
-test('profile asks guests to log in first', async ({ page }) => {
+test('guests use Profile offline and can log in from it', async ({ page }) => {
   await goOffline(page);
   await boot(page);
   await page.goto('/');
   await page.getByRole('button', { name: 'Profile' }).filter({ visible: true }).first().click();
-  // The sign-in screen opens right away; skipping it leaves only the sign-in prompt.
-  await expect(page.getByRole('textbox', { name: 'Email' })).toBeVisible();
-  await page.getByRole('button', { name: 'Not now' }).click();
-  await expect(page.getByText('Log in to see your profile')).toBeVisible();
-  await expect(page.getByText('History', { exact: true })).toHaveCount(0);
+  // No sign-in wall: settings work, and the history waits for a connection.
+  await expect(page.getByText('Reading as a guest')).toBeVisible();
+  await expect(page.getByRole('button', { name: /Default reading language/ })).toBeVisible();
+  await expect(page.getByText('You are offline').filter({ visible: true })).toBeVisible();
 
   await page.getByRole('button', { name: 'Log in or register' }).click();
   await page.getByRole('textbox', { name: 'Email' }).fill('lina.hart@example.com');

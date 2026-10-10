@@ -131,8 +131,8 @@ export const vi: Record<MessageKey, string> = {
 
   // profile
   'profile.signedInWith': 'Đăng nhập bằng {p}',
-  'profile.guestTitle': 'Đăng nhập để xem hồ sơ',
-  'profile.guestBody': 'Lịch sử đọc, truyện yêu thích và cài đặt được lưu theo tài khoản của bạn.',
+  'profile.guestTitle': 'Bạn đang đọc với tư cách khách',
+  'profile.guestBody': 'Đăng nhập để đồng bộ truyện yêu thích, lịch sử đọc giữa các thiết bị và dùng thêm tính năng.',
   'profile.loginCta': 'Đăng nhập hoặc đăng ký',
   'profile.history': 'Lịch sử',
   'profile.favourites': 'Yêu thích',

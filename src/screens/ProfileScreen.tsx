@@ -18,21 +18,8 @@ export function ProfileScreen() {
   const [uiLangOpen, setUiLangOpen] = useState(false);
   const offline = useCatalog().status === 'offline';
   const user = app.user;
+  const initials = user ? user.name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase() : 'G';
   const langLabel = getContentLangs().find(l => l.code === app.contentLang)?.native ?? t('lang.askEach');
-
-  // The profile is only for signed-in readers.
-  if (!user) {
-    return (
-      <div className="screen screen--tabbed" style={{ paddingTop: lay.topPlus, paddingLeft: lay.px, paddingRight: lay.px }}>
-        <div style={{ maxWidth: 460, borderRadius: 34, background: 'var(--color-surface)', padding: 22, display: 'flex', flexDirection: 'column', gap: 10, alignItems: 'flex-start' }}>
-          <div className="display" style={{ fontSize: 22 }}>{t('profile.guestTitle')}</div>
-          <div style={{ fontSize: 13, color: 'var(--color-neutral-800)' }}>{t('profile.guestBody')}</div>
-          <button className="btn btn-primary" style={{ height: 44, padding: '0 22px' }} onClick={() => app.push({ s: 'login' })}>{t('profile.loginCta')}</button>
-        </div>
-      </div>
-    );
-  }
-  const initials = user.name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
 
   return (
     <div className="screen screen--tabbed" style={{ paddingTop: lay.topPlus, paddingLeft: lay.px, paddingRight: lay.px }}>
@@ -42,14 +29,22 @@ export function ProfileScreen() {
         gridTemplateRows: lay.wide ? 'auto auto auto 1fr' : 'auto'
       }}>
         <div style={{ gridArea: 'card' }}>
-          <div style={{ borderRadius: 34, background: 'var(--color-surface)', padding: 22, display: 'flex', flexDirection: lay.wide ? 'column' : 'row', gap: 16, alignItems: lay.wide ? 'flex-start' : 'center' }}>
-            <span className="display" style={{ width: 72, height: 72, flex: 'none', borderRadius: '50%', background: 'var(--color-accent-2-300)', color: 'var(--color-accent-2-900)', display: 'grid', placeItems: 'center', fontSize: 26 }}>{initials}</span>
-            <div style={{ minWidth: 0 }}>
-              <div className="display" style={{ fontSize: 22, lineHeight: 1.1 }}>{user.name}</div>
-              <div className="muted" style={{ fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis' }}>{user.email}</div>
-              <span className="tag tag-accent-2" style={{ marginTop: 6 }}>{t('profile.signedInWith', { p: user.provider })}</span>
+          {user ? (
+            <div style={{ borderRadius: 34, background: 'var(--color-surface)', padding: 22, display: 'flex', flexDirection: lay.wide ? 'column' : 'row', gap: 16, alignItems: lay.wide ? 'flex-start' : 'center' }}>
+              <span className="display" style={{ width: 72, height: 72, flex: 'none', borderRadius: '50%', background: 'var(--color-accent-2-300)', color: 'var(--color-accent-2-900)', display: 'grid', placeItems: 'center', fontSize: 26 }}>{initials}</span>
+              <div style={{ minWidth: 0 }}>
+                <div className="display" style={{ fontSize: 22, lineHeight: 1.1 }}>{user.name}</div>
+                <div className="muted" style={{ fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis' }}>{user.email}</div>
+                <span className="tag tag-accent-2" style={{ marginTop: 6 }}>{t('profile.signedInWith', { p: user.provider })}</span>
+              </div>
             </div>
-          </div>
+          ) : (
+            <div style={{ borderRadius: 34, background: 'var(--color-surface)', padding: 22, display: 'flex', flexDirection: 'column', gap: 10, alignItems: 'flex-start' }}>
+              <div className="display" style={{ fontSize: 22 }}>{t('profile.guestTitle')}</div>
+              <div style={{ fontSize: 13, color: 'var(--color-neutral-800)' }}>{t('profile.guestBody')}</div>
+              <button className="btn btn-primary" style={{ height: 44, padding: '0 22px' }} onClick={() => app.push({ s: 'login' })}>{t('profile.loginCta')}</button>
+            </div>
+          )}
         </div>
 
         <Segmented value={tab} onChange={setTab} style={{ gridArea: 'tabs' }} optStyle={{ padding: 10 }}
@@ -97,10 +92,12 @@ export function ProfileScreen() {
             <span style={{ flex: 1, fontSize: 14, fontWeight: 600 }}>{t('uiLang.label')}</span>
             <span className="muted" style={{ fontSize: 13 }}>{uiLangLabel(uiLang)} ›</span>
           </button>
-          <button className="menu-row menu-row--danger" onClick={() => { app.logout(); app.showToast(t('auth.loggedOut')); }}>
-            <LogOutIcon />
-            <span style={{ flex: 1, fontSize: 14, fontWeight: 700 }}>{t('profile.logout')}</span>
-          </button>
+          {user && (
+            <button className="menu-row menu-row--danger" onClick={() => { app.logout(); app.showToast(t('auth.loggedOut')); }}>
+              <LogOutIcon />
+              <span style={{ flex: 1, fontSize: 14, fontWeight: 700 }}>{t('profile.logout')}</span>
+            </button>
+          )}
         </div>
       </div>
       {uiLangOpen && <UiLangDialog onClose={() => setUiLangOpen(false)} />}

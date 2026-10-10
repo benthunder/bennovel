@@ -122,11 +122,7 @@ function useAppState() {
 
   const push = useCallback((r: Route) => setStack(s => [...s, r]), []);
   const back = useCallback(() => setStack(s => (s.length > 1 ? s.slice(0, -1) : s)), []);
-  // Profile needs an account: guests are asked to sign in first, and land on it after.
-  const switchTab = useCallback((t: Tab) => {
-    setTab(t);
-    setStack(t === 'profile' && !user ? [tabRoot(t), { s: 'login' }] : [tabRoot(t)]);
-  }, [user]);
+  const switchTab = useCallback((t: Tab) => { setTab(t); setStack([tabRoot(t)]); }, []);
 
   const openDetail = useCallback((id: number) => push({ s: 'detail', id }), [push]);
   const openCategory = useCallback((value: Category) => push({ s: 'list', src: { type: 'category', value } }), [push]);
