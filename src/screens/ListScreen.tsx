@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { ChevronLeftIcon } from '../components/Icons';
+import { OfflineNote } from '../components/OfflineNote';
+import { useCatalog } from '../data/useCatalog';
 import { NovelRow, SearchField, Segmented, Spinner } from '../components/ui';
 import { getCategories, listNovels, type ListFilter, type ListSource, type SortKey } from '../data/repository';
 import type { Category, NovelStatus } from '../data/types';
@@ -25,6 +27,7 @@ export function ListScreen({ src }: { src: ListSource }) {
   const [cat, setCat] = useState<'All' | Category>('All');
 
   const items = listNovels(src, { query, status, sort, cat });
+  const offline = useCatalog().status === 'offline';
 
   const title = src.type === 'all' ? t('list.categories')
     : src.type === 'category' ? names.cat(src.value)
@@ -54,6 +57,9 @@ export function ListScreen({ src }: { src: ListSource }) {
         </div>
       </div>
 
+      {offline ? (
+        <div style={{ padding: `20px ${lay.px}px 0` }}><OfflineNote showLibrary /></div>
+      ) : (<>
       {src.type === 'all' && (
         <div className="nx-scroll" style={{ display: 'flex', gap: 8, overflowX: 'auto', padding: `16px ${lay.px}px 0` }}>
           {(['All', ...getCategories()] as const).map(c => (
@@ -89,6 +95,7 @@ export function ListScreen({ src }: { src: ListSource }) {
           <div className="empty__body muted">{t('list.emptyBody')}</div>
         </div>
       )}
+      </>)}
     </div>
   );
 }
