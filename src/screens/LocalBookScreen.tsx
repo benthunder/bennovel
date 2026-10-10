@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ChapterSheet, useSectionName } from '../components/ChapterSheet';
 import { ChevronLeftIcon, DownloadIcon, ListIcon, SlidersIcon } from '../components/Icons';
-import { ReaderChrome, useImmersive } from '../components/ReaderChrome';
+import { ReaderChrome, ReaderStatusBar, useImmersive } from '../components/ReaderChrome';
 import { ReaderTools, type ToolsTab } from '../components/ReaderTools';
 import { Segmented, Spinner } from '../components/ui';
 import { applyReplaceRules } from '../data/repository';
@@ -188,7 +188,7 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
       </ReaderChrome>
 
       <div ref={scrollRef} className="nx-scroll" onScroll={onScroll} onClick={immersive.onTap}
-        style={{ flex: 1, overflowY: 'auto', padding: `${chromeH + lay.readerPadTop}px ${MARGIN_PX[p.margin]}px calc(env(safe-area-inset-bottom) + 40px)`, fontFamily: theme.font }}>
+        style={{ flex: 1, overflowY: 'auto', padding: `${chromeH + lay.readerPadTop}px ${MARGIN_PX[p.margin]}px 40px`, fontFamily: theme.font }}>
         <div style={{ maxWidth: lay.readerMax, margin: '0 auto' }}>
           {heading !== name && (
             <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: night ? 'var(--color-accent-400)' : 'var(--color-accent-700)' }}>
@@ -226,6 +226,7 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
           </div>
         </div>
       </div>
+      <ReaderStatusBar theme={theme} />
       </div>
 
       {toc && <ChapterSheet sections={book.sections} current={index} onPick={setIndex} onClose={() => setToc(false)} />}
