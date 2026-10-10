@@ -171,8 +171,9 @@ function useAppState() {
 
   // Chapters come from the server, so a novel's page needs a connection.
   const openDetail = useCallback((id: number) => {
-    if (catalog.status === 'ready') push({ s: 'detail', id });
-    else showToast(tr('load.needsConnection'));
+    // While the catalog is still loading the page waits for it (see App).
+    if (catalog.status === 'offline') showToast(tr('load.needsConnection'));
+    else push({ s: 'detail', id });
   }, [catalog.status, push, showToast, tr]);
   const openCategory = useCallback((value: Category) => push({ s: 'list', src: { type: 'category', value } }), [push]);
   const openAuthor = useCallback((value: string) => push({ s: 'list', src: { type: 'author', value } }), [push]);
@@ -186,7 +187,7 @@ function useAppState() {
 
   /** Opens a chapter in the saved language, or asks first when none is saved. */
   const openChapter = useCallback((id: number, ch: number) => {
-    if (catalog.status !== 'ready') showToast(tr('load.needsConnection'));
+    if (catalog.status === 'offline') showToast(tr('load.needsConnection'));
     else if (contentLang) goReader(id, ch, contentLang);
     else setLangDialog({ mode: 'chapter', id, ch });
   }, [catalog.status, contentLang, goReader, showToast, tr]);
