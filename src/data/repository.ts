@@ -1,7 +1,7 @@
 // Data access seam. Everything screens need from "the server" goes through here.
 // The catalog (novels, categories, collections, languages) is small, so it is loaded
 // from Supabase once at startup and served synchronously; chapters and glossaries are
-// fetched on demand.
+// fetched on demand. Until it has loaded (or when offline) the catalog is empty.
 import { supabase } from '../lib/supabase';
 import { load, save } from '../lib/storage';
 import type {
@@ -21,10 +21,11 @@ interface Catalog {
 
 let catalog: Catalog | null = null;
 
-const cat = (): Catalog => {
-  if (!catalog) throw new Error('Catalog not loaded; call loadCatalog() first');
-  return catalog;
+const EMPTY: Catalog = {
+  novels: [], byId: new Map(), categories: [], categoryNames: new Map(), collections: [], collectionNames: new Map(), contentLangs: []
 };
+
+const cat = (): Catalog => catalog ?? EMPTY;
 
 const must = <T>(res: { data: T | null; error: { message: string } | null }, what: string): T => {
   if (res.error) throw new Error(`Loading ${what} failed: ${res.error.message}`);
@@ -96,7 +97,14 @@ export async function loadCatalog(): Promise<void> {
 
 const DEFAULT_COVER: Novel['cover'] = { bg: 'var(--color-accent-300)', fg: 'var(--color-accent-900)', deco: 'var(--color-accent-500)' };
 
-export const findNovel = (id: number): Novel | undefined => cat().byId.get(id);
+/** Novels saved or read before, as last seen, so they show without a connection. */
+const remembered = new Map<number, Novel>();
+
+export function rememberNovels(novels: { id: number; data: Novel | null }[]) {
+  for (const n of novels) if (n.data) remembered.set(n.id, n.data);
+}
+
+export const findNovel = (id: number): Novel | undefined => cat().byId.get(id) ?? remembered.get(id);
 
 export const getNovel = (id: number): Novel => {
   const n = findNovel(id);

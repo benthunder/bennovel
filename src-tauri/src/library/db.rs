@@ -133,6 +133,30 @@ create table chapter_images (
 -- folder imports or a "Chương 12: …" heading. `number` stays the reading order.
 alter table chapters add column display_number real;
 "#,
+    r#"
+-- Local only: online (Supabase) novels the reader saved or read, so favourites and
+-- history show without a connection. Ids are Supabase novel ids, a separate space
+-- from the imported books in `novels`; `data` is the app's snapshot of the catalog
+-- row (title, author, cover…) as JSON.
+create table online_novels (
+  id         integer primary key,
+  data       text not null,
+  updated_at text not null default (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+-- Like Supabase `favorites` and `reading_history`, for online novels. Times are
+-- epoch milliseconds, as the app keeps them.
+create table online_favorites (
+  novel_id   integer primary key references online_novels (id) on delete cascade,
+  position   integer not null
+);
+
+create table online_history (
+  novel_id       integer primary key references online_novels (id) on delete cascade,
+  chapter_number integer not null check (chapter_number > 0),
+  last_read_at   integer not null
+);
+"#,
 ];
 
 pub fn open(path: &Path) -> rusqlite::Result<Connection> {

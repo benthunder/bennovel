@@ -13,10 +13,16 @@ async function boot(page: Page, { ui = 'en', content = 'en' }: { ui?: string; co
   }, [ui, content]);
 }
 
+/** Opens the app (it starts on the library) and goes to Home. */
+async function openHome(page: Page) {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Home' }).filter({ visible: true }).first().click();
+}
+
 test('home lists the most-read novels from Supabase', async ({ page }) => {
   const top = (await mostReadNovels()).slice(0, 3);
   await boot(page);
-  await page.goto('/');
+  await openHome(page);
   for (const n of top) await expect(visibleText(page, n.title)).toBeVisible();
   await expect(page.getByText(top[0].author).filter({ visible: true }).first()).toBeVisible();
 });
@@ -25,7 +31,7 @@ test('detail lists chapter titles from Supabase', async ({ page }) => {
   const [novel] = await mostReadNovels();
   const chapters = await chapterTexts(novel.id, 'en');
   await boot(page);
-  await page.goto('/');
+  await openHome(page);
   await visibleText(page, novel.title).click();
   await expect(page.getByRole('heading', { name: novel.title })).toBeVisible();
   for (const c of chapters.slice(0, 3)) await expect(visibleText(page, c.title)).toBeVisible();
@@ -37,7 +43,7 @@ for (const lang of ['en', 'vi']) {
     const [ch1] = await chapterTexts(novel.id, lang);
     const firstPara = await withGlossary(novel.id, lang, ch1.paragraphs[0]);
     await boot(page, { content: lang });
-    await page.goto('/');
+    await openHome(page);
     await visibleText(page, novel.title).click();
     await visibleText(page, ch1.title).click();
     await expect(page.getByRole('heading', { name: ch1.title })).toBeVisible();
@@ -53,7 +59,7 @@ test('replace rules change the chapter text and are kept', async ({ page }) => {
   const word = firstPara.split(/\s+/).find(w => /^[A-Za-z]{4,}$/.test(w))!;
   const replaced = firstPara.split(word).join('Zephyr');
   await boot(page);
-  await page.goto('/');
+  await openHome(page);
   await visibleText(page, novel.title).click();
   await visibleText(page, ch1.title).click();
   await expect(page.getByText(firstPara, { exact: true })).toBeVisible();
@@ -66,6 +72,7 @@ test('replace rules change the chapter text and are kept', async ({ page }) => {
   await expect(page.getByText(replaced, { exact: true })).toBeVisible();
 
   await page.reload();
+  await page.getByRole('button', { name: 'Home' }).filter({ visible: true }).first().click();
   await visibleText(page, novel.title).click();
   await visibleText(page, ch1.title).click();
   await expect(page.getByText(replaced, { exact: true })).toBeVisible();
@@ -93,10 +100,28 @@ test('shows a retry when Supabase is unreachable', async ({ page }) => {
   const [novel] = await mostReadNovels();
   await boot(page);
   await page.route('**/rest/v1/**', route => route.abort());
-  await page.goto('/');
+  await openHome(page);
   // supabase-js retries failed reads with backoff (about 7s) before giving up.
-  await expect(page.getByRole('alert')).toContainText('Could not reach the library', { timeout: 20_000 });
+  await expect(page.getByText('You are offline').filter({ visible: true })).toBeVisible({ timeout: 20_000 });
   await page.unroute('**/rest/v1/**');
-  await page.getByRole('button', { name: 'Try again' }).click();
+  await page.getByRole('button', { name: 'Try again' }).filter({ visible: true }).click();
   await expect(visibleText(page, novel.title)).toBeVisible();
+});
+
+test('saved novels are kept on the device for offline use', async ({ page }) => {
+  const [novel] = await mostReadNovels();
+  await boot(page);
+  await page.addInitScript(id => {
+    localStorage.setItem('bennovel.favs', JSON.stringify([id]));
+    localStorage.setItem('bennovel.history', '[]');
+  }, novel.id);
+  await page.goto('/');
+  await expect(visibleText(page, novel.title)).toBeVisible();
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('bennovel.novelCache') ?? '[]')))
+    .toEqual([expect.objectContaining({ id: novel.id, data: expect.objectContaining({ title: novel.title }) })]);
+
+  // With Supabase unreachable the saved novel still shows in the library.
+  await page.route('**/rest/v1/**', route => route.abort());
+  await page.reload();
+  await expect(visibleText(page, novel.title)).toBeVisible({ timeout: 20_000 });
 });

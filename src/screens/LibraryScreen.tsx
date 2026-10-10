@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { ask } from '@tauri-apps/plugin-dialog';
 import { CoverGrid, Spinner } from '../components/ui';
 import { NovelCover } from '../components/NovelCover';
+import { OfflineNote } from '../components/OfflineNote';
+import { useCatalog } from '../data/useCatalog';
 import { EyeIcon, FilePlusIcon, FolderOpenIcon, PencilIcon, XIcon } from '../components/Icons';
 import { getNovels } from '../data/repository';
 import { useT } from '../i18n';
@@ -17,6 +19,8 @@ export function LibraryScreen() {
   const app = useApp();
   const lay = useLayout();
   const favs = getNovels(app.favs);
+  // Saved before this device kept snapshots: those show once the catalog loads.
+  const missing = useCatalog().status === 'offline' && favs.length < app.favs.length;
 
   const openFile = async () => {
     try {
@@ -37,7 +41,8 @@ export function LibraryScreen() {
       </div>
       {canOpenLocalBooks() && <DeviceBooks onOpenFile={openFile} />}
       <CoverGrid novels={favs} onOpen={app.openDetail} cols={lay.libCols} gap={lay.libGap} fs={lay.libFs} />
-      {favs.length === 0 && (
+      {missing && <div style={{ marginTop: 8 }}><OfflineNote /></div>}
+      {favs.length === 0 && !missing && (
         <div className="card" style={{ alignItems: 'flex-start', padding: 22, marginTop: 8, maxWidth: 420 }}>
           <div className="card-title">{t('library.emptyTitle')}</div>
           <p className="card-body">{t('library.emptyBody')}</p>

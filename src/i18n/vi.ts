@@ -132,7 +132,7 @@ export const vi: Record<MessageKey, string> = {
   // profile
   'profile.signedInWith': 'Đăng nhập bằng {p}',
   'profile.guestTitle': 'Bạn đang đọc với tư cách khách',
-  'profile.guestBody': 'Đăng nhập để giữ truyện yêu thích và lịch sử đọc trên mọi thiết bị.',
+  'profile.guestBody': 'Đăng nhập để đồng bộ truyện yêu thích, lịch sử đọc giữa các thiết bị và dùng thêm tính năng.',
   'profile.loginCta': 'Đăng nhập hoặc đăng ký',
   'profile.history': 'Lịch sử',
   'profile.favourites': 'Yêu thích',
@@ -238,6 +238,9 @@ export const vi: Record<MessageKey, string> = {
   // loading from the server
   'load.catalog': 'Đang tải thư viện…',
   'load.failed': 'Không kết nối được thư viện. Kiểm tra mạng rồi thử lại.',
+  'load.offline': 'Bạn đang ngoại tuyến',
+  'load.offlineBody': 'Truyện online sẽ hiện khi có kết nối mạng. Sách trên máy vẫn đọc được.',
+  'load.needsConnection': 'Cần có kết nối mạng.',
   'load.retry': 'Thử lại',
   'reader.loading': 'Đang tải chương…',
   'reader.missing': 'Chương này chưa có bản ở ngôn ngữ này.',
