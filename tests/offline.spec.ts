@@ -52,6 +52,10 @@ test('without a connection the app skips online content', async ({ page }) => {
   const calls = await goOffline(page);
   await boot(page);
   await page.goto('/');
+  // The app opens on the library.
+  await expect(page.getByRole('heading', { name: 'Favourites' })).toBeVisible();
+  await expect(page.getByText('You are offline').filter({ visible: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Home' }).filter({ visible: true }).first().click();
   await expect(page.getByText('You are offline').filter({ visible: true })).toBeVisible();
   await page.getByRole('button', { name: /^Categor(y|ies)$/ }).filter({ visible: true }).first().click();
   await expect(page.getByText('You are offline').filter({ visible: true })).toBeVisible();

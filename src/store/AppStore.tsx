@@ -106,8 +106,9 @@ function useAppState() {
   const [readerPrefs, setReaderPrefs] = useStored<ReaderPrefs>('readerPrefs', DEFAULT_READER_PREFS);
   const [localLast, setLocalLast] = useStored<LocalLast | null>('localLast', null);
 
-  const [stack, setStack] = useState<Route[]>(() => [load('onboarded', false) || user ? { s: 'home' } : { s: 'login' }]);
-  const [tab, setTab] = useState<Tab | null>(() => (stack[0].s === 'home' ? 'home' : null));
+  // The app opens on the library (books on the device and saved novels).
+  const [stack, setStack] = useState<Route[]>(() => [load('onboarded', false) || user ? { s: 'library' } : { s: 'login' }]);
+  const [tab, setTab] = useState<Tab | null>(() => (stack[0].s === 'library' ? 'library' : null));
   const [langDialog, setLangDialog] = useState<LangDialog | null>(null);
   const [authLoading, setAuthLoading] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -159,8 +160,8 @@ function useAppState() {
       setAuthLoading(null);
       setUser({ name, email, provider });
       save('onboarded', true);
-      setStack(s => (s.length > 1 ? s.slice(0, -1) : [{ s: 'home' }]));
-      setTab(t => t ?? 'home');
+      setStack(s => (s.length > 1 ? s.slice(0, -1) : [{ s: 'library' }]));
+      setTab(t => t ?? 'library');
       showToast(welcome);
     }, 750);
   }, [setUser, showToast]);
@@ -168,7 +169,7 @@ function useAppState() {
   const skipLogin = useCallback(() => {
     save('onboarded', true);
     if (stack.length > 1) back();
-    else switchTab('home');
+    else switchTab('library');
   }, [stack.length, back, switchTab]);
 
   const logout = useCallback(() => setUser(null), [setUser]);
