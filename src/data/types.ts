@@ -66,6 +66,8 @@ export interface DictEntry {
 export type TranslateStyle = 'Literal' | 'Natural' | 'Literary' | 'Casual';
 
 export interface User {
+  /** Supabase auth user id; missing on sign-ins saved before real accounts existed. */
+  id?: string;
   name: string;
   email: string;
   provider: string;

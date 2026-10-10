@@ -6,11 +6,14 @@ import { useCatalog } from '../data/useCatalog';
 import { useT } from '../i18n';
 import { libraryUser, type LibraryPlace, type LocalBook } from '../lib/localBook';
 import { loadReading, saveReading } from '../lib/readingStore';
+import { claimGuestLibrary, signOut, takeRecovery, toUser } from '../lib/auth';
+import { supabase } from '../lib/supabase';
 
 export type Tab = 'home' | 'category' | 'library' | 'profile';
 
 export type Route =
-  | { s: 'login' }
+  /** `recovery`: signed in from a password reset email, so a new password is asked for. */
+  | { s: 'login'; recovery?: boolean }
   | { s: 'home' }
   | { s: 'detail'; id: number }
   | { s: 'list'; src: ListSource }
@@ -155,7 +158,6 @@ function useAppState() {
   const [stack, setStack] = useState<Route[]>(() => [load('onboarded', false) || user ? { s: 'library' } : { s: 'login' }]);
   const [tab, setTab] = useState<Tab | null>(() => (stack[0].s === 'library' ? 'library' : null));
   const [langDialog, setLangDialog] = useState<LangDialog | null>(null);
-  const [authLoading, setAuthLoading] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
@@ -199,18 +201,46 @@ function useAppState() {
     });
   }, []);
 
-  const login = useCallback((provider: string, name: string, email: string, welcome: string) => {
-    setAuthLoading(provider);
-    // Simulated network round-trip until the auth API exists.
-    setTimeout(() => {
-      setAuthLoading(null);
-      setUser({ name, email, provider });
-      save('onboarded', true);
-      setStack(s => (s.length > 1 ? s.slice(0, -1) : [{ s: 'library' }]));
-      setTab(t => t ?? 'library');
-      showToast(welcome);
-    }, 750);
+  /** After signing in: the guest's library goes to the account the first time, then back to where the user was. */
+  const signedIn = useCallback(async (u: User, welcome: string) => {
+    await claimGuestLibrary(u);
+    setUser(u);
+    save('onboarded', true);
+    setStack(s => (s.length > 1 ? s.slice(0, -1) : [{ s: 'library' }]));
+    setTab(t => t ?? 'library');
+    showToast(welcome);
   }, [setUser, showToast]);
+
+  /** Back to a guest; the account's lists stay in its own library file. */
+  const resetToGuest = useCallback(() => {
+    setFavs([]);
+    setHistory([]);
+    setUser(null);
+  }, [setFavs, setHistory, setUser]);
+
+  const userRef = useRef(user);
+  userRef.current = user;
+  useEffect(() => {
+    const { data } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'SIGNED_OUT') resetToGuest();
+      else if (event === 'PASSWORD_RECOVERY' || (event === 'INITIAL_SESSION' && takeRecovery())) {
+        takeRecovery();
+        // Opened from the reset email (link or code): ask for the new password.
+        const route: Route = { s: 'login', recovery: true };
+        setStack(s => (s[s.length - 1].s === 'login' ? [...s.slice(0, -1), route] : [...s, route]));
+      } else if (event === 'INITIAL_SESSION' && !session) {
+        // Without a session only sign-ins saved before real accounts existed are dropped:
+        // an expired session that can't be refreshed offline still counts as signed in.
+        setUser(u => (u && !u.id ? null : u));
+      } else if (session && (event === 'INITIAL_SESSION' || event === 'USER_UPDATED')) {
+        const fresh = toUser(session.user);
+        // Signed in from an email link (web): take the session like a normal sign-in.
+        if (event === 'INITIAL_SESSION' && !userRef.current) claimGuestLibrary(fresh).then(() => setUser(fresh));
+        else setUser(u => (u?.id === fresh.id ? fresh : u));
+      }
+    });
+    return () => data.subscription.unsubscribe();
+  }, [resetToGuest, setUser]);
 
   const skipLogin = useCallback(() => {
     save('onboarded', true);
@@ -218,7 +248,10 @@ function useAppState() {
     else switchTab('library');
   }, [stack.length, back, switchTab]);
 
-  const logout = useCallback(() => setUser(null), [setUser]);
+  const logout = useCallback(() => {
+    resetToGuest();
+    signOut();
+  }, [resetToGuest]);
 
   const toggleFav = useCallback((id: number) => {
     const was = favs.includes(id);
@@ -234,11 +267,11 @@ function useAppState() {
   const lastLocal = localLast && localLast.user === libraryUser(user) && (!last || localLast.at >= last.at) ? localLast : null;
 
   return {
-    user, favs, history, contentLang, readerPrefs, stack, tab, langDialog, authLoading, toast, last, lastLocal,
+    user, favs, history, contentLang, readerPrefs, stack, tab, langDialog, toast, last, lastLocal,
     top: stack[stack.length - 1], canBack: stack.length > 1,
     push, back, switchTab, openDetail, openCategory, openAuthor, openCollection,
     openChapter, goReader, setReaderLang, setContentLang, setLangDialog, setReaderPrefs,
-    login, skipLogin, logout, toggleFav, showToast, markLocalRead, forgetLocal
+    signedIn, skipLogin, logout, toggleFav, showToast, markLocalRead, forgetLocal
   };
 }
 

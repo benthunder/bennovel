@@ -7,7 +7,7 @@ async function boot(page: Page, { signedIn = false } = {}) {
   await page.addInitScript(signedIn => {
     localStorage.setItem('bennovel.onboarded', 'true');
     localStorage.setItem('bennovel.uiLang', JSON.stringify('en'));
-    if (signedIn) localStorage.setItem('bennovel.user', JSON.stringify({ name: 'Lina Hart', email: 'lina@example.com', provider: 'email' }));
+    if (signedIn) localStorage.setItem('bennovel.user', JSON.stringify({ id: 'u-lina', name: 'Lina Hart', email: 'lina@example.com', provider: 'email' }));
   }, signedIn);
 }
 
@@ -16,6 +16,7 @@ async function goOffline(page: Page) {
   await page.addInitScript(() => Object.defineProperty(Navigator.prototype, 'onLine', { get: () => false }));
   const calls: string[] = [];
   await page.route('**/rest/v1/**', route => { calls.push(route.request().url()); return route.abort(); });
+  await page.route('**/auth/v1/**', route => route.abort());
   return calls;
 }
 
@@ -107,8 +108,8 @@ test('guests use Profile offline and can log in from it', async ({ page }) => {
   await page.getByRole('textbox', { name: 'Email' }).fill('lina.hart@example.com');
   await page.getByLabel('Password').fill('secret123');
   await page.locator('form').getByRole('button', { name: 'Log in', exact: true }).click();
-  await expect(page.getByText('lina.hart@example.com')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Log out' })).toBeVisible();
+  // Signing in needs the server.
+  await expect(page.getByRole('alert')).toHaveText('Can’t reach the server. Check your connection.');
 });
 
 test('favourites and history from the SQLite store show offline', async ({ page }) => {
