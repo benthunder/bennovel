@@ -73,6 +73,8 @@ test('replace rules change the chapter text and are kept', async ({ page }) => {
 
 test('only English, Vietnamese, Chinese and Korean are offered', async ({ page }) => {
   await boot(page);
+  // Profile is for signed-in readers.
+  await page.addInitScript(() => localStorage.setItem('bennovel.user', JSON.stringify({ name: 'Lina Hart', email: 'lina@example.com', provider: 'email' })));
   await page.goto('/');
   await page.getByRole('button', { name: 'Profile' }).filter({ visible: true }).first().click();
   await page.getByRole('button', { name: /Default reading language/ }).click();

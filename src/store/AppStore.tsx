@@ -2,6 +2,8 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import { load, save } from '../lib/storage';
 import type { Category, CollectionKey, ContentLang, HistoryEntry, User } from '../data/types';
 import type { ListSource } from '../data/repository';
+import { useCatalog } from '../data/useCatalog';
+import { useT } from '../i18n';
 import { libraryUser, type LibraryPlace, type LocalBook } from '../lib/localBook';
 
 export type Tab = 'home' | 'category' | 'library' | 'profile';
@@ -94,6 +96,8 @@ function useStored<T>(key: string, init: T | (() => T)) {
 }
 
 function useAppState() {
+  const catalog = useCatalog();
+  const tr = useT();
   const [user, setUser] = useStored<User | null>('user', null);
   const [favs, setFavs] = useStored<number[]>('favs', [2, 11, 8]);
   const [history, setHistory] = useStored<HistoryEntry[]>('history', seedHistory);
@@ -117,7 +121,11 @@ function useAppState() {
 
   const push = useCallback((r: Route) => setStack(s => [...s, r]), []);
   const back = useCallback(() => setStack(s => (s.length > 1 ? s.slice(0, -1) : s)), []);
-  const switchTab = useCallback((t: Tab) => { setTab(t); setStack([tabRoot(t)]); }, []);
+  // Profile needs an account: guests are asked to sign in first, and land on it after.
+  const switchTab = useCallback((t: Tab) => {
+    setTab(t);
+    setStack(t === 'profile' && !user ? [tabRoot(t), { s: 'login' }] : [tabRoot(t)]);
+  }, [user]);
 
   const openDetail = useCallback((id: number) => push({ s: 'detail', id }), [push]);
   const openCategory = useCallback((value: Category) => push({ s: 'list', src: { type: 'category', value } }), [push]);
@@ -132,9 +140,10 @@ function useAppState() {
 
   /** Opens a chapter in the saved language, or asks first when none is saved. */
   const openChapter = useCallback((id: number, ch: number) => {
-    if (contentLang) goReader(id, ch, contentLang);
+    if (catalog.status !== 'ready') showToast(tr('load.needsConnection'));
+    else if (contentLang) goReader(id, ch, contentLang);
     else setLangDialog({ mode: 'chapter', id, ch });
-  }, [contentLang, goReader]);
+  }, [catalog.status, contentLang, goReader, showToast, tr]);
 
   const setReaderLang = useCallback((lang: ContentLang) => {
     setStack(s => {

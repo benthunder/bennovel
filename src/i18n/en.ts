@@ -129,8 +129,8 @@ export const en = {
 
   // profile
   'profile.signedInWith': 'Signed in with {p}',
-  'profile.guestTitle': 'Reading as a guest',
-  'profile.guestBody': 'Sign in to keep favourites and history safe across devices.',
+  'profile.guestTitle': 'Log in to see your profile',
+  'profile.guestBody': 'Your history, favourites and settings are kept with your account.',
   'profile.loginCta': 'Log in or register',
   'profile.history': 'History',
   'profile.favourites': 'Favourites',
@@ -236,6 +236,9 @@ export const en = {
   // loading from the server
   'load.catalog': 'Loading the library…',
   'load.failed': 'Could not reach the library. Check your connection and try again.',
+  'load.offline': 'You are offline',
+  'load.offlineBody': 'Online novels show up once you are connected. Books on this device still open.',
+  'load.needsConnection': 'This needs an internet connection.',
   'load.retry': 'Try again',
   'reader.loading': 'Loading chapter…',
   'reader.missing': 'This chapter is not available in this language yet.',
