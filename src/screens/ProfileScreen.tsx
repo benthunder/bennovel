@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { GlobeIcon, LanguagesIcon, LogOutIcon } from '../components/Icons';
 import { NovelCover } from '../components/NovelCover';
 import { UiLangDialog, uiLangLabel } from '../components/UiLangDialog';
@@ -7,6 +7,7 @@ import { findNovel, getContentLangs, getNovels } from '../data/repository';
 import { relativeTime, useI18n } from '../i18n';
 import { useApp } from '../store/AppStore';
 import { useLayout } from '../lib/useLayout';
+import { canOpenLocalBooks, libraryUser, listLibrary, localCover, openLibraryBook, type LibraryBook } from '../lib/localBook';
 
 export function ProfileScreen() {
   const { t, uiLang } = useI18n();
@@ -17,6 +18,7 @@ export function ProfileScreen() {
   const user = app.user;
   const initials = user ? user.name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase() : 'G';
   const langLabel = getContentLangs().find(l => l.code === app.contentLang)?.native ?? t('lang.askEach');
+  const rows = useHistoryRows();
 
   return (
     <div className="screen screen--tabbed" style={{ paddingTop: lay.topPlus, paddingLeft: lay.px, paddingRight: lay.px }}>
@@ -50,25 +52,20 @@ export function ProfileScreen() {
         <div style={{ gridArea: 'content', minWidth: 0 }}>
           {tab === 'history' ? (
             <div style={{ display: 'grid', gridTemplateColumns: lay.histCols, gap: '4px 12px', marginTop: -6 }}>
-              {app.history.map(h => {
-                const n = findNovel(h.id);
-                if (!n) return null;
-                const pct = Math.max(4, Math.min(100, Math.round((h.ch / n.chapters) * 100)));
-                return (
-                  <button key={h.id} className="novel-row" style={{ alignItems: 'center', padding: 8, borderRadius: 22, minWidth: 0 }} onClick={() => app.openChapter(h.id, h.ch)}>
-                    <NovelCover novel={n} w={52} h={74} fs={9} />
-                    <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 5 }}>
-                      <span style={{ fontWeight: 700, fontSize: 14 }}>{n.title}</span>
-                      <span className="muted" style={{ fontSize: 12 }}>{t('common.chapter', { n: h.ch })} · {relativeTime(t, h.at)}</span>
-                      <span style={{ height: 6, borderRadius: 999, background: 'var(--color-neutral-300)', overflow: 'hidden' }}>
-                        <span style={{ display: 'block', height: '100%', width: `${pct}%`, borderRadius: 999, background: 'var(--color-accent-2)' }} />
-                      </span>
+              {rows.map(r => (
+                <button key={r.key} className="novel-row" style={{ alignItems: 'center', padding: 8, borderRadius: 22, minWidth: 0 }} onClick={r.open}>
+                  <NovelCover novel={r.cover} w={52} h={74} fs={9} />
+                  <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 5 }}>
+                    <span style={{ fontWeight: 700, fontSize: 14 }}>{r.title}</span>
+                    <span className="muted" style={{ fontSize: 12 }}>{r.where} · {r.place} · {relativeTime(t, r.at)}</span>
+                    <span style={{ height: 6, borderRadius: 999, background: 'var(--color-neutral-300)', overflow: 'hidden' }}>
+                      <span style={{ display: 'block', height: '100%', width: `${Math.max(4, Math.min(100, Math.round(r.pct * 100)))}%`, borderRadius: 999, background: 'var(--color-accent-2)' }} />
                     </span>
-                    <span className="tag tag-accent">{t('profile.resume')}</span>
-                  </button>
-                );
-              })}
-              {app.history.length === 0 && <div className="muted" style={{ fontSize: 13 }}>{t('profile.noHistory')}</div>}
+                  </span>
+                  <span className="tag tag-accent">{t('profile.resume')}</span>
+                </button>
+              ))}
+              {rows.length === 0 && <div className="muted" style={{ fontSize: 13 }}>{t('profile.noHistory')}</div>}
             </div>
           ) : (
             <div style={{ marginTop: -4 }}>
@@ -100,4 +97,61 @@ export function ProfileScreen() {
       {uiLangOpen && <UiLangDialog onClose={() => setUiLangOpen(false)} />}
     </div>
   );
+}
+
+interface HistoryRow {
+  key: string;
+  title: string;
+  cover: { title: string; cover: { bg: string; fg: string; deco: string } };
+  /** Online novel or a book on this device. */
+  where: string;
+  /** Chapter or part reached. */
+  place: string;
+  pct: number;
+  at: number;
+  open: () => void;
+}
+
+/**
+ * Reading history, newest first: online novels (chapters load from the server when
+ * opened) and books imported on this device, which open offline.
+ */
+function useHistoryRows(): HistoryRow[] {
+  const { t } = useI18n();
+  const app = useApp();
+  const user = libraryUser(app.user);
+  const [books, setBooks] = useState<LibraryBook[]>([]);
+  useEffect(() => {
+    if (!canOpenLocalBooks()) return;
+    let gone = false;
+    listLibrary(user).then(b => { if (!gone) setBooks(b); }, console.error);
+    return () => { gone = true; };
+  }, [user]);
+
+  const online = app.history.flatMap((h): HistoryRow[] => {
+    const n = findNovel(h.id);
+    if (!n) return [];
+    return [{
+      key: `online:${h.id}`, title: n.title, cover: n, where: t('profile.online'), place: t('common.chapter', { n: h.ch }),
+      pct: h.ch / Math.max(n.chapters, 1), at: h.at, open: () => app.openChapter(h.id, h.ch)
+    }];
+  });
+  const local = books.flatMap((b): HistoryRow[] => {
+    if (!b.lastRead) return [];
+    const open = async () => {
+      try {
+        const { book, place } = await openLibraryBook(user, b.novelId);
+        app.push({ s: 'book', book, place });
+      } catch (e) {
+        console.error(e);
+        app.showToast(`${t('book.openFailed')} ${String(e)}`);
+      }
+    };
+    return [{
+      key: `local:${b.novelId}`, title: b.title, cover: { title: b.title, cover: localCover(b.title) }, where: t('library.device'),
+      place: t('book.part', { n: b.lastRead.index + 1, total: b.chapterCount }),
+      pct: (b.lastRead.index + 1) / Math.max(b.chapterCount, 1), at: Date.parse(b.lastRead.lastReadAt) || 0, open
+    }];
+  });
+  return [...online, ...local].sort((a, b) => b.at - a.at);
 }

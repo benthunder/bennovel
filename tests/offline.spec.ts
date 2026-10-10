@@ -35,8 +35,8 @@ const SAVED = {
  * Stands in for the native app. `file`: the system hands it `book.txt` ("Open with"),
  * a book with two sections. `reading`: what the SQLite reading store holds.
  */
-async function nativeApp(page: Page, opts: { file?: boolean; reading?: typeof SAVED | null }) {
-  await page.addInitScript(({ file, reading }) => {
+async function nativeApp(page: Page, opts: { file?: boolean; reading?: typeof SAVED | null; books?: unknown[] }) {
+  await page.addInitScript(({ file, reading, books }) => {
     let files = file ? ['/home/lina/book.txt'] : [];
     const book = { id: 7, format: 'txt', title: 'Offline Tales', sections: [{ label: 'Part one', pages: null }, { label: 'Part two', pages: null }], pageImages: false };
     const w = window as unknown as Record<string, unknown>;
@@ -52,14 +52,15 @@ async function nativeApp(page: Page, opts: { file?: boolean; reading?: typeof SA
           case 'take_opened_files': { const f = files; files = []; return f; }
           case 'book_open': return book;
           case 'book_section': return { index: args.index, paragraphs: [`Words of section ${Number(args.index) + 1}.`] };
-          case 'library_list': return [];
+          case 'library_list': return books;
+          case 'library_open': return { book, novelId: args.novelId, lang: 'en', index: 1, progress: 0 };
           case 'reading_load': return reading;
           case 'reading_save': w.__saved = args.state; return null;
           default: return null;
         }
       }
     };
-  }, { file: !!opts.file, reading: opts.reading ?? null });
+  }, { file: !!opts.file, reading: opts.reading ?? null, books: opts.books ?? [] });
 }
 
 test('without a connection the app skips online content', async ({ page }) => {
@@ -123,6 +124,27 @@ test('favourites and history from the SQLite store show offline', async ({ page 
   // Reading needs the chapter from the server.
   await page.getByText('Read Tale').filter({ visible: true }).first().click();
   await expect(page.getByRole('status').filter({ hasText: 'This needs an internet connection.' })).toBeVisible();
+});
+
+test('history lists online novels and books on the device, newest first', async ({ page }) => {
+  await goOffline(page);
+  const imported = {
+    novelId: 1, title: 'Device Diary', author: null, description: '', lang: 'en', format: 'txt', sourceName: 'diary.txt', chapterCount: 2,
+    createdAt: '2026-10-01T00:00:00.000Z', lastRead: { index: 1, progress: 0.5, lastReadAt: new Date().toISOString() }
+  };
+  await nativeApp(page, { reading: SAVED, books: [imported] });
+  await boot(page);
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Profile' }).filter({ visible: true }).first().click();
+  const rows = page.locator('.novel-row').filter({ visible: true });
+  await expect(rows).toHaveCount(2);
+  await expect(rows.nth(0)).toContainText('Device Diary');
+  await expect(rows.nth(0)).toContainText('On this device · Part 2 of 2');
+  await expect(rows.nth(1)).toContainText('Read Tale');
+  await expect(rows.nth(1)).toContainText('Online · Chapter 3');
+  // The imported book opens offline, where it was left.
+  await rows.nth(0).click();
+  await expect(page.getByText('Words of section 2.', { exact: true })).toBeVisible();
 });
 
 test('favourites and history are written back to the store with snapshots', async ({ page }) => {

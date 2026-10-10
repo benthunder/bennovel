@@ -138,6 +138,7 @@ export const vi: Record<MessageKey, string> = {
   'profile.favourites': 'Yêu thích',
   'profile.noFavs': 'Chưa có truyện yêu thích.',
   'profile.noHistory': 'Chưa đọc truyện nào.',
+  'profile.online': 'Online',
   'profile.resume': 'Đọc tiếp',
   'profile.defaultLang': 'Ngôn ngữ đọc mặc định',
   'profile.logout': 'Đăng xuất',

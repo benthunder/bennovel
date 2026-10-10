@@ -136,6 +136,7 @@ export const en = {
   'profile.favourites': 'Favourites',
   'profile.noFavs': 'No favourites yet.',
   'profile.noHistory': 'Nothing read yet.',
+  'profile.online': 'Online',
   'profile.resume': 'Resume',
   'profile.defaultLang': 'Default reading language',
   'profile.logout': 'Log out',
