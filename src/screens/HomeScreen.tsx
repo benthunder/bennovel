@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { NovelCover } from '../components/NovelCover';
+import { OfflineNote } from '../components/OfflineNote';
+import { useCatalog } from '../data/useCatalog';
 import { NovelRow, SearchField, ShelfItem, Spinner, formatReads } from '../components/ui';
 import { getCollections, getPopular, getTopRated, searchNovels } from '../data/repository';
 import { useI18n } from '../i18n';
@@ -21,6 +23,7 @@ export function HomeScreen() {
   const query = useThrottledValue(input, SEARCH_THROTTLE_MS);
   const pending = input !== query;
   const results = searchNovels(query);
+  const offline = useCatalog().status === 'offline';
 
   const hr = new Date().getHours();
   const greeting = t(hr < 12 ? 'home.morning' : hr < 18 ? 'home.afternoon' : 'home.evening');
@@ -46,7 +49,9 @@ export function HomeScreen() {
         )}
       </div>
 
-      {input ? (
+      {offline ? (
+        <div style={{ padding: `20px ${lay.px}px 0` }}><OfflineNote showLibrary /></div>
+      ) : input ? (
         <div style={{ padding: `12px ${lay.px}px 0` }}>
           <div className="status-line" style={{ padding: '0 4px 6px' }}>
             {pending && <Spinner />}
