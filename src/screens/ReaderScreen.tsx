@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { ChevronLeftIcon, SlidersIcon, SparklesIcon } from '../components/Icons';
-import { ReaderChrome, useImmersive } from '../components/ReaderChrome';
+import { ReaderChrome, ReaderStatusBar, useImmersive } from '../components/ReaderChrome';
 import { ReaderTools, type Translation } from '../components/ReaderTools';
 import { Spinner } from '../components/ui';
 import { applyReplaceRules, getChapterText, getContentLangs, getGlossary, getNovel, getReplaceRules, saveReplaceRules } from '../data/repository';
@@ -92,7 +92,7 @@ export function ReaderScreen({ id, ch, lang }: { id: number; ch: number; lang: C
         </ReaderChrome>
 
         <div ref={scrollRef} className="nx-scroll" onScroll={onScroll} onClick={immersive.onTap}
-          style={{ flex: 1, overflowY: 'auto', padding: `${chromeH + lay.readerPadTop}px ${MARGIN_PX[p.margin]}px calc(env(safe-area-inset-bottom) + 40px)`, fontFamily: theme.font }}>
+          style={{ flex: 1, overflowY: 'auto', padding: `${chromeH + lay.readerPadTop}px ${MARGIN_PX[p.margin]}px 40px`, fontFamily: theme.font }}>
           <div style={{ maxWidth: lay.readerMax, margin: '0 auto' }}>
             <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: night ? 'var(--color-accent-400)' : 'var(--color-accent-700)' }}>
               {t('common.chapter', { n: ch })}
@@ -134,6 +134,7 @@ export function ReaderScreen({ id, ch, lang }: { id: number; ch: number; lang: C
             </div>
           </div>
         </div>
+        <ReaderStatusBar theme={theme} />
 
         {trStep !== null && (
           <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', background: 'color-mix(in srgb, var(--color-neutral-900) 35%, transparent)', zIndex: 30 }}>

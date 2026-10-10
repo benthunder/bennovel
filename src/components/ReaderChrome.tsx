@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useLayout } from '../lib/useLayout';
 import type { ReaderThemeStyle } from '../store/AppStore';
 
@@ -79,6 +79,73 @@ export function ReaderChrome({ hidden, theme, readPct, line, onHeight, children 
           <div style={{ height: '100%', width: `${Math.round(readPct * 100)}%`, background: 'var(--color-accent)', borderRadius: 999 }} />
         </div>
       </div>
+    </div>
+  );
+}
+
+/** The device clock, refreshed on each new minute. */
+function useClock() {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    let id: ReturnType<typeof setTimeout>;
+    const tick = () => { const d = new Date(); setNow(d); id = setTimeout(tick, 60_000 - d.getSeconds() * 1000 - d.getMilliseconds() + 50); };
+    tick();
+    return () => clearTimeout(id);
+  }, []);
+  return now;
+}
+
+interface BatteryLike extends EventTarget { level: number; charging: boolean }
+
+/** Battery level 0–1 and charging state, or null where the WebView doesn't expose it (iOS, Firefox). */
+function useBattery() {
+  const [state, setState] = useState<{ level: number; charging: boolean } | null>(null);
+  useEffect(() => {
+    const get = (navigator as Navigator & { getBattery?: () => Promise<BatteryLike> }).getBattery;
+    if (!get) return;
+    let battery: BatteryLike | null = null, alive = true;
+    const update = () => battery && setState({ level: battery.level, charging: battery.charging });
+    get.call(navigator).then(b => {
+      if (!alive) return;
+      battery = b; update();
+      b.addEventListener('levelchange', update);
+      b.addEventListener('chargingchange', update);
+    }).catch(() => {});
+    return () => {
+      alive = false;
+      battery?.removeEventListener('levelchange', update);
+      battery?.removeEventListener('chargingchange', update);
+    };
+  }, []);
+  return state;
+}
+
+/** A small status line under the page, in the page's own colours: the time and the battery. */
+export function ReaderStatusBar({ theme }: { theme: ReaderThemeStyle }) {
+  const lay = useLayout();
+  const now = useClock();
+  const battery = useBattery();
+  const pct = battery ? Math.round(battery.level * 100) : null;
+  return (
+    <div data-testid="reader-status"
+      style={{
+        flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+        padding: `4px ${lay.readerBarPx}px calc(env(safe-area-inset-bottom, 0px) + 6px)`,
+        background: theme.bg, color: `color-mix(in srgb, ${theme.fg} 62%, transparent)`, fontSize: 11, fontWeight: 600, lineHeight: '16px',
+        fontVariantNumeric: 'tabular-nums', userSelect: 'none'
+      }}>
+      <time dateTime={now.toISOString()}>{now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
+      {pct !== null && (
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }} aria-label={`${pct}%`}>
+          {battery!.charging && <svg width="7" height="10" viewBox="0 0 7 10" aria-hidden="true"><path d="M4.5 0 0 5.5h3L2.5 10 7 4.5H4z" fill="currentColor" /></svg>}
+          {pct}%
+          <svg width="20" height="10" viewBox="0 0 20 10" aria-hidden="true">
+            <rect x=".5" y=".5" width="16" height="9" rx="2" fill="none" stroke="currentColor" />
+            <rect x="17.5" y="3" width="2" height="4" rx="1" fill="currentColor" />
+            <rect x="2" y="2" width={Math.max(1, 13 * battery!.level)} height="6" rx="1" fill="currentColor" />
+          </svg>
+        </span>
+      )}
     </div>
   );
 }

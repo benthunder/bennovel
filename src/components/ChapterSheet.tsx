@@ -24,8 +24,16 @@ export function ChapterSheet({ sections, current, onPick, onClose }: {
   const t = useT();
   const name = useSectionName();
   const [q, setQ] = useState('');
+  const listRef = useRef<HTMLDivElement>(null);
   const currentRef = useRef<HTMLButtonElement>(null);
-  useEffect(() => { currentRef.current?.scrollIntoView({ block: 'center' }); }, []);
+  // Centre the current chapter by scrolling the list itself: scrollIntoView would also scroll
+  // the reader screen and the app shell behind the sheet, shifting the whole layout.
+  useEffect(() => {
+    const list = listRef.current, row = currentRef.current;
+    if (!list || !row) return;
+    const offset = row.getBoundingClientRect().top - list.getBoundingClientRect().top + list.scrollTop;
+    list.scrollTop = offset - (list.clientHeight - row.offsetHeight) / 2;
+  }, []);
 
   const rows = useMemo(() => {
     const all = sections.map((meta, i) => ({ i, name: name(meta, i, sections.length), label: meta.label }));
@@ -51,7 +59,7 @@ export function ChapterSheet({ sections, current, onPick, onClose }: {
             <input className="input" value={q} onChange={e => setQ(e.target.value)} placeholder={t('book.tocFilter')} aria-label={t('book.tocFilter')} />
           </div>
         )}
-        <div className="nx-scroll" style={{ overflowY: 'auto', minHeight: 0, margin: '0 -8px', padding: '0 8px', display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <div ref={listRef} className="nx-scroll" style={{ overflowY: 'auto', minHeight: 0, margin: '0 -8px', padding: '0 8px', display: 'flex', flexDirection: 'column', gap: 2 }}>
           {rows.map(r => {
             const on = r.i === current;
             return (
