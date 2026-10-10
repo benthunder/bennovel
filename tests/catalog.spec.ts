@@ -42,6 +42,7 @@ for (const lang of ['en', 'vi']) {
     await visibleText(page, ch1.title).click();
     await expect(page.getByRole('heading', { name: ch1.title })).toBeVisible();
     await expect(page.getByText(firstPara, { exact: true })).toBeVisible();
+    await expect(page.getByTestId('reader-status').locator('time')).toHaveText(/\d{1,2}:\d{2}/);
   });
 }
 
