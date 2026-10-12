@@ -476,16 +476,19 @@ mod tests {
         let config = Config {
             endpoint,
             region: String::new(),
-            bucket: format!("bennovel-test-{run}"),
-            folder: "devices/mai".into(),
+            // An existing bucket (S3_TEST_BUCKET), or a new one made for the test.
+            bucket: std::env::var("S3_TEST_BUCKET").unwrap_or_else(|_| format!("bennovel-test-{run}")),
+            folder: format!("bennovel-test/{run}"),
             access_key: std::env::var("S3_TEST_ACCESS_KEY").unwrap(),
             secret_key: std::env::var("S3_TEST_SECRET_KEY").unwrap(),
         }
         .normalized()
         .unwrap();
         let client = Client::new(&config);
-        let made = client.send("PUT", None, &[], &[]).unwrap();
-        assert_eq!(made.status, 200, "{}", String::from_utf8_lossy(&made.body));
+        if std::env::var("S3_TEST_BUCKET").is_err() {
+            let made = client.send("PUT", None, &[], &[]).unwrap();
+            assert_eq!(made.status, 200, "{}", String::from_utf8_lossy(&made.body));
+        }
         check(&config).unwrap();
         // Local stand-ins such as moto accept any key; set S3_TEST_ANY_KEY for those.
         if std::env::var("S3_TEST_ANY_KEY").is_err() {
@@ -527,5 +530,7 @@ mod tests {
             .send("PUT", Some(&config.object()), b"x", &[("if-none-match", "*")])
             .unwrap();
         assert_eq!(first.status, 412);
+        let removed = client.send("DELETE", Some(&config.object()), &[], &[]).unwrap();
+        assert_eq!(removed.status, 204);
     }
 }
