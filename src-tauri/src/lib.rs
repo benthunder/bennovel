@@ -69,6 +69,8 @@ pub fn run() {
             library::commands::sync_export,
             library::commands::sync_merge,
             library::commands::sync_mark,
+            library::commands::replace_rules_get,
+            library::commands::replace_rules_set,
             library::commands::offline_start,
             library::commands::offline_add,
             library::commands::offline_set_glossary,

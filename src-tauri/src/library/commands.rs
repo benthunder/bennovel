@@ -730,3 +730,30 @@ pub async fn offline_numbers<R: Runtime>(
     let path = db_path(&app, &user)?;
     blocking(move || Ok(super::offline::numbers(&db::open(&path)?, novel_id)?)).await
 }
+
+/// The reader's replace rules for a novel ("online": Supabase id; "book": library id)
+/// in one language; null when none were ever saved on this device.
+#[tauri::command]
+pub async fn replace_rules_get<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    kind: super::rules::Kind,
+    id: i64,
+    lang: String,
+) -> Result<Option<Vec<super::rules::Rule>>, BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || Ok(super::rules::get(&db::open(&path)?, kind, id, &lang)?)).await
+}
+
+#[tauri::command]
+pub async fn replace_rules_set<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    kind: super::rules::Kind,
+    id: i64,
+    lang: String,
+    rules: Vec<super::rules::Rule>,
+) -> Result<(), BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || Ok(super::rules::set(&db::open(&path)?, kind, id, &lang, &rules)?)).await
+}
