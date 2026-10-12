@@ -562,3 +562,140 @@ fn percent_decode(s: &str) -> String {
     }
     String::from_utf8_lossy(&out).into_owned()
 }
+
+/* ---------- Online novels downloaded to read offline (offline.rs) ---------- */
+
+/// Starts (or restarts) downloading an online novel; returns the start time for
+/// `offline_finish`.
+#[tauri::command]
+pub async fn offline_start<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+    data: serde_json::Value,
+    total: i64,
+) -> Result<i64, BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || {
+        Ok(super::offline::start(
+            &db::open(&path)?,
+            novel_id,
+            &data,
+            total,
+        )?)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn offline_add<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+    chapters: Vec<super::offline::ChapterRow>,
+) -> Result<(), BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || {
+        Ok(super::offline::add(
+            &mut db::open(&path)?,
+            novel_id,
+            &chapters,
+        )?)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn offline_set_glossary<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+    entries: Vec<super::offline::GlossaryRow>,
+) -> Result<(), BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || {
+        Ok(super::offline::set_glossary(
+            &mut db::open(&path)?,
+            novel_id,
+            &entries,
+        )?)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn offline_finish<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+    started: i64,
+) -> Result<(), BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || {
+        Ok(super::offline::finish(
+            &mut db::open(&path)?,
+            novel_id,
+            started,
+        )?)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn offline_list<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+) -> Result<Vec<super::offline::Download>, BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || Ok(super::offline::list(&db::open(&path)?)?)).await
+}
+
+#[tauri::command]
+pub async fn offline_chapters<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+) -> Result<Vec<super::offline::ChapterInfo>, BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || Ok(super::offline::chapters(&db::open(&path)?, novel_id)?)).await
+}
+
+#[tauri::command]
+pub async fn offline_chapter<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+    number: i64,
+    lang: String,
+) -> Result<Option<super::offline::ChapterText>, BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || {
+        Ok(super::offline::chapter(
+            &db::open(&path)?,
+            novel_id,
+            number,
+            &lang,
+        )?)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn offline_glossary<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+) -> Result<Vec<super::offline::GlossaryRow>, BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || Ok(super::offline::glossary(&db::open(&path)?, novel_id)?)).await
+}
+
+#[tauri::command]
+pub async fn offline_delete<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+) -> Result<(), BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || Ok(super::offline::delete(&db::open(&path)?, novel_id)?)).await
+}

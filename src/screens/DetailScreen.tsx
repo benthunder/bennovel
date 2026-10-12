@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ChevronLeftIcon, ChevronRightIcon, HeartIcon, LanguagesIcon, PlayIcon } from '../components/Icons';
+import { ChevronLeftIcon, ChevronRightIcon, DownloadIcon, HeartIcon, LanguagesIcon, PlayIcon, RefreshIcon, XIcon } from '../components/Icons';
 import { NovelCover } from '../components/NovelCover';
 import { ShelfItem, Spinner, formatReads } from '../components/ui';
 import { getChapterList, getContentLangs, getNovel, sameAuthor, sameCategory } from '../data/repository';
@@ -9,6 +9,7 @@ import { useI18n } from '../i18n';
 import { useApp } from '../store/AppStore';
 import { useCatalogNames } from '../data/useCatalogNames';
 import { useLayout } from '../lib/useLayout';
+import { useCatalog } from '../data/useCatalog';
 
 const MAX_LISTED_CHAPTERS = 20;
 const WORDS_PER_MIN = 220;
@@ -71,10 +72,12 @@ export function DetailScreen({ id }: { id: number }) {
             <Stat value={formatReads(d.reads)} label={t('detail.reads')} />
           </div>
           {lay.wide && startBtn}
+          {lay.wide && <DownloadBox id={id} />}
         </div>
 
         <div style={{ padding: lay.wide ? 0 : '20px 20px 0', display: 'flex', flexDirection: 'column', gap: lay.wide ? 22 : 20, minWidth: 0 }}>
           {lay.isPhone && startBtn}
+          {lay.isPhone && <DownloadBox id={id} />}
 
           <div>
             <h5 className="section-title" style={{ marginBottom: 6 }}>{t('detail.synopsis')}</h5>
@@ -118,6 +121,48 @@ export function DetailScreen({ id }: { id: number }) {
           <RelatedShelf title={t('detail.moreBy', { author: d.author })} novels={byAuthor} onSeeAll={() => app.openAuthor(d.author)} />
         </div>
       </div>
+    </div>
+  );
+}
+
+/** Download for offline reading (native app): button, progress, or what is on the device. */
+function DownloadBox({ id }: { id: number }) {
+  const { t } = useI18n();
+  const { downloads } = useApp();
+  const offline = useCatalog().status === 'offline';
+  if (!downloads.enabled) return null;
+  const running = downloads.progress[id];
+  const saved = downloads.byId.get(id);
+
+  if (running) {
+    const pct = running.total ? Math.round((running.done / running.total) * 100) : 0;
+    return (
+      <div className="import-progress" role="status" style={{ marginTop: 10 }}>
+        <Spinner size={14} />
+        <span>{t('download.progress', { done: running.done, total: running.total })}</span>
+        <div className="import-progress__bar"><div style={{ width: `${pct}%` }} /></div>
+      </div>
+    );
+  }
+  if (!saved) {
+    return (
+      <button className="btn btn-secondary btn-block" style={{ marginTop: 10, gap: 8 }} disabled={offline} onClick={() => downloads.start(id)}>
+        <DownloadIcon size={16} />{t('download.button')}
+      </button>
+    );
+  }
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 10, flexWrap: 'wrap' }}>
+      <span className="tag tag-accent-2" style={{ gap: 6, marginRight: 'auto' }}>
+        <DownloadIcon size={12} />
+        {saved.complete ? t('download.saved', { n: saved.chapters }) : t('download.partial', { done: saved.chapters, total: saved.total })}
+      </span>
+      <button className="btn btn-ghost" style={{ fontSize: 13, gap: 6 }} disabled={offline} onClick={() => downloads.start(id)}>
+        <RefreshIcon size={14} />{t(saved.complete ? 'download.update' : 'download.resume')}
+      </button>
+      <button className="btn btn-ghost" style={{ fontSize: 13, gap: 6 }} onClick={() => downloads.remove(id)}>
+        <XIcon size={14} />{t('download.remove')}
+      </button>
     </div>
   );
 }

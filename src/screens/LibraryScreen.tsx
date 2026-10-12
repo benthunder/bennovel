@@ -19,6 +19,8 @@ export function LibraryScreen() {
   const app = useApp();
   const lay = useLayout();
   const favs = getNovels(app.favs);
+  /** Online novels downloaded to this device, newest first. */
+  const downloaded = app.downloads.list.flatMap(d => d.data ?? []);
   // Saved before this device kept snapshots: those show once the catalog loads.
   const missing = useCatalog().status === 'offline' && favs.length < app.favs.length;
 
@@ -40,6 +42,12 @@ export function LibraryScreen() {
         {favs.length === 1 ? t('library.countOne') : t('library.count', { n: favs.length })}
       </div>
       {canOpenLocalBooks() && <DeviceBooks onOpenFile={openFile} />}
+      {downloaded.length > 0 && (
+        <section style={{ marginBottom: 26 }}>
+          <h3 style={{ margin: '0 0 10px', fontSize: 18 }}>{t('library.downloaded')}</h3>
+          <CoverGrid novels={downloaded} onOpen={app.openDetail} cols={lay.libCols} gap={lay.libGap} fs={lay.libFs} />
+        </section>
+      )}
       <CoverGrid novels={favs} onOpen={app.openDetail} cols={lay.libCols} gap={lay.libGap} fs={lay.libFs} />
       {missing && <div style={{ marginTop: 8 }}><OfflineNote /></div>}
       {favs.length === 0 && !missing && (

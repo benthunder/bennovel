@@ -182,6 +182,39 @@ create table sync_state (
   value text not null
 );
 "#,
+    r#"
+-- Local only, never synced (see offline.rs): online novels downloaded to read
+-- offline. Ids are Supabase novel ids; `data` is the app's snapshot of the novel.
+create table offline_novels (
+  id            integer primary key,
+  data          text not null,
+  total         integer not null default 0,
+  complete      integer not null default 0,
+  started_at    integer not null,
+  downloaded_at integer
+);
+
+-- One chapter in one language, as in Supabase `chapter_translations`.
+create table offline_chapters (
+  novel_id   integer not null references offline_novels (id) on delete cascade,
+  number     integer not null,
+  lang       text not null,
+  source     text not null,
+  title      text not null,
+  content    text not null,
+  word_count integer not null default 0,
+  saved_at   integer not null,
+  primary key (novel_id, number, lang)
+);
+
+create table offline_glossary (
+  novel_id integer not null references offline_novels (id) on delete cascade,
+  term_key text not null,
+  lang     text not null,
+  value    text not null,
+  primary key (novel_id, term_key, lang)
+);
+"#,
 ];
 
 /// Epoch milliseconds now.

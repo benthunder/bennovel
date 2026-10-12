@@ -103,6 +103,17 @@ export const en = {
   'detail.moreBy': 'More by {author}',
   'detail.saved': 'Saved to Library',
   'detail.removed': 'Removed from Library',
+  'download.button': 'Download for offline reading',
+  'download.progress': 'Downloading {done}/{total} chapters…',
+  'download.done': 'Downloaded “{title}”. It opens without a connection now.',
+  'download.failed': 'Download failed. Check your connection and try again.',
+  'download.saved': 'Downloaded · {n} chapters',
+  'download.partial': 'Partly downloaded · {done}/{total} chapters',
+  'download.update': 'Update',
+  'download.resume': 'Finish download',
+  'download.remove': 'Remove download',
+  'download.removed': 'Download removed.',
+  'library.downloaded': 'Downloaded',
 
   // list
   'list.kicker.category': 'Category',
