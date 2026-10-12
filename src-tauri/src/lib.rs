@@ -37,6 +37,17 @@ pub fn run() {
             library::commands::sync_export,
             library::commands::sync_merge,
             library::commands::sync_mark,
+            library::commands::offline_start,
+            library::commands::offline_add,
+            library::commands::offline_set_glossary,
+            library::commands::offline_finish,
+            library::commands::offline_list,
+            library::commands::offline_chapters,
+            library::commands::offline_chapter,
+            library::commands::offline_glossary,
+            library::commands::offline_delete,
+            library::commands::offline_ensure,
+            library::commands::offline_numbers,
             opened::take_opened_files,
         ])
         .build(tauri::generate_context!())

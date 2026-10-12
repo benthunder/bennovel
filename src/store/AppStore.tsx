@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { load, save } from '../lib/storage';
 import type { Category, CollectionKey, ContentLang, HistoryEntry, User } from '../data/types';
 import { findNovel, rememberNovels, type ListSource } from '../data/repository';
@@ -7,6 +7,7 @@ import { useT } from '../i18n';
 import { canOpenLocalBooks, libraryUser, type LibraryPlace, type LocalBook } from '../lib/localBook';
 import { loadReading, saveReading } from '../lib/readingStore';
 import { getSyncStatus, syncLibrary, SyncFailure } from '../lib/sync';
+import { canDownload, deleteDownload, downloadChapter, downloadLang, downloadNovel, listDownloads, setDownloads, type Download } from '../lib/offline';
 import { claimGuestLibrary, signOut, takeRecovery, toUser } from '../lib/auth';
 import { supabase } from '../lib/supabase';
 
@@ -152,6 +153,78 @@ function useReadingStore(
   return reload;
 }
 
+/**
+ * Online novels downloaded to read offline (native app): the list of `user`, the
+ * progress of running downloads, and actions to start or remove one.
+ */
+function useDownloads(user: string, showToast: (msg: string) => void, tr: ReturnType<typeof useT>) {
+  const [list, setList] = useState<Download[]>([]);
+  const [progress, setProgress] = useState<Record<number, { done: number; total: number }>>({});
+
+  const refresh = useCallback(async () => {
+    try {
+      const got = await listDownloads(user);
+      setDownloads(user, got);
+      rememberNovels(got);
+      setList(got);
+    } catch (e) {
+      console.error(e);
+    }
+  }, [user]);
+  useEffect(() => {
+    setDownloads(user, []);
+    setList([]);
+    refresh();
+  }, [refresh, user]);
+
+  const start = useCallback(async (id: number) => {
+    const novel = findNovel(id);
+    if (!novel || progress[id]) return;
+    setProgress(p => ({ ...p, [id]: { done: 0, total: novel.chapters } }));
+    try {
+      await downloadNovel(user, novel, (done, total) => setProgress(p => ({ ...p, [id]: { done, total } })));
+      showToast(tr('download.done', { title: novel.title }));
+    } catch (e) {
+      console.error(e);
+      showToast(tr('download.failed'));
+    } finally {
+      await refresh();
+      setProgress(({ [id]: _, ...rest }) => rest);
+    }
+  }, [progress, refresh, showToast, tr, user]);
+
+  /** Chapters downloading on their own, as `novelId:number`. */
+  const [chapterBusy, setChapterBusy] = useState<string[]>([]);
+  const startChapter = useCallback(async (id: number, number: number) => {
+    const novel = findNovel(id), key = `${id}:${number}`;
+    if (!novel || chapterBusy.includes(key)) return;
+    setChapterBusy(b => [...b, key]);
+    try {
+      await downloadChapter(user, novel, number);
+      showToast(tr('download.chapterDone', { n: number }));
+    } catch (e) {
+      console.error(e);
+      showToast(tr('download.failed'));
+    } finally {
+      await refresh();
+      setChapterBusy(b => b.filter(k => k !== key));
+    }
+  }, [chapterBusy, refresh, showToast, tr, user]);
+
+  const remove = useCallback(async (id: number) => {
+    try {
+      await deleteDownload(user, id);
+      showToast(tr('download.removed'));
+    } catch (e) {
+      console.error(e);
+    }
+    await refresh();
+  }, [refresh, showToast, tr, user]);
+
+  const byId = useMemo(() => new Map(list.map(d => [d.id, d])), [list]);
+  return { enabled: canDownload(), user, list, byId, progress, start, chapterBusy, startChapter, remove };
+}
+
 function useAppState() {
   const catalog = useCatalog();
   const tr = useT();
@@ -181,12 +254,14 @@ function useAppState() {
   const back = useCallback(() => setStack(s => (s.length > 1 ? s.slice(0, -1) : s)), []);
   const switchTab = useCallback((t: Tab) => { setTab(t); setStack([tabRoot(t)]); }, []);
 
-  // Chapters come from the server, so a novel's page needs a connection.
+  const downloads = useDownloads(libraryUser(user), showToast, tr);
+
+  // Chapters come from the server, so a novel's page needs a connection unless it was downloaded.
   const openDetail = useCallback((id: number) => {
     // While the catalog is still loading the page waits for it (see App).
-    if (catalog.status === 'offline') showToast(tr('load.needsConnection'));
+    if (catalog.status === 'offline' && !downloads.byId.has(id)) showToast(tr('load.needsConnection'));
     else push({ s: 'detail', id });
-  }, [catalog.status, push, showToast, tr]);
+  }, [catalog.status, downloads.byId, push, showToast, tr]);
   const openCategory = useCallback((value: Category) => push({ s: 'list', src: { type: 'category', value } }), [push]);
   const openAuthor = useCallback((value: string) => push({ s: 'list', src: { type: 'author', value } }), [push]);
   const openCollection = useCallback((value: CollectionKey) => push({ s: 'list', src: { type: 'collection', value } }), [push]);
@@ -199,10 +274,14 @@ function useAppState() {
 
   /** Opens a chapter in the saved language, or asks first when none is saved. */
   const openChapter = useCallback((id: number, ch: number) => {
-    if (catalog.status === 'offline') showToast(tr('load.needsConnection'));
+    const dl = downloads.byId.get(id);
+    // Offline, a download opens in a language it has (the language list needs a connection).
+    const offlineLang = dl && catalog.status === 'offline' ? downloadLang(dl, contentLang) : null;
+    if (offlineLang) goReader(id, ch, offlineLang);
+    else if (catalog.status === 'offline') showToast(tr('load.needsConnection'));
     else if (contentLang) goReader(id, ch, contentLang);
     else setLangDialog({ mode: 'chapter', id, ch });
-  }, [catalog.status, contentLang, goReader, showToast, tr]);
+  }, [catalog.status, contentLang, downloads.byId, goReader, showToast, tr]);
 
   const setReaderLang = useCallback((lang: ContentLang) => {
     setStack(s => {
@@ -314,7 +393,7 @@ function useAppState() {
     push, back, switchTab, openDetail, openCategory, openAuthor, openCollection,
     openChapter, goReader, setReaderLang, setContentLang, setLangDialog, setReaderPrefs,
     signedIn, skipLogin, logout, toggleFav, showToast, markLocalRead, forgetLocal,
-    canSync, syncing, syncedAt, libraryRev, syncNow
+    canSync, syncing, syncedAt, libraryRev, syncNow, downloads
   };
 }
 
