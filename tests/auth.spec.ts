@@ -24,6 +24,22 @@ function session(name?: string) {
   return { access_token: jwt, token_type: 'bearer', expires_in: 3600, expires_at: exp, refresh_token: 'refresh-1', user };
 }
 
+const GOOGLE_CODE = 'google-code-1';
+
+/** The same account after signing in with Google: one user, two ways in. */
+function linkedSession() {
+  const s = session();
+  return {
+    ...s,
+    user: {
+      ...s.user,
+      app_metadata: { provider: 'email', providers: ['email', 'google'] },
+      user_metadata: { full_name: 'Mai Tran', avatar_url: 'https://example.com/a.png' },
+      identities: [{ id: 'i1', provider: 'email' }, { id: 'i2', provider: 'google' }]
+    }
+  };
+}
+
 const json = (route: Route, status: number, body: unknown) =>
   route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
 
@@ -46,7 +62,14 @@ async function fakeAuth(page: Page, { confirmEmail = true } = {}) {
         if (!confirmEmail) return json(route, 200, session(body?.data && (body.data as unknown as { full_name: string }).full_name));
         confirmed = true; // as if the link in the email was opened
         return json(route, 200, { ...authUser(), email_confirmed_at: null });
+      case '/authorize':
+        // Google says yes and Supabase sends the reader back with a one-time code.
+        return route.fulfill({ status: 302, headers: { location: `${url.searchParams.get('redirect_to')}?code=${GOOGLE_CODE}` } });
       case '/token':
+        if (url.searchParams.get('grant_type') === 'pkce') {
+          if (body?.auth_code !== GOOGLE_CODE || !body?.code_verifier) return json(route, 400, { code: 400, error_code: 'bad_code_verifier', msg: 'bad code' });
+          return json(route, 200, linkedSession());
+        }
         if (body?.password !== PASSWORD) return json(route, 400, { code: 400, error_code: 'invalid_credentials', msg: 'Invalid login credentials' });
         if (!confirmed) return json(route, 400, { code: 400, error_code: 'email_not_confirmed', msg: 'Email not confirmed' });
         return json(route, 200, session());
@@ -188,4 +211,81 @@ test('the first sign-in on a device takes over the guest library', async ({ page
   expect(claim).toBeGreaterThanOrEqual(0);
   // The account's file is only read after the guest's became it.
   expect(firstLoad).toBeGreaterThan(claim);
+});
+
+test('web: continue with Google comes back signed in', async ({ page }) => {
+  const calls = await fakeAuth(page);
+  await boot(page);
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Continue with Google' }).click();
+  await expect(page.getByText('Welcome, Mai')).toBeVisible();
+  expect(calls).toEqual(expect.arrayContaining(['GET /authorize', 'POST /token']));
+  await openProfile(page);
+  await expect(page.getByText('Signed in with Google')).toBeVisible();
+  await expect(page.getByText(EMAIL)).toBeVisible();
+});
+
+/** The native app, with the system browser and bennovel:// links stood in for. */
+async function nativeWithLinks(page: Page) {
+  await page.addInitScript(() => {
+    const w = window as unknown as Record<string, unknown>;
+    const calls: unknown[][] = [];
+    const callbacks = new Map<number, (e: unknown) => void>();
+    const listeners = new Map<string, number>();
+    let next = 1;
+    w.__calls = calls;
+    w.__emit = (event: string, payload: unknown) => callbacks.get(listeners.get(event)!)?.({ event, id: 0, payload });
+    w.isTauri = true;
+    w.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => undefined };
+    w.__TAURI_INTERNALS__ = {
+      transformCallback: (cb: (e: unknown) => void) => { const id = next++; callbacks.set(id, cb); return id; },
+      unregisterCallback: () => undefined,
+      invoke: async (cmd: string, args: Record<string, unknown>) => {
+        calls.push([cmd, args?.user ?? args?.url ?? args?.event]);
+        switch (cmd) {
+          case 'plugin:event|listen': listeners.set(args.event as string, args.handler as number); return next++;
+          case 'take_opened_files': case 'library_list': return [];
+          default: return null;
+        }
+      }
+    };
+  });
+  return {
+    calls: () => page.evaluate(() => (window as unknown as { __calls: [string, string][] }).__calls),
+    openLink: (url: string) => page.evaluate(u => (window as unknown as { __emit: (e: string, p: unknown) => void }).__emit('deep-link://new-url', [u]), url)
+  };
+}
+
+test('app: Google opens the browser and the link back signs in; the same email also works with a password', async ({ page }) => {
+  // Google confirms the email, so the account's password works as well.
+  const auth = await fakeAuth(page, { confirmEmail: false });
+  await boot(page);
+  const app = await nativeWithLinks(page);
+  await page.goto('/');
+
+  await page.getByRole('button', { name: 'Continue with Google' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Finish signing in with Google' })).toBeVisible();
+  const opened = (await app.calls()).find(([cmd]) => cmd === 'plugin:opener|open_url')?.[1] ?? '';
+  expect(opened).toContain('/auth/v1/authorize?provider=google');
+  expect(new URL(opened).searchParams.get('redirect_to')).toBe('bennovel://auth/callback');
+
+  await app.openLink(`bennovel://auth/callback?code=${GOOGLE_CODE}`);
+  await expect(page.getByText('Welcome, Mai')).toBeVisible();
+  await openProfile(page);
+  await expect(page.getByText('Signed in with Google')).toBeVisible();
+
+  // Same email with a password: the same account and the same library on this device.
+  await page.getByRole('button', { name: 'Log out' }).click();
+  await page.getByRole('button', { name: 'Log in or register' }).click();
+  await page.getByRole('textbox', { name: 'Email' }).fill(EMAIL);
+  await page.getByLabel('Password').fill(PASSWORD);
+  await submit(page, 'Log in');
+  await expect(page.getByText('Welcome, Mai')).toBeVisible();
+  await openProfile(page);
+  await expect(page.getByText('Signed in with email')).toBeVisible();
+  await expect(page.getByText(EMAIL)).toBeVisible();
+
+  const loads = (await app.calls()).filter(([cmd, user]) => cmd === 'reading_load' && user === EMAIL);
+  expect(loads.length).toBeGreaterThanOrEqual(2);
+  expect(auth.filter(c => c === 'POST /token')).toHaveLength(2);
 });

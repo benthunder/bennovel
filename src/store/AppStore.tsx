@@ -8,7 +8,7 @@ import { canOpenLocalBooks, libraryUser, type LibraryPlace, type LocalBook } fro
 import { loadReading, saveReading } from '../lib/readingStore';
 import { getSyncStatus, syncLibrary, SyncFailure } from '../lib/sync';
 import { canDownload, deleteDownload, downloadChapter, downloadLang, downloadNovel, listDownloads, setDownloads, type Download } from '../lib/offline';
-import { claimGuestLibrary, signOut, takeRecovery, toUser } from '../lib/auth';
+import { claimGuestLibrary, listenForSignInLinks, signOut, takeOAuthProvider, takeRecovery, toUser } from '../lib/auth';
 import { supabase } from '../lib/supabase';
 
 export type Tab = 'home' | 'category' | 'library' | 'profile';
@@ -309,6 +309,11 @@ function useAppState() {
 
   const userRef = useRef(user);
   userRef.current = user;
+  // Auth listeners are registered once; they call the latest callbacks.
+  const signedInRef = useRef(signedIn);
+  signedInRef.current = signedIn;
+  const trRef = useRef(tr);
+  trRef.current = tr;
   useEffect(() => {
     const { data } = supabase.auth.onAuthStateChange((event, session) => {
       if (event === 'SIGNED_OUT') resetToGuest();
@@ -322,14 +327,27 @@ function useAppState() {
         // an expired session that can't be refreshed offline still counts as signed in.
         setUser(u => (u && !u.id ? null : u));
       } else if (session && (event === 'INITIAL_SESSION' || event === 'USER_UPDATED')) {
-        const fresh = toUser(session.user);
-        // Signed in from an email link (web): take the session like a normal sign-in.
-        if (event === 'INITIAL_SESSION' && !userRef.current) claimGuestLibrary(fresh).then(() => setUser(fresh));
-        else setUser(u => (u?.id === fresh.id ? fresh : u));
+        // Back from Google or an email link (web): take the session like a normal sign-in.
+        if (event === 'INITIAL_SESSION' && !userRef.current) {
+          const u = toUser(session.user, takeOAuthProvider() ?? 'email');
+          signedInRef.current(u, trRef.current('auth.welcome', { name: u.name.split(' ')[0] }));
+        } else setUser(u => (u?.id === session.user.id ? { ...toUser(session.user), provider: u.provider } : u));
       }
     });
     return () => data.subscription.unsubscribe();
   }, [resetToGuest, setUser]);
+
+  // Native app: Google sends the reader back through a bennovel:// link.
+  useEffect(() => {
+    if (!canOpenLocalBooks()) return;
+    let stop: (() => void) | undefined;
+    let gone = false;
+    listenForSignInLinks(
+      u => signedInRef.current(u, trRef.current('auth.welcome', { name: u.name.split(' ')[0] })),
+      key => showToast(trRef.current(key))
+    ).then(un => { if (gone) un(); else stop = un; }, console.error);
+    return () => { gone = true; stop?.(); };
+  }, []);
 
   const skipLogin = useCallback(() => {
     save('onboarded', true);

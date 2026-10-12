@@ -6,7 +6,8 @@ import { canOpenLocalBooks } from './localBook';
 import { supabase } from './supabase';
 
 /*
- * Email + password accounts through Supabase Auth. supabase-js keeps the session in
+ * Accounts through Supabase Auth: email + password, and Google. An email used both ways
+ * is one account (Supabase links them when the email is confirmed). supabase-js keeps the session in
  * localStorage and refreshes it, so a reader stays signed in across restarts.
  */
 
@@ -23,10 +24,11 @@ export const takeRecovery = () => {
   return r;
 };
 
-export const toUser = (u: AuthUser): User => {
+/** `provider`: how the reader signed in this time (an account can have several). */
+export const toUser = (u: AuthUser, provider = 'email'): User => {
   const email = u.email ?? '';
   const meta = u.user_metadata as { full_name?: string; name?: string } | undefined;
-  return { id: u.id, name: meta?.full_name || meta?.name || email.split('@')[0], email, provider: 'email' };
+  return { id: u.id, name: meta?.full_name || meta?.name || email.split('@')[0], email, provider };
 };
 
 /** A failed auth call, carrying the message to show. */
@@ -110,4 +112,76 @@ export async function claimGuestLibrary(user: User) {
   } catch (e) {
     console.error(e);
   }
+}
+
+/* ---------- Google ---------- */
+
+/** Where Supabase sends the native app back to after Google (see guides/oauth-facebook-google.md). */
+export const NATIVE_REDIRECT = 'bennovel://auth/callback';
+const GOOGLE = 'Google';
+
+/**
+ * Starts signing in with Google. The native app opens the system browser (Google
+ * refuses embedded webviews) and gets the result back through a `bennovel://` link,
+ * see `listenForSignInLinks`; the web build leaves for Google and comes back signed in.
+ */
+export async function signInWithGoogle() {
+  const native = canOpenLocalBooks();
+  const { data, error } = await supabase.auth.signInWithOAuth({
+    provider: 'google',
+    options: { redirectTo: native ? NATIVE_REDIRECT : window.location.origin, skipBrowserRedirect: native }
+  });
+  if (error) fail(error);
+  // Remembered so the account shows "signed in with Google" when the reader comes back.
+  sessionStorage.setItem(PENDING_KEY, GOOGLE);
+  if (native) {
+    const { openUrl } = await import('@tauri-apps/plugin-opener');
+    await openUrl(data.url);
+  }
+}
+
+const PENDING_KEY = 'bennovel.oauthProvider';
+const DONE_KEY = 'bennovel.oauthCode';
+
+/** The provider of a sign-in started on this page, once, or null. */
+export function takeOAuthProvider() {
+  const p = sessionStorage.getItem(PENDING_KEY);
+  sessionStorage.removeItem(PENDING_KEY);
+  return p;
+}
+
+/**
+ * Native app: finishes a Google sign-in when its `bennovel://auth/callback` link opens
+ * the app, at launch or while running. Returns a function that stops listening.
+ */
+export async function listenForSignInLinks(
+  onSignedIn: (u: User) => void,
+  onFailed: (key: MessageKey) => void
+): Promise<() => void> {
+  const { getCurrent, onOpenUrl } = await import('@tauri-apps/plugin-deep-link');
+  const handle = async (urls: string[] | null) => {
+    const raw = urls?.find(u => u.startsWith(NATIVE_REDIRECT));
+    if (!raw) return;
+    const url = new URL(raw);
+    const code = url.searchParams.get('code');
+    if (!code) {
+      console.error(url.searchParams.get('error_description') ?? raw);
+      if (url.searchParams.get('error') !== 'access_denied') onFailed('auth.err.generic');
+      return;
+    }
+    // A launch link is reported again when the app restarts; each code works once.
+    if (localStorage.getItem(DONE_KEY) === code) return;
+    localStorage.setItem(DONE_KEY, code);
+    const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+    if (error) {
+      console.error(error);
+      onFailed('auth.err.generic');
+      return;
+    }
+    onSignedIn(toUser(data.user, takeOAuthProvider() ?? GOOGLE));
+  };
+  const safe = (urls: string[] | null) => handle(urls).catch(e => { console.error(e); onFailed('auth.err.generic'); });
+  const stop = await onOpenUrl(safe);
+  await safe(await getCurrent());
+  return stop;
 }
