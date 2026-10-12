@@ -3,7 +3,7 @@ use super::{db, DbBook, LibraryBook};
 use crate::book::commands::{open_picked, pdfium_dirs, Books};
 use crate::book::{detect, open_source, BookError, BookFormat, BookInfo, BookSource, OpenCtx};
 use serde::Serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tauri_plugin_fs::FilePath;
 
@@ -420,4 +420,30 @@ pub async fn reading_save<R: Runtime>(
 ) -> Result<(), BookError> {
     let path = db_path(&app, &user)?;
     blocking(move || Ok(super::reading::save(&mut db::open(&path)?, &state)?)).await
+}
+
+/// Hands the guest's library (imported books, favourites, history) to an account the
+/// first time it signs in on this device: the guest file becomes the account's file.
+/// Does nothing when the account already has a library here or the guest has none.
+#[tauri::command]
+pub async fn library_claim_guest<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+) -> Result<bool, BookError> {
+    let guest = db_path(&app, "")?;
+    let own = db_path(&app, &user)?;
+    blocking(move || claim_guest(&guest, &own)).await
+}
+
+fn claim_guest(guest: &Path, own: &Path) -> Result<bool, BookError> {
+    if guest == own || own.exists() || !guest.exists() {
+        return Ok(false);
+    }
+    // Fold the write-ahead log into the file so it moves as one piece.
+    db::open(guest)?.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+    std::fs::rename(guest, own)?;
+    for ext in ["sqlite3-wal", "sqlite3-shm"] {
+        let _ = std::fs::remove_file(guest.with_extension(ext));
+    }
+    Ok(true)
 }
