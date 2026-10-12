@@ -196,6 +196,7 @@ export const vi: Record<MessageKey, string> = {
   'sync.err.generic': 'Đồng bộ thất bại. Hãy thử lại.',
   's3.via': 'Đồng bộ với: {where}',
   's3.account': 'tài khoản',
+  's3.server': 'máy chủ BenNovel',
   's3.setUp': 'Dùng storage riêng',
   's3.change': 'Cài đặt storage',
   's3.guestHint': 'Không có tài khoản? Đồng bộ qua storage S3 của bạn (MinIO, RustFS…).',

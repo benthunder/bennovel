@@ -74,6 +74,7 @@ pub fn run() {
             library::commands::s3_config_get,
             library::commands::s3_config_set,
             library::commands::s3_sync,
+            library::commands::s3_builtin,
             library::commands::offline_start,
             library::commands::offline_add,
             library::commands::offline_set_glossary,

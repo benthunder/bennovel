@@ -29,6 +29,9 @@ concurrency:
 # Pdfium (PDF text) is loaded by the app at runtime; these builds ship it alongside.
 env:
   PDFIUM_URL: https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F8086
+  # Keys of the BenNovel sync server (RustFS), built into the app (see src-tauri/build.rs).
+  BENNOVEL_S3_ACCESS_KEY: ${{ secrets.BENNOVEL_S3_ACCESS_KEY }}
+  BENNOVEL_S3_SECRET_KEY: ${{ secrets.BENNOVEL_S3_SECRET_KEY }}
 
 jobs:
   linux:

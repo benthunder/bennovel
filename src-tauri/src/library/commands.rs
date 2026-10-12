@@ -833,12 +833,24 @@ pub async fn s3_config_set<R: Runtime>(
     .await
 }
 
-/// Syncs the library with its S3 storage. Returns when (epoch ms).
+/// Whether this build has the BenNovel sync server (used when signed in).
 #[tauri::command]
-pub async fn s3_sync<R: Runtime>(app: AppHandle<R>, user: String) -> Result<i64, BookError> {
+pub fn s3_builtin() -> bool {
+    super::s3::has_builtin()
+}
+
+/// Syncs the library with its own S3 storage, else (with `uid`, the signed-in account)
+/// with the account's folder on the BenNovel sync server. Returns when (epoch ms).
+#[tauri::command]
+pub async fn s3_sync<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    uid: Option<String>,
+) -> Result<i64, BookError> {
     let path = db_path(&app, &user)?;
     blocking(move || {
         let config = super::s3::load_config(&super::s3::config_path(&path))
+            .or_else(|| uid.as_deref().and_then(super::s3::builtin))
             .ok_or_else(|| BookError::Parse("s3-not-set".into()))?;
         for id in super::s3::sync(&path, &config)? {
             if let Some(file) = super::original_file(&path, id) {

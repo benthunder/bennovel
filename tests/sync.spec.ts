@@ -39,7 +39,7 @@ async function boot(page: Page) {
  * Stands in for the native app's library: before a merge it holds `Here Tale` as a
  * favourite; merging the downloaded file adds `There Tale`. Calls go to `window.__calls`.
  */
-async function nativeApp(page: Page, s3?: { saved?: Record<string, unknown>; refuse?: string }) {
+async function nativeApp(page: Page, s3?: { saved?: Record<string, unknown>; refuse?: string; builtin?: boolean }) {
   await page.addInitScript(({ here, there, s3 }) => {
     const w = window as unknown as Record<string, unknown>;
     const calls: string[] = [];
@@ -91,7 +91,9 @@ async function nativeApp(page: Page, s3?: { saved?: Record<string, unknown>; ref
             storage = config && { ...config, endpoint: `https://${config.endpoint}` };
             return null;
           }
+          case 's3_builtin': return !!s3?.builtin;
           case 's3_sync': {
+            calls.push(`s3_sync uid=${(args as { uid: string | null }).uid}`);
             favs = [...favs, there.id];
             novels = [...novels, { id: there.id, data: there }];
             rev++;
@@ -265,7 +267,7 @@ test('a guest can sync through their own S3 storage', async ({ page }) => {
   await page.locator('label.seg-opt', { hasText: 'Favourites' }).click();
   await expect(page.getByRole('button', { name: 'There Tale There Tale' })).toBeVisible();
   const app = await page.evaluate(() => (window as unknown as { __calls: string[] }).__calls);
-  expect(app).toContain('s3_sync');
+  expect(app).toContain('s3_sync uid=null');
   expect(app).not.toContain('sync_export');
   expect(server.filter(c => /user_sync|commit|user-sync|remove/.test(c))).toEqual([]);
 });
@@ -305,4 +307,18 @@ test('storage that refuses the keys is not saved', async ({ page }) => {
   await dialog.getByRole('button', { name: 'Save' }).click();
   await expect(dialog.getByRole('alert')).toHaveText('The server refused these keys.');
   await expect(page.getByText('Sync to: your account')).toBeVisible();
+});
+
+test('a build with the BenNovel server syncs signed-in accounts there, in their own folder', async ({ page }) => {
+  await boot(page);
+  await nativeApp(page, { builtin: true });
+  const server = await fakeSupabase(page, { version: 2 });
+  await page.goto('/');
+  await openProfile(page);
+  await expect(page.getByText('Sync to: BenNovel server')).toBeVisible();
+  await page.getByRole('button', { name: 'Sync', exact: true }).click();
+  await expect(page.getByText('Library synced')).toBeVisible();
+  const app = await page.evaluate(() => (window as unknown as { __calls: string[] }).__calls);
+  expect(app).toContain(`s3_sync uid=${UID}`);
+  expect(server.filter(c => /user_sync|commit|user-sync|remove/.test(c))).toEqual([]);
 });

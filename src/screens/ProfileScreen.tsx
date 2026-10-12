@@ -112,7 +112,7 @@ function SyncCard() {
   const app = useApp();
   const [editing, setEditing] = useState(false);
   const status = app.syncing ? t('sync.syncing') : app.syncedAt ? t('sync.last', { time: relativeTime(t, app.syncedAt) }) : t('sync.never');
-  const where = app.s3 ? `${app.s3.bucket} · ${s3Host(app.s3)}` : t('s3.account');
+  const where = app.s3 ? `${app.s3.bucket} · ${s3Host(app.s3)}` : app.builtinS3 ? t('s3.server') : t('s3.account');
   return (
     <div style={{ marginTop: 12, borderRadius: 28, background: 'var(--color-surface)', padding: '12px 12px 10px 18px', display: 'flex', flexDirection: 'column', gap: 6 }}>
       {app.canSync ? (
