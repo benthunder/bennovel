@@ -8,7 +8,8 @@ import { useI18n } from '../i18n';
 import type { MessageKey } from '../i18n/en';
 import { useApp } from '../store/AppStore';
 import type { User } from '../data/types';
-import { AuthFailure, sendPasswordReset, setNewPassword, signIn, signUp, verifyResetCode } from '../lib/auth';
+import { AuthFailure, sendPasswordReset, setNewPassword, signIn, signInWithGoogle, signUp, verifyResetCode } from '../lib/auth';
+import { canOpenLocalBooks } from '../lib/localBook';
 
 // Fanned covers at the bottom of the wide-screen panel: [novel id, transform, overlap, z-index].
 /** Cover fan of the three most-read novels: [transform, margin-left, z-index]. */
@@ -88,6 +89,21 @@ export function LoginScreen({ recovery = false }: { recovery?: boolean }) {
     }
   };
 
+  /** Google sign-in finishes in the browser; the app hears back through a link (see AppStore). */
+  const google = async () => {
+    setBusy(true);
+    setFailure(null);
+    setNotice(null);
+    try {
+      await signInWithGoogle();
+      if (canOpenLocalBooks()) setNotice(t('auth.googleWaiting'));
+    } catch (err) {
+      setFailure(err instanceof AuthFailure ? err.key : 'auth.err.generic');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const field = (key: Field, label: string, props: React.InputHTMLAttributes<HTMLInputElement>) => (
     <div className="field">
       <label htmlFor={`auth-${key}`}>{label}</label>
@@ -133,8 +149,23 @@ export function LoginScreen({ recovery = false }: { recovery?: boolean }) {
         </div>
       )}
 
+      {(mode === 'login' || mode === 'register') && (
+        <>
+          <button type="button" className="btn btn-secondary" disabled={busy} onClick={google}
+            style={{ height: 50, gap: 10, marginTop: 4, background: 'var(--color-neutral-100)', fontSize: 15 }}>
+            <span style={{ width: 24, height: 24, flex: 'none', borderRadius: '50%', background: 'var(--color-accent-200)', color: 'var(--color-accent-800)', display: 'grid', placeItems: 'center', fontFamily: 'var(--font-body)', fontWeight: 800, fontSize: 13 }}>G</span>
+            {t('auth.continueWith', { p: 'Google' })}
+          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, fontSize: 12, color: 'var(--color-neutral-700)' }}>
+            <span style={{ flex: 1, height: 2, borderRadius: 2, background: 'var(--color-neutral-300)' }} />
+            {t('auth.orEmail')}
+            <span style={{ flex: 1, height: 2, borderRadius: 2, background: 'var(--color-neutral-300)' }} />
+          </div>
+        </>
+      )}
+
       {mode === 'login' || mode === 'register' ? (
-        <Segmented value={mode} onChange={go} style={{ marginTop: 4 }}
+        <Segmented value={mode} onChange={go}
           options={[{ label: t('auth.login'), value: 'login' }, { label: t('auth.register'), value: 'register' }]} />
       ) : (
         <div style={{ marginTop: 4 }}>
