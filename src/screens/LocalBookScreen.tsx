@@ -29,8 +29,12 @@ function loadView(): View {
   }
 }
 
-/** Page pictures are drawn at the screen's pixel width (in steps, so the cache hits). */
-const PAGE_WIDTH = Math.min(2400, Math.ceil((window.innerWidth * (window.devicePixelRatio || 1)) / 400) * 400);
+/**
+ * Page pictures are drawn at the window's current pixel width (in steps, so the cache
+ * hits). Read on every render, not once at start: the desktop window opens phone-sized
+ * and is then enlarged, and a picture drawn for the small window looks blurred.
+ */
+const pageWidth = () => Math.min(2400, Math.ceil((window.innerWidth * (window.devicePixelRatio || 1)) / 400) * 400);
 
 const NO_GLOSSARY = {};
 
@@ -45,6 +49,10 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
   const t = useT();
   const app = useApp();
   const lay = useLayout();
+  // Grows with the window (re-rendered by useLayout) but never shrinks, so making
+  // the window smaller doesn't reload pages already drawn sharp enough.
+  const pageWRef = useRef(0);
+  const pageW = (pageWRef.current = Math.max(pageWRef.current, pageWidth()));
   const p = app.readerPrefs;
   const night = p.theme === 'night';
   const theme = READER_THEMES[p.theme];
@@ -197,7 +205,7 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
           )}
           <h2 style={{ margin: '4px 0 18px', fontSize: lay.readerH, color: theme.fg }}>{fix(heading)}</h2>
           {showPages && meta?.pages && pageRange(meta.pages).map(n => (
-            <img key={n} src={bookPageUrl(book.id, n, PAGE_WIDTH)} alt={t('book.page', { n })} loading="lazy" decoding="async"
+            <img key={n} src={bookPageUrl(book.id, n, pageW)} alt={t('book.page', { n })} loading="lazy" decoding="async"
               onLoad={e => { const i = e.currentTarget; i.style.aspectRatio = `${i.naturalWidth} / ${i.naturalHeight}`; }}
               style={{ display: 'block', width: '100%', aspectRatio: '1 / 1.414', margin: `0 0 ${GAP_PX[p.gap]}px`, background: '#fff', borderRadius: 4, boxShadow: `0 0 0 1px ${line}`, filter: night ? 'brightness(.82)' : undefined }} />
           ))}
