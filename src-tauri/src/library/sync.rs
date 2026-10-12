@@ -26,7 +26,7 @@ pub enum SyncError {
 }
 
 const LAST_VERSION: &str = "last_version";
-const SYNCED_AT: &str = "synced_at";
+pub(super) const SYNCED_AT: &str = "synced_at";
 
 /// The server version this file was last synced with, and when (epoch ms).
 pub fn status(conn: &Connection) -> rusqlite::Result<(i64, Option<i64>)> {

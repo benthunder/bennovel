@@ -32,6 +32,9 @@ flate2 = "1"
 tauri-plugin-folder-picker = { path = "plugins/folder-picker" }
 tauri-plugin-deep-link = "2"
 tauri-plugin-opener = "2"
+ureq = { version = "2", default-features = false, features = ["tls"] }
+hmac = "0.12"
+sha2 = "0.10"
 
 # Sends a second launch (a sign-in link, a file to open) to the running app.
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
