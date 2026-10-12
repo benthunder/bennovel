@@ -3,12 +3,12 @@ import { ChapterSheet, useSectionName } from '../components/ChapterSheet';
 import { ChevronLeftIcon, DownloadIcon, ListIcon, SlidersIcon } from '../components/Icons';
 import { ReaderChrome, ReaderStatusBar, useImmersive } from '../components/ReaderChrome';
 import { ReaderTools, type ToolsTab } from '../components/ReaderTools';
-import { Segmented, Spinner } from '../components/ui';
+import { Spinner } from '../components/ui';
 import { applyReplaceRules } from '../data/repository';
 import { CONTENT_LANGS, type ContentLang, type ReplaceRule } from '../data/types';
 import { useT } from '../i18n';
 import {
-  bookImageUrl, bookPageUrl, closeLocalBook, getLocalSection, imageKey, importBookPath, libraryUser, openLibraryBook, saveLibraryProgress,
+  bookImageUrl, closeLocalBook, getLocalSection, imageKey, importBookPath, libraryUser, openLibraryBook, saveLibraryProgress,
   type LibraryPlace, type LocalBook, type LocalSectionMeta
 } from '../lib/localBook';
 import { load, save as store } from '../lib/storage';
@@ -18,23 +18,6 @@ import { READER_THEMES, useApp } from '../store/AppStore';
 
 const GAP_PX = { tight: 6, normal: 16, airy: 28 };
 const MARGIN_PX = { narrow: 16, normal: 24, wide: 36 };
-
-type View = 'pages' | 'text';
-const VIEW_KEY = 'bennovel.bookView';
-function loadView(): View {
-  try {
-    return localStorage.getItem(VIEW_KEY) === 'text' ? 'text' : 'pages';
-  } catch {
-    return 'pages';
-  }
-}
-
-/**
- * Page pictures are drawn at the window's current pixel width (in steps, so the cache
- * hits). Read on every render, not once at start: the desktop window opens phone-sized
- * and is then enlarged, and a picture drawn for the small window looks blurred.
- */
-const pageWidth = () => Math.min(2400, Math.ceil((window.innerWidth * (window.devicePixelRatio || 1)) / 400) * 400);
 
 const NO_GLOSSARY = {};
 
@@ -52,10 +35,6 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
   const t = useT();
   const app = useApp();
   const lay = useLayout();
-  // Grows with the window (re-rendered by useLayout) but never shrinks, so making
-  // the window smaller doesn't reload pages already drawn sharp enough.
-  const pageWRef = useRef(0);
-  const pageW = (pageWRef.current = Math.max(pageWRef.current, pageWidth()));
   const p = app.readerPrefs;
   const night = p.theme === 'night';
   const theme = READER_THEMES[p.theme];
@@ -87,9 +66,6 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
     store(rulesKey, next.length ? next : null);
   };
   const fix = (text: string) => applyReplaceRules(text, rules);
-  // PDF/DjVu: the original pages as pictures, or the extracted text.
-  const [view, setViewState] = useState<View>(() => (book.pageImages ? loadView() : 'text'));
-  const showPages = book.pageImages && view === 'pages';
   const total = book.sections.length;
   const meta = book.sections[index];
   // Leaving the reader frees the file and every cached section.
@@ -157,7 +133,7 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
     grow();
   };
 
-  /** Opens part `i` on its own, at its top (chapter list, switching the view). */
+  /** Opens part `i` on its own, at its top (chapter list). */
   const jump = (i: number) => {
     landing.current = { target: i, progress: 0 };
     anchor.current = null;
@@ -179,11 +155,6 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
     return () => ro.disconnect();
   }, []);
 
-  const setView = (v: View) => {
-    setViewState(v);
-    try { localStorage.setItem(VIEW_KEY, v); } catch { /* private mode */ }
-    jump(index);
-  };
 
   // Library books remember the part and how far into it you scrolled. Saves are
   // batched while scrolling and flushed when you leave.
@@ -244,7 +215,6 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
   const partStyle = {
     accent: night ? 'var(--color-accent-400)' : 'var(--color-accent-700)',
     headingSize: lay.readerH, gap: GAP_PX[p.gap], fontSize: p.fontSize, lineH: p.lineH, align: p.align,
-    pageFrame: { background: '#fff', borderRadius: 4, boxShadow: `0 0 0 1px ${line}`, filter: night ? 'brightness(.82)' : undefined },
   };
 
   return (
@@ -259,15 +229,11 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
             {name}{meta?.number != null && !lay.isPhone && <span style={{ opacity: .55, fontSize: 13 }}> · {index + 1}/{total}</span>}
           </div>
         </div>
-        {book.pageImages && (
-          <Segmented<View> value={view} onChange={setView} style={{ flex: '0 0 auto' }} optStyle={{ padding: '6px 10px', fontSize: 13 }}
-            options={[{ value: 'pages', label: t('book.viewPages') }, { value: 'text', label: t('book.viewText') }]} />
-        )}
         {path && !place && (
           <button onClick={importHere} disabled={!!importing} aria-label={t('book.importAria')} title={t('book.importAria')}
             style={{ height: 38, padding: '0 14px', display: 'inline-flex', alignItems: 'center', gap: 6, borderRadius: 999, border: 'none', background: 'var(--color-accent)', color: 'var(--color-bg)', font: 'inherit', fontSize: 12, fontWeight: 700, cursor: importing ? 'default' : 'pointer', flex: '0 0 auto', whiteSpace: 'nowrap' }}>
             {importing ? <Spinner size={13} /> : <DownloadIcon size={15} />}
-            {importing?.total ? `${importing.done}/${importing.total}` : (!lay.isPhone || !book.pageImages) && t('book.import')}
+            {importing?.total ? `${importing.done}/${importing.total}` : t('book.import')}
           </button>
         )}
         {known && (
@@ -287,7 +253,7 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
         <div ref={contentRef} style={{ maxWidth: lay.readerMax, margin: '0 auto' }}>
           {Array.from({ length: span[1] - span[0] + 1 }, (_, k) => span[0] + k).map(i => (
             <BookPart key={`${gen}-${i}`} bookId={book.id} index={i} meta={book.sections[i]} name={sectionName(book.sections[i], i, total)}
-              pages={showPages} pageW={pageW} fix={fix} st={partStyle} color={theme.fg} onReady={onPartReady} />
+              fix={fix} st={partStyle} color={theme.fg} onReady={onPartReady} />
           ))}
           {span[1] < total - 1 && (
             <div role="status" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, padding: '24px 0', opacity: .6 }}><Spinner size={16} /></div>
@@ -317,23 +283,22 @@ function isHeadingLine(line: string, n: number, label: string | null) {
 
 type PartStyle = {
   accent: string; headingSize: number | string; gap: number; fontSize: number; lineH: number;
-  align: CSSProperties['textAlign']; pageFrame: CSSProperties;
+  align: CSSProperties['textAlign'];
 };
 
 /**
- * One part of the book in the long scroll: its heading, then its original pages or
- * its text. Marked `data-ready` once its content is in, so the reader knows the
+ * One part of the book in the long scroll: its heading, then its text. Marked `data-ready` once its content is in, so the reader knows the
  * height is real before adding the next part.
  */
-function BookPart({ bookId, index, meta, name, pages, pageW, fix, st, color, onReady }: {
+function BookPart({ bookId, index, meta, name, fix, st, color, onReady }: {
   bookId: number; index: number; meta: LocalSectionMeta | undefined; name: string;
-  pages: boolean; pageW: number; fix: (s: string) => string; st: PartStyle; color: string;
+  fix: (s: string) => string; st: PartStyle; color: string;
   onReady: (index: number) => void;
 }) {
   const t = useT();
   // "Chương 12" above the chapter's own title; a chapter without one shows "Chương 12" once.
   const heading = meta?.label ?? name;
-  const q = useAsync(() => (pages ? Promise.resolve(null) : getLocalSection(bookId, index)), [bookId, index, pages]);
+  const q = useAsync(() => getLocalSection(bookId, index), [bookId, index]);
   const ready = q.status !== 'loading';
   useEffect(() => { if (ready) onReady(index); }, [ready]);
 
@@ -343,17 +308,12 @@ function BookPart({ bookId, index, meta, name, pages, pageW, fix, st, color, onR
         <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: st.accent }}>{name}</div>
       )}
       <h2 style={{ margin: '4px 0 18px', fontSize: st.headingSize, color }}>{fix(heading)}</h2>
-      {pages && meta?.pages && pageRange(meta.pages).map(n => (
-        <img key={n} src={bookPageUrl(bookId, n, pageW)} alt={t('book.page', { n })} loading="lazy" decoding="async"
-          onLoad={e => { const i = e.currentTarget; i.style.aspectRatio = `${i.naturalWidth} / ${i.naturalHeight}`; }}
-          style={{ display: 'block', width: '100%', aspectRatio: '1 / 1.414', margin: `0 0 ${st.gap}px`, ...st.pageFrame }} />
-      ))}
       {q.status === 'loading' && (
         <div role="status" style={{ display: 'flex', alignItems: 'center', gap: 10, opacity: .75 }}><Spinner size={16} />{t('book.loading')}</div>
       )}
       {q.status === 'failed' && <p role="alert">{String(q.error)}</p>}
-      {q.status === 'ready' && q.data && q.data.paragraphs.length === 0 && <p style={{ opacity: .7 }}>{t('book.empty')}</p>}
-      {q.status === 'ready' && q.data?.paragraphs.map((para, i) => {
+      {q.status === 'ready' && q.data.paragraphs.length === 0 && <p style={{ opacity: .7 }}>{t('book.empty')}</p>}
+      {q.status === 'ready' && q.data.paragraphs.map((para, i) => {
         // The chapter's own "Chương 629." line repeats the heading shown above.
         if (i === 0 && meta?.number != null && isHeadingLine(para, meta.number, meta.label)) return null;
         const key = imageKey(para);
@@ -368,8 +328,4 @@ function BookPart({ bookId, index, meta, name, pages, pageW, fix, st, color, onR
       })}
     </section>
   );
-}
-
-function pageRange([from, to]: [number, number]) {
-  return Array.from({ length: Math.max(0, to - from + 1) }, (_, i) => from + i);
 }

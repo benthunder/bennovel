@@ -311,8 +311,5 @@ export const vi: Record<MessageKey, string> = {
   'book.pages': 'Trang {from}–{to}',
   'book.loading': 'Đang tải…',
   'book.empty': 'Phần này không có chữ.',
-  'book.viewPages': 'Trang gốc',
-  'book.viewText': 'Chữ',
-  'book.page': 'Trang {n}',
   'book.translateSoon': 'Dịch AI cho sách nhập sẽ có sớm.',
 };

@@ -309,9 +309,6 @@ export const en = {
   'book.pages': 'Pages {from}–{to}',
   'book.loading': 'Loading…',
   'book.empty': 'This part has no text.',
-  'book.viewPages': 'Pages',
-  'book.viewText': 'Text',
-  'book.page': 'Page {n}',
   'book.translateSoon': 'AI translation for imported books is coming soon.',
 };
 
