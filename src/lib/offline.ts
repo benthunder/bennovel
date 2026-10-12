@@ -4,8 +4,8 @@ import { canOpenLocalBooks } from './localBook';
 import { supabase } from './supabase';
 
 /*
- * Online novels downloaded to read offline: every chapter in every published language,
- * and the glossary, copied from Supabase into the user's library file
+ * Online novels downloaded to read offline, whole or chapter by chapter: each chapter
+ * in every published language, and the glossary, copied from Supabase into the user's library file
  * (src-tauri/src/library/offline.rs). They stay on this device: sync leaves them out.
  * Native app only, like the library.
  */
@@ -57,6 +57,9 @@ export const offlineChapter = (id: number, number: number, lang: ContentLang) =>
 export const offlineGlossary = (id: number) =>
   invoke<{ key: string; lang: string; value: string }[]>('offline_glossary', { user: current.user, novelId: id });
 
+/** Numbers of the chapters of `id` stored on the device. */
+export const offlineNumbers = (user: string, id: number) => invoke<number[]>('offline_numbers', { user, novelId: id });
+
 export const deleteDownload = (user: string, id: number) => invoke<void>('offline_delete', { user, novelId: id });
 
 /** The language to read a download in: the saved one when it was downloaded, else the original. */
@@ -96,24 +99,39 @@ export async function downloadNovel(user: string, novel: Novel, onProgress: (don
   const started = await invoke<number>('offline_start', { user, novelId: id, data: novel, total });
   onProgress(0, total);
 
-  const glossary = must(await supabase.from('glossary_entries').select('term_key, lang, value').eq('novel_id', id));
-  await invoke('offline_set_glossary', { user, novelId: id, entries: glossary.map(g => ({ key: g.term_key, lang: g.lang, value: g.value })) });
+  await saveGlossary(user, id);
 
   let done = 0;
   for (let from = 0; ; from += PAGE) {
-    const rows = must(await supabase.from('chapters')
-      .select('number, chapter_translations(lang, source, style, title, content, word_count)')
-      .eq('novel_id', id)
-      .order('number')
-      .range(from, from + PAGE - 1));
+    const rows = must(await chapterQuery(id).order('number').range(from, from + PAGE - 1));
     if (!rows.length) break;
-    const chapters = rows.flatMap(c => onePerLang(c.chapter_translations).map(t => ({
-      number: c.number, lang: t.lang, source: t.source, title: t.title, content: t.content, words: t.word_count ?? 0
-    })));
-    await invoke('offline_add', { user, novelId: id, chapters });
+    await invoke('offline_add', { user, novelId: id, chapters: toRows(rows) });
     done += rows.length;
     onProgress(done, Math.max(total, done));
     if (rows.length < PAGE) break;
   }
   await invoke('offline_finish', { user, novelId: id, started });
+}
+
+/** Downloads one chapter of `novel` (all languages), and the glossary its text uses. */
+export async function downloadChapter(user: string, novel: Novel, number: number) {
+  const rows = must(await chapterQuery(novel.id).eq('number', number));
+  if (!rows.length) throw new Error(`Chapter ${number} is not published`);
+  await invoke('offline_ensure', { user, novelId: novel.id, data: novel, total: novel.chapters });
+  await saveGlossary(user, novel.id);
+  await invoke('offline_add', { user, novelId: novel.id, chapters: toRows(rows) });
+}
+
+const chapterQuery = (id: number) => supabase.from('chapters')
+  .select('number, chapter_translations(lang, source, style, title, content, word_count)')
+  .eq('novel_id', id);
+
+const toRows = (rows: { number: number; chapter_translations: Translation[] }[]) =>
+  rows.flatMap(c => onePerLang(c.chapter_translations).map(t => ({
+    number: c.number, lang: t.lang, source: t.source, title: t.title, content: t.content, words: t.word_count ?? 0
+  })));
+
+async function saveGlossary(user: string, id: number) {
+  const glossary = must(await supabase.from('glossary_entries').select('term_key, lang, value').eq('novel_id', id));
+  await invoke('offline_set_glossary', { user, novelId: id, entries: glossary.map(g => ({ key: g.term_key, lang: g.lang, value: g.value })) });
 }

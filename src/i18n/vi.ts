@@ -115,6 +115,9 @@ export const vi: Record<MessageKey, string> = {
   'download.resume': 'Tải tiếp',
   'download.remove': 'Xoá bản tải',
   'download.removed': 'Đã xoá bản tải.',
+  'download.chapter': 'Tải chương {n}',
+  'download.chapterSaved': 'Chương {n} đã tải',
+  'download.chapterDone': 'Đã tải chương {n}.',
   'library.downloaded': 'Đã tải về',
 
   // list

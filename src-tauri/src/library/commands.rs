@@ -699,3 +699,34 @@ pub async fn offline_delete<R: Runtime>(
     let path = db_path(&app, &user)?;
     blocking(move || Ok(super::offline::delete(&db::open(&path)?, novel_id)?)).await
 }
+
+/// Lists an online novel for a chapter downloaded on its own.
+#[tauri::command]
+pub async fn offline_ensure<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+    data: serde_json::Value,
+    total: i64,
+) -> Result<(), BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || {
+        Ok(super::offline::ensure(
+            &db::open(&path)?,
+            novel_id,
+            &data,
+            total,
+        )?)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn offline_numbers<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+) -> Result<Vec<i64>, BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || Ok(super::offline::numbers(&db::open(&path)?, novel_id)?)).await
+}

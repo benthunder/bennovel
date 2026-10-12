@@ -44,7 +44,7 @@ async function server(page: Page) {
       case 'glossary_entries': return json(route, [{ term_key: 'hero', lang: 'en', value: 'Lin' }]);
       case 'chapters': return route.request().method() === 'HEAD'
         ? route.fulfill({ status: 200, headers: { 'content-range': '0-1/2' }, body: '' })
-        : json(route, CHAPTERS);
+        : json(route, CHAPTERS.filter(c => !url.searchParams.get('number') || url.searchParams.get('number') === `eq.${c.number}`));
       default: return json(route, []);
     }
   });
@@ -86,7 +86,10 @@ async function nativeApp(page: Page, downloaded: { novel: typeof NOVEL; chapters
         switch (cmd) {
           case 'reading_load': return { favs: [novel.id], history: [], novels: [{ id: novel.id, data: novel }] };
           case 'library_list': return [];
+          case 'take_opened_files': return [];
           case 'offline_start': dl.set(a.novelId, { data: a.data, total: a.total, complete: false, rows: dl.get(a.novelId)?.rows ?? [], glossary: [] }); return 1;
+          case 'offline_ensure': if (!dl.has(a.novelId)) dl.set(a.novelId, { data: a.data, total: a.total, complete: false, rows: [], glossary: [] }); return null;
+          case 'offline_numbers': return [...new Set(dl.get(a.novelId)?.rows.map(r => r.number) ?? [])].sort();
           case 'offline_add': dl.get(a.novelId)!.rows.push(...(a.chapters as Row[])); return null;
           case 'offline_set_glossary': dl.get(a.novelId)!.glossary = a.entries; return null;
           case 'offline_finish': dl.get(a.novelId)!.complete = true; return null;
@@ -129,6 +132,22 @@ test('Download saves every chapter and the glossary on the device', async ({ pag
   // The library lists it, and it can be removed again.
   await page.getByRole('button', { name: 'Remove download' }).filter({ visible: true }).click();
   await expect(page.getByRole('button', { name: 'Download for offline reading' }).filter({ visible: true })).toBeVisible();
+});
+
+test('a single chapter can be downloaded and read offline', async ({ page }) => {
+  await server(page);
+  await nativeApp(page, null);
+  await boot(page);
+  await page.goto('/');
+  await page.getByText('Saved Tale').filter({ visible: true }).first().click();
+  await page.getByRole('button', { name: 'Download chapter 2' }).filter({ visible: true }).click();
+  await expect(page.getByText('Downloaded chapter 2.')).toBeVisible();
+  await expect(page.getByRole('img', { name: 'Chapter 2 is downloaded' }).filter({ visible: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Download chapter 1' }).filter({ visible: true })).toBeVisible();
+  await expect(page.getByText('Partly downloaded · 1/2 chapters').filter({ visible: true })).toBeVisible();
+  const rows = await page.evaluate(() =>
+    (window as unknown as { __downloads: Map<number, { rows: { number: number; lang: string }[] }> }).__downloads.get(101)!.rows.map(r => `${r.number}-${r.lang}`).sort());
+  expect(rows).toEqual(['2-en', '2-vi']);
 });
 
 test('a downloaded novel opens and reads without a connection', async ({ page }) => {

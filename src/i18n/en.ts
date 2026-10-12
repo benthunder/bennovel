@@ -113,6 +113,9 @@ export const en = {
   'download.resume': 'Finish download',
   'download.remove': 'Remove download',
   'download.removed': 'Download removed.',
+  'download.chapter': 'Download chapter {n}',
+  'download.chapterSaved': 'Chapter {n} is downloaded',
+  'download.chapterDone': 'Downloaded chapter {n}.',
   'library.downloaded': 'Downloaded',
 
   // list

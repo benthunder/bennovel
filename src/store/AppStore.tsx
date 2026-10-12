@@ -7,7 +7,7 @@ import { useT } from '../i18n';
 import { canOpenLocalBooks, libraryUser, type LibraryPlace, type LocalBook } from '../lib/localBook';
 import { loadReading, saveReading } from '../lib/readingStore';
 import { getSyncStatus, syncLibrary, SyncFailure } from '../lib/sync';
-import { canDownload, deleteDownload, downloadLang, downloadNovel, listDownloads, setDownloads, type Download } from '../lib/offline';
+import { canDownload, deleteDownload, downloadChapter, downloadLang, downloadNovel, listDownloads, setDownloads, type Download } from '../lib/offline';
 import { claimGuestLibrary, signOut, takeRecovery, toUser } from '../lib/auth';
 import { supabase } from '../lib/supabase';
 
@@ -193,6 +193,24 @@ function useDownloads(user: string, showToast: (msg: string) => void, tr: Return
     }
   }, [progress, refresh, showToast, tr, user]);
 
+  /** Chapters downloading on their own, as `novelId:number`. */
+  const [chapterBusy, setChapterBusy] = useState<string[]>([]);
+  const startChapter = useCallback(async (id: number, number: number) => {
+    const novel = findNovel(id), key = `${id}:${number}`;
+    if (!novel || chapterBusy.includes(key)) return;
+    setChapterBusy(b => [...b, key]);
+    try {
+      await downloadChapter(user, novel, number);
+      showToast(tr('download.chapterDone', { n: number }));
+    } catch (e) {
+      console.error(e);
+      showToast(tr('download.failed'));
+    } finally {
+      await refresh();
+      setChapterBusy(b => b.filter(k => k !== key));
+    }
+  }, [chapterBusy, refresh, showToast, tr, user]);
+
   const remove = useCallback(async (id: number) => {
     try {
       await deleteDownload(user, id);
@@ -204,7 +222,7 @@ function useDownloads(user: string, showToast: (msg: string) => void, tr: Return
   }, [refresh, showToast, tr, user]);
 
   const byId = useMemo(() => new Map(list.map(d => [d.id, d])), [list]);
-  return { enabled: canDownload(), list, byId, progress, start, remove };
+  return { enabled: canDownload(), user, list, byId, progress, start, chapterBusy, startChapter, remove };
 }
 
 function useAppState() {

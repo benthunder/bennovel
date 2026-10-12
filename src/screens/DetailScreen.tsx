@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ChevronLeftIcon, ChevronRightIcon, DownloadIcon, HeartIcon, LanguagesIcon, PlayIcon, RefreshIcon, XIcon } from '../components/Icons';
+import { CheckIcon, ChevronLeftIcon, ChevronRightIcon, DownloadIcon, HeartIcon, LanguagesIcon, PlayIcon, RefreshIcon, XIcon } from '../components/Icons';
 import { NovelCover } from '../components/NovelCover';
 import { ShelfItem, Spinner, formatReads } from '../components/ui';
 import { getChapterList, getContentLangs, getNovel, sameAuthor, sameCategory } from '../data/repository';
@@ -10,6 +10,7 @@ import { useApp } from '../store/AppStore';
 import { useCatalogNames } from '../data/useCatalogNames';
 import { useLayout } from '../lib/useLayout';
 import { useCatalog } from '../data/useCatalog';
+import { offlineNumbers } from '../lib/offline';
 
 const MAX_LISTED_CHAPTERS = 20;
 const WORDS_PER_MIN = 220;
@@ -23,6 +24,12 @@ export function DetailScreen({ id }: { id: number }) {
   const [allCh, setAllCh] = useState(false);
   const chList = useAsync(() => getChapterList(id, app.contentLang), [id, app.contentLang]);
   const chapters = chList.status === 'ready' ? chList.data : [];
+
+  const dl = app.downloads;
+  // Chapters on the device, listed again after each download.
+  const savedQ = useAsync(async () => (dl.byId.has(id) ? offlineNumbers(dl.user, id) : []), [id, dl.user, dl.byId]);
+  const savedChapters = new Set(savedQ.status === 'ready' ? savedQ.data : []);
+  const online = useCatalog().status !== 'offline';
 
   const readUpTo = app.history.find(h => h.id === id)?.ch ?? 0;
   const isFav = app.favs.includes(id);
@@ -97,7 +104,8 @@ export function DetailScreen({ id }: { id: number }) {
               {shown.map(c => {
                 const n = c.number, read = n <= readUpTo;
                 return (
-                  <button key={n} className="novel-row" style={{ alignItems: 'center', gap: 12, padding: '10px 8px', borderRadius: 20, minWidth: 0 }} onClick={() => app.openChapter(id, n)}>
+                  <div key={n} style={{ display: 'flex', alignItems: 'center', minWidth: 0 }}>
+                  <button className="novel-row" style={{ flex: 1, alignItems: 'center', gap: 12, padding: '10px 8px', borderRadius: 20, minWidth: 0 }} onClick={() => app.openChapter(id, n)}>
                     <span style={{ width: 36, height: 36, flex: 'none', borderRadius: '50%', display: 'grid', placeItems: 'center', fontSize: 12, fontWeight: 700, background: read ? 'var(--color-accent-2-200)' : 'var(--color-surface)', color: read ? 'var(--color-accent-2-800)' : 'var(--color-text)' }}>{n}</span>
                     <span style={{ flex: 1, minWidth: 0 }}>
                       <span style={{ display: 'block', fontSize: 14, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.title}</span>
@@ -107,6 +115,16 @@ export function DetailScreen({ id }: { id: number }) {
                     </span>
                     <ChevronRightIcon size={16} style={{ flex: 'none', color: 'var(--color-neutral-500)' }} />
                   </button>
+                  {dl.enabled && (savedChapters.has(n)
+                    ? <span role="img" aria-label={t('download.chapterSaved', { n })} title={t('download.chapterSaved', { n })}
+                        style={{ width: 36, flex: 'none', display: 'grid', placeItems: 'center', color: 'var(--color-accent-2-700)' }}><CheckIcon size={14} /></span>
+                    : dl.chapterBusy.includes(`${id}:${n}`)
+                      ? <span style={{ width: 36, flex: 'none', display: 'grid', placeItems: 'center' }}><Spinner size={14} /></span>
+                      : <button className="icon-btn icon-btn--plain" style={{ width: 36, height: 36, flex: 'none' }} disabled={!online || !!dl.progress[id]}
+                          aria-label={t('download.chapter', { n })} title={t('download.chapter', { n })} onClick={() => dl.startChapter(id, n)}>
+                          <DownloadIcon size={16} />
+                        </button>)}
+                  </div>
                 );
               })}
             </div>

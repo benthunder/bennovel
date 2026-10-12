@@ -77,6 +77,26 @@ pub fn start(conn: &Connection, id: i64, data: &Value, total: i64) -> rusqlite::
     Ok(now)
 }
 
+/// Makes sure the novel is listed, for a chapter downloaded on its own; a download in
+/// progress or done keeps its state.
+pub fn ensure(conn: &Connection, id: i64, data: &Value, total: i64) -> rusqlite::Result<()> {
+    conn.execute(
+        "insert into offline_novels (id, data, total, complete, started_at) values (?1, ?2, ?3, 0, ?4)
+         on conflict (id) do update set data = excluded.data",
+        params![id, data.to_string(), total, super::db::now_ms()],
+    )?;
+    Ok(())
+}
+
+/// Numbers of the chapters stored (in any language).
+pub fn numbers(conn: &Connection, id: i64) -> rusqlite::Result<Vec<i64>> {
+    conn.prepare(
+        "select distinct number from offline_chapters where novel_id = ?1 order by number",
+    )?
+    .query_map([id], |r| r.get(0))?
+    .collect()
+}
+
 pub fn add(conn: &mut Connection, id: i64, chapters: &[ChapterRow]) -> rusqlite::Result<()> {
     let tx = conn.transaction()?;
     let now = super::db::now_ms();
@@ -301,6 +321,35 @@ mod tests {
         finish(&mut c, 1, s).unwrap();
         assert!(chapter(&c, 1, 2, "en").unwrap().is_none());
         assert_eq!(list(&c).unwrap()[0].chapters, 1);
+    }
+
+    #[test]
+    fn single_chapters_add_up() {
+        let mut c = conn();
+        ensure(&c, 4, &serde_json::json!({ "id": 4 }), 3).unwrap();
+        add(&mut c, 4, &[ch(2, "en", "original"), ch(2, "vi", "ai")]).unwrap();
+        ensure(&c, 4, &serde_json::json!({ "id": 4 }), 3).unwrap();
+        add(&mut c, 4, &[ch(3, "en", "original")]).unwrap();
+        let d = &list(&c).unwrap()[0];
+        assert!(!d.complete);
+        assert_eq!((d.chapters, d.total), (2, 3));
+        assert_eq!(numbers(&c, 4).unwrap(), vec![2, 3]);
+
+        // A finished whole download stays complete when a chapter is fetched again.
+        let s = start(&c, 4, &Value::Null, 3).unwrap();
+        add(
+            &mut c,
+            4,
+            &[
+                ch(1, "en", "original"),
+                ch(2, "en", "original"),
+                ch(3, "en", "original"),
+            ],
+        )
+        .unwrap();
+        finish(&mut c, 4, s).unwrap();
+        ensure(&c, 4, &Value::Null, 3).unwrap();
+        assert!(list(&c).unwrap()[0].complete);
     }
 
     #[test]

@@ -46,6 +46,8 @@ pub fn run() {
             library::commands::offline_chapter,
             library::commands::offline_glossary,
             library::commands::offline_delete,
+            library::commands::offline_ensure,
+            library::commands::offline_numbers,
             opened::take_opened_files,
         ])
         .build(tauri::generate_context!())
