@@ -9,3 +9,4 @@ src-tauri/gen/schemas
 test-results
 playwright-report
 src-tauri/pdfium
+public/tesseract

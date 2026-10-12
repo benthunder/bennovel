@@ -155,6 +155,7 @@ export const vi: Record<MessageKey, string> = {
   'library.importHint': 'EPUB, PDF, MOBI, TXT và nhiều định dạng khác. Thư mục (kể cả thư mục con) được nhập thành một truyện, mỗi file là một chương, xếp theo số chương trong tên file.',
   'library.importFolder': 'Nhập thư mục',
   'library.importing': 'Đang nhập {done}/{total}…',
+  'library.ocr': 'Đang nhận dạng chữ trang scan «{title}»: phần {done}/{total}',
   'library.imported': 'Đã thêm “{title}” vào thư viện.',
   'library.importFailed': 'Không nhập được file này.',
   'library.deviceEmpty': 'Sách bạn nhập được lưu trên máy và mở lại đúng chỗ đang đọc.',

@@ -153,6 +153,7 @@ export const en = {
   'library.importHint': 'EPUB, PDF, MOBI, TXT and more. A folder, subfolders included, becomes one book, one chapter per file, in the order of the chapter numbers in the file names.',
   'library.importFolder': 'Import a folder',
   'library.importing': 'Importing {done}/{total}…',
+  'library.ocr': 'Reading scanned pages of “{title}”: part {done}/{total}',
   'library.imported': 'Added “{title}” to your library.',
   'library.importFailed': 'Could not import this file.',
   'library.deviceEmpty': 'Books you import are saved on this device and open where you left off.',

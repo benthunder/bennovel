@@ -5,6 +5,7 @@ import { findNovel, rememberNovels, type ListSource } from '../data/repository';
 import { useCatalog } from '../data/useCatalog';
 import { useT } from '../i18n';
 import { canOpenLocalBooks, libraryUser, type LibraryPlace, type LocalBook } from '../lib/localBook';
+import { runOcr } from '../lib/ocr';
 import { loadReading, saveReading } from '../lib/readingStore';
 import { getSyncStatus, syncLibrary, SyncFailure } from '../lib/sync';
 import { canDownload, deleteDownload, downloadChapter, downloadLang, downloadNovel, listDownloads, setDownloads, type Download } from '../lib/offline';
@@ -255,6 +256,8 @@ function useAppState() {
   const switchTab = useCallback((t: Tab) => { setTab(t); setStack([tabRoot(t)]); }, []);
 
   const downloads = useDownloads(libraryUser(user), showToast, tr);
+  // Scanned pages left unread by an earlier run (the app was closed) are picked up again.
+  useEffect(() => runOcr(libraryUser(user)), [user?.email]);
 
   // Chapters come from the server, so a novel's page needs a connection unless it was downloaded.
   const openDetail = useCallback((id: number) => {

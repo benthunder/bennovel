@@ -11,6 +11,7 @@ import {
   bookImageUrl, closeLocalBook, getLocalSection, imageKey, importBookPath, libraryUser, openLibraryBook, saveLibraryProgress,
   type LibraryPlace, type LocalBook, type LocalSectionMeta
 } from '../lib/localBook';
+import { runOcr } from '../lib/ocr';
 import { load, save as store } from '../lib/storage';
 import { useAsync } from '../lib/useAsync';
 import { useLayout } from '../lib/useLayout';
@@ -196,6 +197,7 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
     try {
       const user = libraryUser(app.user);
       const saved = await importBookPath(user, path, (done, total) => setImporting({ done, total }));
+      runOcr(user);
       // Chapters are the file's sections, so the place carries over as is.
       const m = measure();
       await saveLibraryProgress(user, saved.novelId, m?.i ?? index, m?.progress ?? 0);

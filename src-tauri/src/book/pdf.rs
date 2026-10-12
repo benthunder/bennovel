@@ -114,6 +114,19 @@ impl BookSource for PdfBook {
             &bitmap.as_rgba_bytes(),
         )
     }
+
+    fn page_text(&mut self, page: u32) -> Result<Option<String>, BookError> {
+        if page == 0 || page > self.pages {
+            return Err(BookError::NoImage(format!("page {page}")));
+        }
+        let page = self
+            .doc
+            .pages()
+            .get((page - 1) as PdfPageIndex)
+            .map_err(|e| BookError::Parse(e.to_string()))?;
+        let text = page.text().map_err(|e| BookError::Parse(e.to_string()))?;
+        Ok(Some(text.all()))
+    }
 }
 
 #[cfg(test)]
@@ -189,6 +202,7 @@ mod tests {
             (21..=25).map(|n| format!("Page {n}.")).collect::<Vec<_>>()
         );
         assert!(matches!(book.load(3), Err(BookError::NoSection(3))));
+        assert_eq!(book.page_text(3).unwrap().unwrap().trim(), "Page 3.");
         let page = book.render_page(25, 600).unwrap();
         assert_eq!(image::mime_of(&page.bytes), "image/jpeg");
         assert!(book.render_page(26, 600).is_err());
