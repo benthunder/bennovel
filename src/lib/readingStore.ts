@@ -14,6 +14,8 @@ export interface ReadingState {
   history: HistoryEntry[];
   /** `data` is null for a novel not seen in the catalog yet. */
   novels: { id: number; data: Novel | null }[];
+  /** Bumped by each sync; a save from lists loaded before it is refused (native app). */
+  rev?: number;
 }
 
 const CACHE_KEY = 'novelCache';
@@ -25,7 +27,9 @@ export async function loadReading(user: string): Promise<ReadingState | null> {
   return { favs: load('favs', []), history: load('history', []), novels: load(CACHE_KEY, []) };
 }
 
-export async function saveReading(user: string, state: ReadingState): Promise<void> {
-  if (canOpenLocalBooks()) return invoke<void>('reading_save', { user, state });
+/** False when a sync changed the lists since they were loaded: load them again. */
+export async function saveReading(user: string, state: ReadingState): Promise<boolean> {
+  if (canOpenLocalBooks()) return invoke<boolean>('reading_save', { user, state: { ...state, rev: state.rev ?? 0 } });
   save(CACHE_KEY, state.novels);
+  return true;
 }

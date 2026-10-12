@@ -1,0 +1,443 @@
+//! Sync between devices through one file per user in Supabase Storage. The app (JS)
+//! does the network part; here the library file is exported as a gzipped snapshot and
+//! a downloaded snapshot is merged into it row by row, so changes made on two devices
+//! both survive:
+//! - favourites: the later of "added" and "removed" wins (a tie keeps it);
+//! - history and progress: the most recent read wins; a removal newer than the read wins;
+//! - imported books: matched by `book_key`; a book missing here is copied whole
+//!   (chapters, pictures…), newer details (title, author) win, a deleted book stays deleted.
+
+use super::db;
+use flate2::{read::GzDecoder, write::GzEncoder, Compression};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use std::io::{Read, Write};
+use std::path::Path;
+
+#[derive(Debug, thiserror::Error)]
+pub enum SyncError {
+    #[error("{0}")]
+    Db(#[from] rusqlite::Error),
+    #[error("{0}")]
+    Io(#[from] std::io::Error),
+    /// The synced file was written by a newer version of the app.
+    #[error("sync-outdated")]
+    Outdated,
+}
+
+const LAST_VERSION: &str = "last_version";
+const SYNCED_AT: &str = "synced_at";
+
+/// The server version this file was last synced with, and when (epoch ms).
+pub fn status(conn: &Connection) -> rusqlite::Result<(i64, Option<i64>)> {
+    let version = db::get_state(conn, LAST_VERSION)?
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let at = db::get_state(conn, SYNCED_AT)?.and_then(|v| v.parse().ok());
+    Ok((version, at))
+}
+
+pub fn mark_synced(conn: &Connection, version: i64) -> rusqlite::Result<()> {
+    db::set_state(conn, LAST_VERSION, &version.to_string())?;
+    db::set_state(conn, SYNCED_AT, &db::now_ms().to_string())
+}
+
+/// A consistent copy of the library file (the live one is in WAL mode), gzipped.
+/// `tmp` is a scratch path that must not exist.
+pub fn export(conn: &Connection, tmp: &Path) -> Result<Vec<u8>, SyncError> {
+    let _ = std::fs::remove_file(tmp);
+    conn.execute("vacuum into ?1", [tmp.to_string_lossy()])?;
+    let result = (|| {
+        let mut enc = GzEncoder::new(Vec::new(), Compression::default());
+        std::io::copy(&mut std::fs::File::open(tmp)?, &mut enc)?;
+        enc.finish()
+    })();
+    let _ = std::fs::remove_file(tmp);
+    Ok(result?)
+}
+
+/// Merges a downloaded snapshot (gzipped, from `export` on any device) into `conn`.
+/// `tmp` is a scratch path for the unpacked file. Returns the ids of local books
+/// removed because they were deleted elsewhere (their kept originals can go).
+pub fn merge(conn: &mut Connection, snapshot: &[u8], tmp: &Path) -> Result<Vec<i64>, SyncError> {
+    let _ = std::fs::remove_file(tmp);
+    let result = (|| {
+        let mut file = std::fs::File::create(tmp)?;
+        let mut raw = Vec::new();
+        GzDecoder::new(snapshot).read_to_end(&mut raw)?;
+        file.write_all(&raw)?;
+        drop(file);
+        // Brings a file from an older app up to this schema.
+        let remote = db::open(tmp)?;
+        let version: i64 = remote.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        remote.pragma_update(None, "journal_mode", "DELETE")?;
+        drop(remote);
+        if version > db::schema_version() {
+            return Err(SyncError::Outdated);
+        }
+        conn.execute("attach database ?1 as r", [tmp.to_string_lossy()])?;
+        let merged = (|| {
+            let tx = conn.transaction()?;
+            let gone = merge_attached(&tx)?;
+            super::reading::bump_rev(&tx)?;
+            tx.commit()?;
+            Ok::<_, SyncError>(gone)
+        })();
+        conn.execute("detach database r", [])?;
+        merged
+    })();
+    let _ = std::fs::remove_file(tmp);
+    result
+}
+
+fn merge_attached(tx: &Transaction) -> Result<Vec<i64>, SyncError> {
+    tx.execute_batch(
+        "
+        insert into main.tombstones (kind, key, deleted_at)
+          select kind, key, deleted_at from r.tombstones where true
+          on conflict (kind, key) do update set deleted_at = max(deleted_at, excluded.deleted_at);
+
+        insert or ignore into main.languages select * from r.languages;
+
+        -- Snapshots of online novels; a real one replaces a placeholder.
+        insert into main.online_novels (id, data, updated_at)
+          select id, data, updated_at from r.online_novels where true
+          on conflict (id) do update set data = excluded.data, updated_at = excluded.updated_at
+          where online_novels.data = 'null' and excluded.data <> 'null';
+
+        -- Favourites from the other device go after the ones here.
+        insert into main.online_favorites (novel_id, position, added_at)
+          select f.novel_id, f.position + 1 + (select coalesce(max(position), -1) from main.online_favorites), f.added_at
+          from r.online_favorites f where true
+          on conflict (novel_id) do update set added_at = max(added_at, excluded.added_at);
+        delete from main.online_favorites where exists (
+          select 1 from main.tombstones t
+          where t.kind = 'fav' and t.key = cast(online_favorites.novel_id as text)
+            and t.deleted_at > online_favorites.added_at);
+
+        insert into main.online_history (novel_id, chapter_number, last_read_at)
+          select novel_id, chapter_number, last_read_at from r.online_history where true
+          on conflict (novel_id) do update set
+            chapter_number = excluded.chapter_number, last_read_at = excluded.last_read_at
+          where excluded.last_read_at > online_history.last_read_at;
+        delete from main.online_history where exists (
+          select 1 from main.tombstones t
+          where t.kind = 'history' and t.key = cast(online_history.novel_id as text)
+            and t.deleted_at >= online_history.last_read_at);
+
+        delete from main.online_novels
+          where id not in (select novel_id from main.online_favorites)
+            and id not in (select novel_id from main.online_history);
+        ",
+    )?;
+
+    let remote_books: Vec<(i64, String, String)> = tx
+        .prepare(
+            "select n.id, n.book_key, n.updated_at from r.novels n
+             where n.book_key is not null and not exists (
+               select 1 from main.tombstones t where t.kind = 'book' and t.key = n.book_key)",
+        )?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (rid, key, updated_at) in remote_books {
+        let local: Option<(i64, String)> = tx
+            .query_row(
+                "select id, updated_at from main.novels where book_key = ?1",
+                [&key],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let lid = match local {
+            None => copy_book(tx, rid)?,
+            Some((lid, local_updated)) => {
+                if updated_at > local_updated {
+                    copy_details(tx, rid, lid)?;
+                }
+                lid
+            }
+        };
+        tx.execute(
+            "insert into main.reading_history (novel_id, chapter_id, chapter_number, lang, progress, last_read_at)
+             select ?2, c.id, h.chapter_number, h.lang, h.progress, h.last_read_at
+             from r.reading_history h join main.chapters c on c.novel_id = ?2 and c.number = h.chapter_number
+             where h.novel_id = ?1
+             on conflict (novel_id) do update set
+               chapter_id = excluded.chapter_id, chapter_number = excluded.chapter_number,
+               lang = excluded.lang, progress = excluded.progress, last_read_at = excluded.last_read_at
+             where excluded.last_read_at > reading_history.last_read_at",
+            params![rid, lid],
+        )?;
+    }
+
+    // Books deleted on another device.
+    let gone: Vec<i64> = tx
+        .prepare(
+            "select id from main.novels n where exists (
+               select 1 from main.tombstones t where t.kind = 'book' and t.key = n.book_key)",
+        )?
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    for id in &gone {
+        tx.execute("delete from main.novels where id = ?1", [id])?;
+    }
+    tx.execute(
+        "delete from main.authors where id not in (select author_id from main.novels)",
+        [],
+    )?;
+    Ok(gone)
+}
+
+/// The local author for remote book `rid`'s author, added when missing.
+fn author_for(tx: &Transaction, rid: i64) -> rusqlite::Result<i64> {
+    tx.execute(
+        "insert or ignore into main.authors (slug, name, created_at)
+         select a.slug, a.name, a.created_at from r.authors a join r.novels n on n.author_id = a.id
+         where n.id = ?1",
+        [rid],
+    )?;
+    tx.query_row(
+        "select m.id from main.authors m
+         join r.authors a on a.slug = m.slug join r.novels n on n.author_id = a.id
+         where n.id = ?1",
+        [rid],
+        |r| r.get(0),
+    )
+}
+
+/// Copies remote book `rid` with everything in it; returns the new local id.
+fn copy_book(tx: &Transaction, rid: i64) -> rusqlite::Result<i64> {
+    let author = author_for(tx, rid)?;
+    tx.execute(
+        "insert into main.novels (slug, author_id, category_slug, original_lang, status, published_year,
+           cover_url, cover_palette, chapter_count, created_at, updated_at, source_format, source_name, book_key)
+         select case when exists (select 1 from main.novels m where m.slug = n.slug)
+                  then n.slug || '-' || n.book_key else n.slug end,
+           ?2, category_slug, original_lang, status, published_year, cover_url, cover_palette,
+           chapter_count, created_at, updated_at, source_format, source_name, book_key
+         from r.novels n where n.id = ?1",
+        params![rid, author],
+    )?;
+    let lid = tx.last_insert_rowid();
+    tx.execute_batch(&format!(
+        "
+        insert into main.novel_translations (novel_id, lang, title, description, source, updated_at)
+          select {lid}, lang, title, description, source, updated_at
+          from r.novel_translations where novel_id = {rid};
+        insert into main.chapters (novel_id, number, display_number, published_at, created_at, updated_at)
+          select {lid}, number, display_number, published_at, created_at, updated_at
+          from r.chapters where novel_id = {rid};
+        insert into main.chapter_translations (chapter_id, lang, style, source, state, title, content,
+            word_count, model, created_at, updated_at)
+          select c.id, t.lang, t.style, t.source, t.state, t.title, t.content,
+            t.word_count, t.model, t.created_at, t.updated_at
+          from r.chapter_translations t
+          join r.chapters rc on rc.id = t.chapter_id
+          join main.chapters c on c.novel_id = {lid} and c.number = rc.number
+          where rc.novel_id = {rid};
+        insert into main.chapter_images (novel_id, key, mime, data)
+          select {lid}, key, mime, data from r.chapter_images where novel_id = {rid};
+        insert into main.glossary_entries (novel_id, term_key, lang, value, note, created_at, updated_at)
+          select {lid}, term_key, lang, value, note, created_at, updated_at
+          from r.glossary_entries where novel_id = {rid};
+        insert into main.replace_rules (novel_id, lang, find, replace, position)
+          select {lid}, lang, find, replace, position from r.replace_rules where novel_id = {rid};
+        "
+    ))?;
+    Ok(lid)
+}
+
+/// Takes the newer title, description and author of remote book `rid`.
+fn copy_details(tx: &Transaction, rid: i64, lid: i64) -> rusqlite::Result<()> {
+    let author = author_for(tx, rid)?;
+    tx.execute(
+        "update main.novels set author_id = ?2, updated_at = (select updated_at from r.novels where id = ?3)
+         where id = ?1",
+        params![lid, author, rid],
+    )?;
+    tx.execute(
+        "insert into main.novel_translations (novel_id, lang, title, description, source, updated_at)
+         select ?1, lang, title, description, source, updated_at from r.novel_translations where novel_id = ?2
+         on conflict (novel_id, lang) do update set
+           title = excluded.title, description = excluded.description, updated_at = excluded.updated_at",
+        params![lid, rid],
+    )?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::reading::{self, HistoryEntry, ReadingState, Snapshot};
+    use super::*;
+    use crate::book::image::Image;
+    use crate::book::{BookError, BookFormat, BookSource, Section, SectionMeta};
+
+    /// A two-chapter book with a picture.
+    struct Book;
+
+    impl BookSource for Book {
+        fn title(&self) -> Option<String> {
+            Some("Truyện thử".into())
+        }
+        fn sections(&self) -> Vec<SectionMeta> {
+            (0..2)
+                .map(|_| SectionMeta {
+                    label: None,
+                    pages: None,
+                    number: None,
+                })
+                .collect()
+        }
+        fn load(&mut self, index: usize) -> Result<Section, BookError> {
+            Ok(Section {
+                index,
+                paragraphs: vec![format!("Chương {}", index + 1), "\u{FFFC}a.png".into()],
+            })
+        }
+        fn image(&mut self, _key: &str) -> Result<Image, BookError> {
+            Ok(Image::sniff(b"\x89PNG".to_vec()))
+        }
+    }
+
+    /// A fresh library file standing for one device.
+    fn device(name: &str) -> (Connection, std::path::PathBuf) {
+        let path =
+            crate::book::test_dir().join(format!("sync-{name}-{}.sqlite3", std::process::id()));
+        for ext in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{ext}", path.display()));
+        }
+        (db::open(&path).unwrap(), path)
+    }
+
+    /// Copies `from`'s library into `to` as a sync would (export, then merge).
+    fn send(from: &Connection, from_path: &Path, to: &mut Connection, to_path: &Path) {
+        let bytes = export(from, &from_path.with_extension("out")).unwrap();
+        merge(to, &bytes, &to_path.with_extension("in")).unwrap();
+    }
+
+    fn state(conn: &Connection) -> ReadingState {
+        reading::load(conn).unwrap().unwrap_or_default()
+    }
+
+    fn save(conn: &mut Connection, favs: Vec<i64>, history: Vec<HistoryEntry>) {
+        // Each change gets its own millisecond, as on real devices.
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        let rev = state(conn).rev;
+        let novels = favs
+            .iter()
+            .chain(history.iter().map(|h| &h.id))
+            .map(|&id| Snapshot {
+                id,
+                data: serde_json::json!({ "id": id }),
+            })
+            .collect();
+        assert!(reading::save(
+            conn,
+            &ReadingState {
+                favs,
+                history,
+                novels,
+                rev
+            }
+        )
+        .unwrap());
+    }
+
+    fn h(id: i64, ch: i64, at: i64) -> HistoryEntry {
+        HistoryEntry { id, ch, at }
+    }
+
+    #[test]
+    fn merges_favourites_and_history_both_ways() {
+        let (mut a, pa) = device("fav-a");
+        let (mut b, pb) = device("fav-b");
+        save(&mut a, vec![1, 2], vec![h(1, 5, 100)]);
+        send(&a, &pa, &mut b, &pb);
+        assert_eq!(state(&b).favs, vec![1, 2]);
+
+        // A drops 2 and reads on; B adds 3 and reads 1 further, later.
+        save(&mut a, vec![1], vec![h(1, 6, 200)]);
+        save(&mut b, vec![1, 2, 3], vec![h(1, 9, 300), h(4, 1, 150)]);
+        send(&a, &pa, &mut b, &pb);
+        send(&b, &pb, &mut a, &pa);
+        for conn in [&a, &b] {
+            let s = state(conn);
+            let mut favs = s.favs.clone();
+            favs.sort();
+            assert_eq!(favs, vec![1, 3]);
+            assert_eq!(s.history, vec![h(1, 9, 300), h(4, 1, 150)]);
+        }
+    }
+
+    #[test]
+    fn a_save_from_before_the_sync_is_refused() {
+        let (mut a, pa) = device("rev-a");
+        let (mut b, pb) = device("rev-b");
+        save(&mut a, vec![7], vec![]);
+        let stale = state(&b).rev;
+        send(&a, &pa, &mut b, &pb);
+        let refused = ReadingState {
+            favs: vec![],
+            history: vec![],
+            novels: vec![],
+            rev: stale,
+        };
+        assert!(!reading::save(&mut b, &refused).unwrap());
+        assert_eq!(state(&b).favs, vec![7]);
+    }
+
+    #[test]
+    fn copies_books_and_keeps_deletions() {
+        let (mut a, pa) = device("book-a");
+        let (mut b, pb) = device("book-b");
+        let id =
+            super::super::import(&mut a, BookFormat::Txt, &mut Book, "thu.txt", |_, _| {}).unwrap();
+        super::super::save_progress(&a, id, 1, 0.5).unwrap();
+        send(&a, &pa, &mut b, &pb);
+
+        let books = super::super::list(&b).unwrap();
+        assert_eq!(books.len(), 1);
+        assert_eq!(books[0].title, "Truyện thử");
+        assert_eq!(
+            books[0].last_read.as_ref().map(|l| (l.index, l.progress)),
+            Some((1, 0.5))
+        );
+        let bid = books[0].novel_id;
+        let (chapters, pictures): (i64, i64) = b
+            .query_row(
+                "select (select count(*) from chapter_translations t join chapters c on c.id = t.chapter_id where c.novel_id = ?1),
+                        (select count(*) from chapter_images where novel_id = ?1)",
+                [bid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((chapters, pictures), (2, 1));
+
+        // Syncing again doesn't copy it twice; a rename on B wins over the older details on A.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        super::super::update_details(&mut b, bid, "Tên mới", "Tác giả", "").unwrap();
+        send(&b, &pb, &mut a, &pa);
+        let books = super::super::list(&a).unwrap();
+        assert_eq!(books.len(), 1);
+        assert_eq!(books[0].title, "Tên mới");
+        assert_eq!(books[0].author.as_deref(), Some("Tác giả"));
+
+        // Deleted on A: gone from B too, and not brought back by B's copy.
+        super::super::delete(&a, id).unwrap();
+        send(&b, &pb, &mut a, &pa);
+        assert!(super::super::list(&a).unwrap().is_empty());
+        send(&a, &pa, &mut b, &pb);
+        assert!(super::super::list(&b).unwrap().is_empty());
+    }
+
+    #[test]
+    fn refuses_a_file_from_a_newer_app() {
+        let (a, pa) = device("new-a");
+        let (mut b, pb) = device("new-b");
+        a.pragma_update(None, "user_version", db::schema_version() + 1)
+            .unwrap();
+        let bytes = export(&a, &pa.with_extension("out")).unwrap();
+        assert!(matches!(
+            merge(&mut b, &bytes, &pb.with_extension("in")),
+            Err(SyncError::Outdated)
+        ));
+    }
+}

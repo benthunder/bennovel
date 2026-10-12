@@ -116,6 +116,7 @@ dependencies = [
  "djvu-rs",
  "encoding_rs",
  "epub",
+ "flate2",
  "image",
  "libchm",
  "pdfium-render",

@@ -7,6 +7,7 @@ pub mod commands;
 pub mod db;
 pub mod folder;
 pub mod reading;
+pub mod sync;
 
 use crate::book::image::{self, Image};
 use crate::book::{BookError, BookFormat, BookSource, Section, SectionMeta};
@@ -155,8 +156,8 @@ pub fn import(
             r.get(0)
         })?;
     tx.execute(
-        "insert into novels (slug, author_id, original_lang, chapter_count, source_format, source_name)
-         values (?1, ?2, ?3, ?4, ?5, ?6)",
+        "insert into novels (slug, author_id, original_lang, chapter_count, source_format, source_name, book_key)
+         values (?1, ?2, ?3, ?4, ?5, ?6, lower(hex(randomblob(16))))",
         params![slug(&title), author_id, lang, total as i64, format_name, file_name],
     )?;
     let novel_id = tx.last_insert_rowid();
@@ -389,8 +390,15 @@ pub fn update_details(
 }
 
 /// Removes a book with its chapters, pictures and history; drops authors left with
-/// no books. The caller removes a kept original file.
+/// no books. The caller removes a kept original file. A tombstone keeps the next
+/// sync from bringing the book back from another device.
 pub fn delete(conn: &Connection, novel_id: i64) -> rusqlite::Result<()> {
+    conn.execute(
+        "insert into tombstones (kind, key, deleted_at)
+         select 'book', book_key, ?2 from novels where id = ?1 and book_key is not null
+         on conflict (kind, key) do update set deleted_at = excluded.deleted_at",
+        params![novel_id, db::now_ms()],
+    )?;
     conn.execute("delete from novels where id = ?1", [novel_id])?;
     conn.execute(
         "delete from authors where id not in (select author_id from novels)",
@@ -741,7 +749,7 @@ mod tests {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, db::schema_version());
         let langs: i64 = conn
             .query_row("select count(*) from languages", [], |r| r.get(0))
             .unwrap();

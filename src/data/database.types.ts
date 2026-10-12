@@ -268,11 +268,21 @@ export type Database = {
           { foreignKeyName: "translation_jobs_target_lang_fkey"; columns: ["target_lang"]; isOneToOne: false; referencedRelation: "languages"; referencedColumns: ["code"] },
         ]
       }
+      user_sync: {
+        Row: { object: string; size_bytes: number; updated_at: string; user_id: string; version: number }
+        Insert: { object: string; size_bytes?: number; updated_at?: string; user_id?: string; version: number }
+        Update: { object?: string; size_bytes?: number; updated_at?: string; user_id?: string; version?: number }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
     }
     Functions: {
+      commit_sync: {
+        Args: { expected: number; new_object: string; new_size: number }
+        Returns: number | null
+      }
       claim_translation_job: {
         Args: { worker_model?: string }
         Returns: TranslationJob

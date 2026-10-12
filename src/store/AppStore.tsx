@@ -4,8 +4,9 @@ import type { Category, CollectionKey, ContentLang, HistoryEntry, User } from '.
 import { findNovel, rememberNovels, type ListSource } from '../data/repository';
 import { useCatalog } from '../data/useCatalog';
 import { useT } from '../i18n';
-import { libraryUser, type LibraryPlace, type LocalBook } from '../lib/localBook';
+import { canOpenLocalBooks, libraryUser, type LibraryPlace, type LocalBook } from '../lib/localBook';
 import { loadReading, saveReading } from '../lib/readingStore';
+import { getSyncStatus, syncLibrary, SyncFailure } from '../lib/sync';
 import { claimGuestLibrary, signOut, takeRecovery, toUser } from '../lib/auth';
 import { supabase } from '../lib/supabase';
 
@@ -101,8 +102,8 @@ function useStored<T>(key: string, init: T | (() => T)) {
 
 /**
  * Keeps favourites and history in the user's reading store (SQLite in the native app)
- * with a snapshot of each novel, so they show offline. Loads when the user changes;
- * a user with nothing saved yet starts from the current lists.
+ * with a snapshot of each novel, so they show offline. Loads when the user changes and
+ * after a sync (`reload`); a user with nothing saved yet starts from the current lists.
  */
 function useReadingStore(
   user: string,
@@ -111,7 +112,11 @@ function useReadingStore(
   status: string
 ) {
   const loadedFor = useRef<string | null>(null);
+  /** Version of the lists as loaded; saves from older lists are refused after a sync. */
+  const rev = useRef(0);
   const [loads, setLoads] = useState(0);
+  const [reloads, setReloads] = useState(0);
+  const reload = useCallback(() => setReloads(n => n + 1), []);
 
   useEffect(() => {
     let gone = false;
@@ -123,6 +128,7 @@ function useReadingStore(
     };
     loadReading(user).then(state => {
       if (gone) return;
+      rev.current = state?.rev ?? 0;
       if (state) {
         rememberNovels(state.novels);
         setFavs(state.favs);
@@ -131,15 +137,19 @@ function useReadingStore(
       done();
     }, e => { console.error(e); done(); });
     return () => { gone = true; };
-  }, [user]);
+  }, [user, reloads]);
 
   // Saves after every change, and again once the catalog has loaded to refresh the snapshots.
   useEffect(() => {
     if (loadedFor.current !== user) return;
     const ids = [...new Set([...favs, ...history.map(h => h.id)])];
     const novels = ids.map(id => ({ id, data: findNovel(id) ?? null }));
-    saveReading(user, { favs, history, novels }).catch(console.error);
-  }, [user, favs, history, status, loads]);
+    saveReading(user, { favs, history, novels, rev: rev.current })
+      .then(saved => { if (saved === false) reload(); })
+      .catch(console.error);
+  }, [user, favs, history, status, loads, reload]);
+
+  return reload;
 }
 
 function useAppState() {
@@ -152,7 +162,7 @@ function useAppState() {
   const [contentLang, setContentLang] = useStored<ContentLang | null>('defaultLang', null);
   const [readerPrefs, setReaderPrefs] = useStored<ReaderPrefs>('readerPrefs', DEFAULT_READER_PREFS);
   const [localLast, setLocalLast] = useStored<LocalLast | null>('localLast', null);
-  useReadingStore(libraryUser(user), favs, setFavs, history, setHistory, catalog.status);
+  const reloadReading = useReadingStore(libraryUser(user), favs, setFavs, history, setHistory, catalog.status);
 
   // The app opens on the library (books on the device and saved novels).
   const [stack, setStack] = useState<Route[]>(() => [load('onboarded', false) || user ? { s: 'library' } : { s: 'login' }]);
@@ -259,6 +269,38 @@ function useAppState() {
     return !was;
   }, [favs, setFavs]);
 
+  const [syncing, setSyncing] = useState(false);
+  /** Epoch ms of this library's last sync, null before the first. */
+  const [syncedAt, setSyncedAt] = useState<number | null>(null);
+  /** Bumped after a sync, so screens list the library books again. */
+  const [libraryRev, setLibraryRev] = useState(0);
+  /** Sync needs an account and the library file of the native app. */
+  const canSync = !!user?.id && canOpenLocalBooks();
+  const libKey = libraryUser(user);
+  useEffect(() => {
+    setSyncedAt(null);
+    if (!canSync) return;
+    let gone = false;
+    getSyncStatus(libKey).then(s => { if (!gone) setSyncedAt(s.syncedAt); }, console.error);
+    return () => { gone = true; };
+  }, [canSync, libKey]);
+
+  const syncNow = useCallback(async () => {
+    if (!canSync || !user?.id || syncing) return;
+    setSyncing(true);
+    try {
+      setSyncedAt(await syncLibrary(libKey, user.id));
+      showToast(tr('sync.done'));
+    } catch (e) {
+      showToast(tr(e instanceof SyncFailure ? e.key : 'sync.err.generic'));
+    } finally {
+      // A sync that failed after merging still changed the lists here.
+      reloadReading();
+      setLibraryRev(n => n + 1);
+      setSyncing(false);
+    }
+  }, [canSync, user?.id, syncing, libKey, showToast, tr, reloadReading]);
+
   const markLocalRead = useCallback((e: Omit<LocalLast, 'at'>) => setLocalLast({ ...e, at: Date.now() }), [setLocalLast]);
   const forgetLocal = useCallback((novelId: number) => setLocalLast(l => (l?.novelId === novelId ? null : l)), [setLocalLast]);
 
@@ -271,7 +313,8 @@ function useAppState() {
     top: stack[stack.length - 1], canBack: stack.length > 1,
     push, back, switchTab, openDetail, openCategory, openAuthor, openCollection,
     openChapter, goReader, setReaderLang, setContentLang, setLangDialog, setReaderPrefs,
-    signedIn, skipLogin, logout, toggleFav, showToast, markLocalRead, forgetLocal
+    signedIn, skipLogin, logout, toggleFav, showToast, markLocalRead, forgetLocal,
+    canSync, syncing, syncedAt, libraryRev, syncNow
   };
 }
 

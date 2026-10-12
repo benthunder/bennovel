@@ -26,6 +26,24 @@ pub struct ReadingState {
     /// Most recent first.
     pub history: Vec<HistoryEntry>,
     pub novels: Vec<Snapshot>,
+    /// Bumped when a sync changes the lists, so a save from lists loaded before it is
+    /// refused instead of undoing the sync. Absent (0) until the first sync.
+    #[serde(default)]
+    pub rev: i64,
+}
+
+const REV: &str = "reading_rev";
+
+pub fn rev(conn: &Connection) -> rusqlite::Result<i64> {
+    Ok(super::db::get_state(conn, REV)?
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0))
+}
+
+/// Marks the lists as changed by a sync (see `ReadingState::rev`).
+pub fn bump_rev(conn: &Connection) -> rusqlite::Result<()> {
+    let next = rev(conn)? + 1;
+    super::db::set_state(conn, REV, &next.to_string())
 }
 
 impl ReadingState {
@@ -58,14 +76,45 @@ pub fn load(conn: &Connection) -> rusqlite::Result<Option<ReadingState>> {
         favs,
         history,
         novels,
+        rev: rev(conn)?,
     };
-    Ok(if state.is_empty() { None } else { Some(state) })
+    // Lists emptied by a sync are still a saved state.
+    Ok(if state.is_empty() && state.rev == 0 {
+        None
+    } else {
+        Some(state)
+    })
 }
 
 /// Replaces the saved state. Snapshots are updated for the novels given and kept for
-/// others still listed; novels no longer in favourites or history are dropped.
-pub fn save(conn: &mut Connection, state: &ReadingState) -> rusqlite::Result<()> {
+/// others still listed; novels no longer in favourites or history are dropped, and
+/// what was removed is remembered for sync. Returns false (and saves nothing) when the
+/// state was loaded before the last sync.
+pub fn save(conn: &mut Connection, state: &ReadingState) -> rusqlite::Result<bool> {
     let tx = conn.transaction()?;
+    if state.rev != rev(&tx)? {
+        return Ok(false);
+    }
+    let now = super::db::now_ms();
+    let old_favs: std::collections::HashMap<i64, i64> = tx
+        .prepare("select novel_id, added_at from online_favorites")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let old_history: Vec<i64> = tx
+        .prepare("select novel_id from online_history")?
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let tombstone = "insert into tombstones (kind, key, deleted_at) values (?1, ?2, ?3)
+                     on conflict (kind, key) do update set deleted_at = excluded.deleted_at";
+    for id in old_favs.keys().filter(|id| !state.favs.contains(id)) {
+        tx.execute(tombstone, params!["fav", id.to_string(), now])?;
+    }
+    for id in old_history
+        .iter()
+        .filter(|id| !state.history.iter().any(|h| h.id == **id))
+    {
+        tx.execute(tombstone, params!["history", id.to_string(), now])?;
+    }
     tx.execute("delete from online_favorites", [])?;
     tx.execute("delete from online_history", [])?;
     for n in state.novels.iter().filter(|n| !n.data.is_null()) {
@@ -82,8 +131,8 @@ pub fn save(conn: &mut Connection, state: &ReadingState) -> rusqlite::Result<()>
     for (pos, id) in state.favs.iter().enumerate() {
         tx.execute(ensure, [id])?;
         tx.execute(
-            "insert or ignore into online_favorites (novel_id, position) values (?1, ?2)",
-            params![id, pos as i64],
+            "insert or ignore into online_favorites (novel_id, position, added_at) values (?1, ?2, ?3)",
+            params![id, pos as i64, old_favs.get(id).copied().unwrap_or(now)],
         )?;
     }
     for h in &state.history {
@@ -98,7 +147,8 @@ pub fn save(conn: &mut Connection, state: &ReadingState) -> rusqlite::Result<()>
            and id not in (select novel_id from online_history)",
         [],
     )?;
-    tx.commit()
+    tx.commit()?;
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -156,6 +206,7 @@ mod tests {
                 snap(11, "Eleven"),
                 snap(99, "Gone"),
             ],
+            rev: 0,
         };
         save(&mut c, &state).unwrap();
         let got = load(&c).unwrap().unwrap();
@@ -176,6 +227,7 @@ mod tests {
                     at: 300,
                 }],
                 novels: vec![],
+                rev: 0,
             },
         )
         .unwrap();
@@ -197,6 +249,7 @@ mod tests {
                 favs: vec![5],
                 history: vec![],
                 novels: vec![],
+                rev: 0,
             },
         )
         .unwrap();

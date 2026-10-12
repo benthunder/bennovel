@@ -157,7 +157,62 @@ create table online_history (
   last_read_at   integer not null
 );
 "#,
+    r#"
+-- Sync (see sync.rs): the library file is merged with the copy in Supabase Storage.
+-- A book is the same on every device by its key, since ids are only local.
+alter table novels add column book_key text;
+update novels set book_key = lower(hex(randomblob(16)));
+create unique index novels_book_key on novels (book_key);
+
+-- When a favourite was added (epoch ms; 0 for those saved before sync existed).
+alter table online_favorites add column added_at integer not null default 0;
+
+-- Removals, so a merge doesn't bring back what was removed on another device.
+-- `key` is the novel id (fav, history) or book_key (book); time in epoch ms.
+create table tombstones (
+  kind       text not null check (kind in ('fav', 'history', 'book')),
+  key        text not null,
+  deleted_at integer not null,
+  primary key (kind, key)
+);
+
+-- Local only: sync bookkeeping (last synced version, reading_rev…).
+create table sync_state (
+  key   text primary key,
+  value text not null
+);
+"#,
 ];
+
+/// Epoch milliseconds now.
+pub fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Schema version this app writes (`PRAGMA user_version` after migrating).
+pub fn schema_version() -> i64 {
+    MIGRATIONS.len() as i64
+}
+
+pub fn get_state(conn: &Connection, key: &str) -> rusqlite::Result<Option<String>> {
+    use rusqlite::OptionalExtension;
+    conn.query_row("select value from sync_state where key = ?1", [key], |r| {
+        r.get(0)
+    })
+    .optional()
+}
+
+pub fn set_state(conn: &Connection, key: &str, value: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "insert into sync_state (key, value) values (?1, ?2)
+         on conflict (key) do update set value = excluded.value",
+        [key, value],
+    )?;
+    Ok(())
+}
 
 pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     if let Some(dir) = path.parent() {
