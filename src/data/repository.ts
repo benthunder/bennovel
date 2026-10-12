@@ -4,6 +4,7 @@
 // fetched on demand. Until it has loaded (or when offline) the catalog is empty.
 import { supabase } from '../lib/supabase';
 import { load, save } from '../lib/storage';
+import { findDownload, offlineChapter, offlineChapters, offlineGlossary } from '../lib/offline';
 import type {
   Category, ChapterInfo, ChapterText, CollectionKey, ContentLang, ContentLangInfo, GlossaryTerm, Novel, NovelStatus, ReplaceRule, UiLang
 } from './types';
@@ -173,8 +174,22 @@ export function listNovels(src: ListSource, f: ListFilter): Novel[] {
 export const sameCategory = (n: Novel) => allNovels().filter(x => x.cat === n.cat && x.id !== n.id);
 export const sameAuthor = (n: Novel) => allNovels().filter(x => x.author === n.author && x.id !== n.id);
 
+/** A downloaded novel is read from the device: always when complete, else only offline. */
+const readsDownload = (novelId: number) => {
+  const d = findDownload(novelId);
+  return !!d && (d.complete || !navigator.onLine);
+};
+
 /** Released chapters with titles in `lang`, falling back to the original text's title. */
 export async function getChapterList(novelId: number, lang: ContentLang | null): Promise<ChapterInfo[]> {
+  if (readsDownload(novelId)) {
+    const byNumber = new Map<number, Awaited<ReturnType<typeof offlineChapters>>>();
+    for (const c of await offlineChapters(novelId)) byNumber.set(c.number, [...(byNumber.get(c.number) ?? []), c]);
+    return [...byNumber].map(([number, tr]) => {
+      const t = tr.find(x => x.lang === lang) ?? tr.find(x => x.source === 'original') ?? tr[0];
+      return { number, title: t.title, words: t.words };
+    });
+  }
   const rows = must(await supabase.from('chapters')
     .select('number, chapter_translations(lang, source, title, word_count)')
     .eq('novel_id', novelId)
@@ -188,6 +203,11 @@ export async function getChapterList(novelId: number, lang: ContentLang | null):
 
 /** One chapter's text in `lang`, or null when that language has no published text. */
 export async function getChapterText(novelId: number, number: number, lang: ContentLang): Promise<ChapterText | null> {
+  if (findDownload(novelId)) {
+    const t = await offlineChapter(novelId, number, lang);
+    if (t) return toChapterText(t.title, t.content);
+    if (readsDownload(novelId)) return null;
+  }
   const { data: t, error } = await supabase.from('chapter_translations')
     .select('title, content, chapters!inner(novel_id, number)')
     .eq('lang', lang)
@@ -196,12 +216,17 @@ export async function getChapterText(novelId: number, number: number, lang: Cont
     .maybeSingle();
   if (error) throw new Error(`Loading chapter failed: ${error.message}`);
   if (!t) return null;
-  return { title: t.title, paragraphs: t.content.split(/\n\s*\n/).map(p => p.trim()).filter(Boolean) };
+  return toChapterText(t.title, t.content);
 }
+
+const toChapterText = (title: string, content: string): ChapterText =>
+  ({ title, paragraphs: content.split(/\n\s*\n/).map(p => p.trim()).filter(Boolean) });
 
 /** A novel's glossary: term key → name in each content language. */
 export async function getGlossary(novelId: number): Promise<Record<string, GlossaryTerm>> {
-  const rows = must(await supabase.from('glossary_entries').select('term_key, lang, value').eq('novel_id', novelId), 'glossary');
+  const rows = readsDownload(novelId)
+    ? (await offlineGlossary(novelId)).map(g => ({ term_key: g.key, lang: g.lang, value: g.value }))
+    : must(await supabase.from('glossary_entries').select('term_key, lang, value').eq('novel_id', novelId), 'glossary');
   const out: Record<string, GlossaryTerm> = {};
   for (const r of rows) (out[r.term_key] ??= {})[r.lang as ContentLang] = r.value;
   return out;

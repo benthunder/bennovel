@@ -47,12 +47,17 @@ pub fn export(conn: &Connection, tmp: &Path) -> Result<Vec<u8>, SyncError> {
     let _ = std::fs::remove_file(tmp);
     conn.execute("vacuum into ?1", [tmp.to_string_lossy()])?;
     let result = (|| {
+        // Downloaded online novels stay on this device.
+        let copy = Connection::open(tmp)?;
+        super::offline::strip(&copy)?;
+        copy.execute("vacuum", [])?;
+        drop(copy);
         let mut enc = GzEncoder::new(Vec::new(), Compression::default());
         std::io::copy(&mut std::fs::File::open(tmp)?, &mut enc)?;
-        enc.finish()
+        Ok::<_, SyncError>(enc.finish()?)
     })();
     let _ = std::fs::remove_file(tmp);
-    Ok(result?)
+    result
 }
 
 /// Merges a downloaded snapshot (gzipped, from `export` on any device) into `conn`.
@@ -365,6 +370,33 @@ mod tests {
             assert_eq!(favs, vec![1, 3]);
             assert_eq!(s.history, vec![h(1, 9, 300), h(4, 1, 150)]);
         }
+    }
+
+    #[test]
+    fn downloads_stay_on_the_device() {
+        use super::super::offline;
+        let (mut a, pa) = device("dl-a");
+        let (mut b, pb) = device("dl-b");
+        let started = offline::start(&a, 9, &serde_json::json!({ "id": 9 }), 1).unwrap();
+        offline::add(
+            &mut a,
+            9,
+            &[offline::ChapterRow {
+                number: 1,
+                lang: "en".into(),
+                source: "original".into(),
+                title: "One".into(),
+                content: "Text.".into(),
+                words: 1,
+            }],
+        )
+        .unwrap();
+        offline::finish(&mut a, 9, started).unwrap();
+        send(&a, &pa, &mut b, &pb);
+        assert!(offline::list(&b).unwrap().is_empty());
+        // Merging a snapshot back doesn't drop A's own download either.
+        send(&b, &pb, &mut a, &pa);
+        assert_eq!(offline::list(&a).unwrap().len(), 1);
     }
 
     #[test]
