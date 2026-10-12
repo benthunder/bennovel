@@ -317,4 +317,10 @@ export const vi: Record<MessageKey, string> = {
   'book.viewText': 'Chữ',
   'book.page': 'Trang {n}',
   'book.translateSoon': 'Dịch AI cho sách nhập sẽ có sớm.',
+  'bookDetail.onDevice': 'Sách trên máy',
+  'bookDetail.continue': 'Đọc tiếp · {name}',
+  'bookDetail.progress': 'Đã đọc',
+  'bookDetail.format': 'Định dạng',
+  'bookDetail.addDescription': 'Thêm giới thiệu',
+  'bookDetail.file': 'Tệp: {name}',
 };

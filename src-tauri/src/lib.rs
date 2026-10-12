@@ -59,6 +59,7 @@ pub fn run() {
             library::commands::library_import_folder,
             library::commands::library_import_android_folder,
             library::commands::library_open,
+            library::commands::library_detail,
             library::commands::library_save_progress,
             library::commands::library_update,
             library::commands::library_delete,

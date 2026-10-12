@@ -315,6 +315,12 @@ export const en = {
   'book.viewText': 'Text',
   'book.page': 'Page {n}',
   'book.translateSoon': 'AI translation for imported books is coming soon.',
+  'bookDetail.onDevice': 'On this device',
+  'bookDetail.continue': 'Continue · {name}',
+  'bookDetail.progress': 'Read',
+  'bookDetail.format': 'Format',
+  'bookDetail.addDescription': 'Add a description',
+  'bookDetail.file': 'File: {name}',
 };
 
 export type MessageKey = keyof typeof en;
