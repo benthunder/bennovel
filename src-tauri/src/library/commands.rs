@@ -412,12 +412,13 @@ pub async fn reading_load<R: Runtime>(
     blocking(move || Ok(super::reading::load(&db::open(&path)?)?)).await
 }
 
+/// False when the lists were loaded before the last sync and must be reloaded.
 #[tauri::command]
 pub async fn reading_save<R: Runtime>(
     app: AppHandle<R>,
     user: String,
     state: super::reading::ReadingState,
-) -> Result<(), BookError> {
+) -> Result<bool, BookError> {
     let path = db_path(&app, &user)?;
     blocking(move || Ok(super::reading::save(&mut db::open(&path)?, &state)?)).await
 }
@@ -446,4 +447,118 @@ fn claim_guest(guest: &Path, own: &Path) -> Result<bool, BookError> {
         let _ = std::fs::remove_file(guest.with_extension(ext));
     }
     Ok(true)
+}
+
+impl From<super::sync::SyncError> for BookError {
+    fn from(e: super::sync::SyncError) -> Self {
+        match e {
+            super::sync::SyncError::Db(e) => BookError::Db(e),
+            super::sync::SyncError::Io(e) => BookError::Io(e),
+            // The app looks for this word to ask for an update.
+            super::sync::SyncError::Outdated => BookError::Parse("sync-outdated".into()),
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncStatus {
+    /// Server version this library was last synced with (0 = never).
+    pub last_version: i64,
+    /// Epoch ms of the last sync.
+    pub synced_at: Option<i64>,
+}
+
+#[tauri::command]
+pub async fn sync_status<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+) -> Result<SyncStatus, BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || {
+        let (last_version, synced_at) = super::sync::status(&db::open(&path)?)?;
+        Ok(SyncStatus {
+            last_version,
+            synced_at,
+        })
+    })
+    .await
+}
+
+/// The library file as a gzipped snapshot, sent to the app as raw bytes for upload.
+#[tauri::command]
+pub async fn sync_export<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+) -> Result<tauri::ipc::Response, BookError> {
+    let path = db_path(&app, &user)?;
+    let tmp = path.with_extension("sync-out");
+    blocking(move || {
+        Ok(tauri::ipc::Response::new(super::sync::export(
+            &db::open(&path)?,
+            &tmp,
+        )?))
+    })
+    .await
+}
+
+/// Merges a downloaded snapshot (the raw request body) into the library of the user
+/// named in the `x-user` header (URI-encoded).
+#[tauri::command]
+pub async fn sync_merge<R: Runtime>(
+    app: AppHandle<R>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<(), BookError> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err(BookError::Parse("expected the snapshot bytes".into()));
+    };
+    let user = request
+        .headers()
+        .get("x-user")
+        .and_then(|v| v.to_str().ok())
+        .map(percent_decode)
+        .unwrap_or_default();
+    let bytes = bytes.clone();
+    let path = db_path(&app, &user)?;
+    let tmp = path.with_extension("sync-in");
+    blocking(move || {
+        let gone = super::sync::merge(&mut db::open(&path)?, &bytes, &tmp)?;
+        for id in gone {
+            if let Some(file) = super::original_file(&path, id) {
+                let _ = std::fs::remove_file(file);
+            }
+        }
+        Ok(())
+    })
+    .await
+}
+
+/// Records that the library now matches server version `version`.
+#[tauri::command]
+pub async fn sync_mark<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    version: i64,
+) -> Result<(), BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || Ok(super::sync::mark_synced(&db::open(&path)?, version)?)).await
+}
+
+/// Decodes %XX escapes (the user name travels in a header).
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(b) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(b);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }

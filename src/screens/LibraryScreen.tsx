@@ -63,9 +63,10 @@ function DeviceBooks({ onOpenFile }: { onOpenFile: () => void }) {
   const [importing, setImporting] = useState<{ done: number; total: number } | null>(null);
   const [editing, setEditing] = useState<LibraryBook | null>(null);
 
+  // Listed again after a sync, which can add or remove books.
   const reload = useCallback(() => {
     listLibrary(user).then(setBooks).catch(e => { console.error(e); setBooks([]); });
-  }, [user]);
+  }, [user, app.libraryRev]);
   useEffect(reload, [reload]);
 
   const fail = (key: 'book.openFailed' | 'library.importFailed', e: unknown) => {

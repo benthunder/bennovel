@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { GlobeIcon, LanguagesIcon, LogOutIcon } from '../components/Icons';
+import { GlobeIcon, LanguagesIcon, LogOutIcon, RefreshIcon } from '../components/Icons';
 import { NovelCover } from '../components/NovelCover';
 import { UiLangDialog, uiLangLabel } from '../components/UiLangDialog';
 import { CoverGrid, Segmented } from '../components/ui';
@@ -44,6 +44,7 @@ export function ProfileScreen() {
               <button className="btn btn-primary" style={{ height: 44, padding: '0 22px' }} onClick={() => app.push({ s: 'login' })}>{t('profile.loginCta')}</button>
             </div>
           )}
+          {app.canSync && <SyncCard />}
         </div>
 
         <Segmented value={tab} onChange={setTab} style={{ gridArea: 'tabs' }} optStyle={{ padding: 10 }}
@@ -99,6 +100,25 @@ export function ProfileScreen() {
   );
 }
 
+/** The Sync button: brings this device's library and the account's copy together. */
+function SyncCard() {
+  const { t } = useI18n();
+  const app = useApp();
+  const status = app.syncing ? t('sync.syncing') : app.syncedAt ? t('sync.last', { time: relativeTime(t, app.syncedAt) }) : t('sync.never');
+  return (
+    <div style={{ marginTop: 12, borderRadius: 28, background: 'var(--color-surface)', padding: '12px 12px 12px 18px', display: 'flex', alignItems: 'center', gap: 12 }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 14, fontWeight: 700 }}>{status}</div>
+        <div className="muted" style={{ fontSize: 12 }}>{t('sync.hint')}</div>
+      </div>
+      <button className="btn btn-primary" style={{ height: 40, padding: '0 16px', gap: 8, flex: 'none' }} disabled={app.syncing} onClick={app.syncNow}>
+        <RefreshIcon size={16} style={app.syncing ? { animation: 'nxspin 1s linear infinite' } : undefined} />
+        {t('sync.button')}
+      </button>
+    </div>
+  );
+}
+
 interface HistoryRow {
   key: string;
   title: string;
@@ -126,7 +146,7 @@ function useHistoryRows(): HistoryRow[] {
     let gone = false;
     listLibrary(user).then(b => { if (!gone) setBooks(b); }, console.error);
     return () => { gone = true; };
-  }, [user]);
+  }, [user, app.libraryRev]);
 
   const online = app.history.flatMap((h): HistoryRow[] => {
     const n = findNovel(h.id);
