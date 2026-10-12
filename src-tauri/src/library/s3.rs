@@ -140,11 +140,14 @@ struct Client<'a> {
 
 impl<'a> Client<'a> {
     fn new(config: &'a Config) -> Self {
-        let agent = ureq::AgentBuilder::new()
+        let builder = ureq::AgentBuilder::new()
+            .try_proxy_from_env(true)
             .timeout_connect(Duration::from_secs(15))
             .timeout_read(Duration::from_secs(120))
-            .timeout_write(Duration::from_secs(300))
-            .build();
+            .timeout_write(Duration::from_secs(300));
+        #[cfg(test)]
+        let builder = tests::with_test_ca(builder);
+        let agent = builder.build();
         Self { config, agent }
     }
 
@@ -402,6 +405,26 @@ fn authorization(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Trusts the certificates in `S3_TEST_CA` (a PEM file) too, when it is set.
+    pub(super) fn with_test_ca(builder: ureq::AgentBuilder) -> ureq::AgentBuilder {
+        use rustls_pki_types::{pem::PemObject, CertificateDer};
+        let Ok(file) = std::env::var("S3_TEST_CA") else {
+            return builder;
+        };
+        let mut roots = rustls::RootCertStore::empty();
+        for cert in CertificateDer::pem_file_iter(file).unwrap() {
+            let _ = roots.add(cert.unwrap());
+        }
+        let config = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+        builder.tls_config(std::sync::Arc::new(config))
+    }
 
     #[test]
     fn signs_like_the_aws_example() {

@@ -254,6 +254,8 @@ dependencies = [
  "pdfium-render",
  "quick-xml",
  "rusqlite",
+ "rustls",
+ "rustls-pki-types",
  "serde",
  "serde_json",
  "sha2",
