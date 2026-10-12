@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { ChapterSheet, useSectionName } from '../components/ChapterSheet';
 import { ChevronLeftIcon, DownloadIcon, ListIcon, SlidersIcon } from '../components/Icons';
 import { ReaderChrome, ReaderStatusBar, useImmersive } from '../components/ReaderChrome';
@@ -9,7 +9,7 @@ import { CONTENT_LANGS, type ContentLang, type ReplaceRule } from '../data/types
 import { useT } from '../i18n';
 import {
   bookImageUrl, bookPageUrl, closeLocalBook, getLocalSection, imageKey, importBookPath, libraryUser, openLibraryBook, saveLibraryProgress,
-  type LibraryPlace, type LocalBook
+  type LibraryPlace, type LocalBook, type LocalSectionMeta
 } from '../lib/localBook';
 import { load, save as store } from '../lib/storage';
 import { useAsync } from '../lib/useAsync';
@@ -38,6 +38,9 @@ const pageWidth = () => Math.min(2400, Math.ceil((window.innerWidth * (window.de
 
 const NO_GLOSSARY = {};
 
+/** Parts kept on screen at once; the reader adds the next one as you near the end. */
+const MAX_PARTS = 6;
+
 /**
  * Reads a book file opened from the device, or a book from the on-device library
  * (`place` set: it resumes where it was left and saves the position as you read).
@@ -59,7 +62,15 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
   const line = night ? 'var(--color-neutral-700)' : 'color-mix(in srgb, currentColor 14%, transparent)';
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  const [index, setIndex] = useState(place?.index ?? 0);
+  // The book reads as one long scroll: `span` holds the parts on screen, `index` the
+  // one at the top of the view (shown in the header, saved as the reading place).
+  const start = place?.index ?? 0;
+  const [span, setSpan] = useState<[number, number]>([start, start]);
+  const spanRef = useRef(span);
+  spanRef.current = span;
+  const [index, setIndex] = useState(start);
+  // Bumped on a jump so every part remounts and the target part scrolls into place.
+  const [gen, setGen] = useState(0);
   const [tools, setTools] = useState<ToolsTab | null>(null);
   const [toc, setToc] = useState(false);
   const sectionName = useSectionName();
@@ -78,27 +89,101 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
   const fix = (text: string) => applyReplaceRules(text, rules);
   // PDF/DjVu: the original pages as pictures, or the extracted text.
   const [view, setViewState] = useState<View>(() => (book.pageImages ? loadView() : 'text'));
-  const setView = (v: View) => {
-    setViewState(v);
-    try { localStorage.setItem(VIEW_KEY, v); } catch { /* private mode */ }
-  };
   const showPages = book.pageImages && view === 'pages';
   const total = book.sections.length;
   const meta = book.sections[index];
-  const sectionQ = useAsync(() => getLocalSection(book.id, index), [book.id, index]);
   // Leaving the reader frees the file and every cached section.
   useEffect(() => () => { closeLocalBook(book.id).catch(console.error); }, [book.id]);
 
-  // Scroll position to restore once the first section has rendered (library books only).
-  const restore = useRef(place?.progress ?? 0);
-  const ready = sectionQ.status === 'ready';
-  useEffect(() => {
+  // Where to land once part `target` has rendered: `progress` through it (library books
+  // resume where they were left; a jump starts at the top).
+  const landing = useRef<{ target: number; progress: number } | null>({ target: start, progress: place?.progress ?? 0 });
+  // The part at the top of the view and how far into it (share of its height), kept
+  // while parts load, pictures size themselves or parts are added and dropped above.
+  const anchor = useRef<{ i: number; frac: number } | null>(null);
+  const partEl = (i: number) => scrollRef.current?.querySelector<HTMLElement>(`[data-part="${i}"]`) ?? null;
+
+  /** The part under the header and how far through it, as the bar shows it. */
+  const measure = () => {
     const el = scrollRef.current;
-    if (!el || !ready) return;
-    const max = el.scrollHeight - el.clientHeight;
-    el.scrollTo({ top: restore.current > 0 && max > 0 ? restore.current * max : 0 });
-    restore.current = 0;
-  }, [index, ready]);
+    if (!el) return null;
+    const parts = el.querySelectorAll<HTMLElement>('[data-part]');
+    let part: HTMLElement | undefined;
+    for (const p of parts) {
+      if (!part || p.offsetTop <= el.scrollTop + chromeH + 1) part = p;
+      else break;
+    }
+    if (!part) return null;
+    const top = part.offsetTop, h = part.offsetHeight;
+    const progress = Math.min(1, Math.max(0, (el.scrollTop - top) / Math.max(1, h - el.clientHeight)));
+    return { i: Number(part.dataset.part), top, h, progress };
+  };
+
+  /** Adds the next part when the end is near, the previous one near the top. */
+  const grow = () => {
+    const el = scrollRef.current;
+    if (!el || landing.current) return;
+    const [a, b] = spanRef.current;
+    let next: [number, number] | null = null;
+    if (b < total - 1 && partEl(b)?.dataset.ready && el.scrollHeight - el.scrollTop - el.clientHeight < el.clientHeight * 1.5) {
+      next = [Math.max(a, b + 2 - MAX_PARTS), b + 1];
+    } else if (a > 0 && partEl(a)?.dataset.ready && el.scrollTop < el.clientHeight) {
+      next = [a - 1, Math.min(b, a - 2 + MAX_PARTS)];
+    }
+    if (next) {
+      spanRef.current = next;
+      setSpan(next);
+    }
+  };
+
+  /** Puts the anchored part back where it was after the content above it changed size. */
+  const keep = () => {
+    const el = scrollRef.current, a = anchor.current;
+    const part = a && partEl(a.i);
+    if (!el || !part) return;
+    const top = part.offsetTop + a.frac * part.offsetHeight;
+    if (Math.abs(el.scrollTop - top) > 1) el.scrollTop = top;
+  };
+
+  const onPartReady = (i: number) => {
+    const el = scrollRef.current, l = landing.current, part = partEl(i);
+    if (el && l && l.target === i && part) {
+      landing.current = null;
+      el.scrollTop = part.offsetTop + l.progress * Math.max(0, part.offsetHeight - el.clientHeight);
+      anchor.current = { i, frac: (el.scrollTop - part.offsetTop) / Math.max(1, part.offsetHeight) };
+      setReadPct(l.progress);
+      save(i, l.progress);
+    }
+    grow();
+  };
+
+  /** Opens part `i` on its own, at its top (chapter list, switching the view). */
+  const jump = (i: number) => {
+    landing.current = { target: i, progress: 0 };
+    anchor.current = null;
+    spanRef.current = [i, i];
+    setSpan([i, i]);
+    setIndex(i);
+    setGen(g => g + 1);
+  };
+
+  // Watches the content's height once; the callback reads the latest render's helpers.
+  const contentRef = useRef<HTMLDivElement>(null);
+  const onResize = useRef(() => {});
+  onResize.current = () => { keep(); grow(); };
+  useEffect(() => {
+    const content = contentRef.current;
+    if (!content) return;
+    const ro = new ResizeObserver(() => onResize.current());
+    ro.observe(content);
+    return () => ro.disconnect();
+  }, []);
+
+  const setView = (v: View) => {
+    setViewState(v);
+    try { localStorage.setItem(VIEW_KEY, v); } catch { /* private mode */ }
+    jump(index);
+  };
 
   // Library books remember the part and how far into it you scrolled. Saves are
   // batched while scrolling and flushed when you leave.
@@ -110,30 +195,28 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
     pending.current = null;
     if (place && p) saveLibraryProgress(place.user, place.novelId, p.index, p.progress).catch(console.error);
   };
-  const save = (progress: number) => {
+  const save = (index: number, progress: number) => {
     if (!place) return;
     pending.current = { index, progress };
     window.clearTimeout(saveTimer.current);
     saveTimer.current = window.setTimeout(flush, 600);
   };
-  // The bar shows how far into this chapter, like the online reader.
-  useEffect(() => {
-    if (!ready) return;
-    const progress = currentProgress(scrollRef.current);
-    setReadPct(progress);
-    save(progress);
-  }, [index, ready]);
   // Continue (bottom bar / sidebar) reopens the library book read last.
   useEffect(() => {
     if (place) app.markLocalRead({ user: place.user, novelId: place.novelId, title: book.title ?? t('book.untitled'), index, total });
   }, [index]);
   useEffect(() => () => flush(), []);
 
+  // The bar shows how far into the part at the top, like the online reader.
   const onScroll = (e: React.UIEvent<HTMLDivElement>) => {
-    const progress = currentProgress(e.currentTarget);
-    setReadPct(progress);
     immersive.onScroll(e.currentTarget);
-    if (place && ready) save(progress);
+    const m = measure();
+    if (!m || landing.current) return;
+    anchor.current = { i: m.i, frac: (e.currentTarget.scrollTop - m.top) / Math.max(1, m.h) };
+    if (m.i !== index) setIndex(m.i);
+    setReadPct(m.progress);
+    save(m.i, m.progress);
+    grow();
   };
   const [importing, setImporting] = useState<{ done: number; total: number } | null>(null);
   const importHere = async () => {
@@ -143,7 +226,8 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
       const user = libraryUser(app.user);
       const saved = await importBookPath(user, path, (done, total) => setImporting({ done, total }));
       // Chapters are the file's sections, so the place carries over as is.
-      await saveLibraryProgress(user, saved.novelId, index, currentProgress(scrollRef.current));
+      const m = measure();
+      await saveLibraryProgress(user, saved.novelId, m?.i ?? index, m?.progress ?? 0);
       const opened = await openLibraryBook(user, saved.novelId);
       app.showToast(t('library.imported', { title: saved.title }));
       app.back();
@@ -156,9 +240,12 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
   };
 
 
-  // "Chương 12" above the chapter's own title; a chapter without one shows "Chương 12" once.
   const name = sectionName(meta, index, total);
-  const heading = meta?.label ?? name;
+  const partStyle = {
+    accent: night ? 'var(--color-accent-400)' : 'var(--color-accent-700)',
+    headingSize: lay.readerH, gap: GAP_PX[p.gap], fontSize: p.fontSize, lineH: p.lineH, align: p.align,
+    pageFrame: { background: '#fff', borderRadius: 4, boxShadow: `0 0 0 1px ${line}`, filter: night ? 'brightness(.82)' : undefined },
+  };
 
   return (
     <div className="screen" style={{ overflow: 'hidden', background: theme.bg, color: theme.fg, ...theme.vars }}>
@@ -196,48 +283,21 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
       </ReaderChrome>
 
       <div ref={scrollRef} className="nx-scroll" onScroll={onScroll} onClick={immersive.onTap}
-        style={{ flex: 1, overflowY: 'auto', padding: `${chromeH + lay.readerPadTop}px ${MARGIN_PX[p.margin]}px 40px`, fontFamily: theme.font }}>
-        <div style={{ maxWidth: lay.readerMax, margin: '0 auto' }}>
-          {heading !== name && (
-            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: night ? 'var(--color-accent-400)' : 'var(--color-accent-700)' }}>
-              {name}
-            </div>
-          )}
-          <h2 style={{ margin: '4px 0 18px', fontSize: lay.readerH, color: theme.fg }}>{fix(heading)}</h2>
-          {showPages && meta?.pages && pageRange(meta.pages).map(n => (
-            <img key={n} src={bookPageUrl(book.id, n, pageW)} alt={t('book.page', { n })} loading="lazy" decoding="async"
-              onLoad={e => { const i = e.currentTarget; i.style.aspectRatio = `${i.naturalWidth} / ${i.naturalHeight}`; }}
-              style={{ display: 'block', width: '100%', aspectRatio: '1 / 1.414', margin: `0 0 ${GAP_PX[p.gap]}px`, background: '#fff', borderRadius: 4, boxShadow: `0 0 0 1px ${line}`, filter: night ? 'brightness(.82)' : undefined }} />
+        style={{ position: 'relative', flex: 1, overflowY: 'auto', overflowAnchor: 'none', padding: `${chromeH + lay.readerPadTop}px ${MARGIN_PX[p.margin]}px 40px`, fontFamily: theme.font }}>
+        <div ref={contentRef} style={{ maxWidth: lay.readerMax, margin: '0 auto' }}>
+          {Array.from({ length: span[1] - span[0] + 1 }, (_, k) => span[0] + k).map(i => (
+            <BookPart key={`${gen}-${i}`} bookId={book.id} index={i} meta={book.sections[i]} name={sectionName(book.sections[i], i, total)}
+              pages={showPages} pageW={pageW} fix={fix} st={partStyle} color={theme.fg} onReady={onPartReady} />
           ))}
-          {!showPages && sectionQ.status === 'loading' && (
-            <div role="status" style={{ display: 'flex', alignItems: 'center', gap: 10, opacity: .75 }}><Spinner size={16} />{t('book.loading')}</div>
+          {span[1] < total - 1 && (
+            <div role="status" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, padding: '24px 0', opacity: .6 }}><Spinner size={16} /></div>
           )}
-          {!showPages && sectionQ.status === 'failed' && <p role="alert">{String(sectionQ.error)}</p>}
-          {!showPages && sectionQ.status === 'ready' && sectionQ.data.paragraphs.length === 0 && <p style={{ opacity: .7 }}>{t('book.empty')}</p>}
-          {!showPages && sectionQ.status === 'ready' && sectionQ.data.paragraphs.map((para, i) => {
-            // The chapter's own "Chương 629." line repeats the heading shown above.
-            if (i === 0 && meta?.number != null && isHeadingLine(para, meta.number, meta.label)) return null;
-            const key = imageKey(para);
-            return key !== null ? (
-              // A picture the book can't provide just disappears.
-              <img key={i} src={bookImageUrl(book.id, key)} alt="" loading="lazy" decoding="async"
-                onError={e => { e.currentTarget.style.display = 'none'; }}
-                style={{ display: 'block', maxWidth: '100%', height: 'auto', margin: `0 auto ${GAP_PX[p.gap]}px`, borderRadius: 4 }} />
-            ) : (
-              <p key={i} style={{ margin: `0 0 ${GAP_PX[p.gap]}px`, fontSize: p.fontSize, lineHeight: p.lineH, textAlign: p.align, textWrap: 'pretty' }}>{fix(para)}</p>
-            );
-          })}
-
-          <div style={{ display: 'flex', gap: 10, marginTop: 28 }}>
-            <button className="btn btn-secondary" style={{ flex: 1, height: 48, color: theme.fg, borderColor: line }} disabled={index <= 0} onClick={() => setIndex(i => i - 1)}>{t('book.prev')}</button>
-            <button className="btn btn-primary" style={{ flex: 1, height: 48 }} disabled={index >= total - 1} onClick={() => setIndex(i => i + 1)}>{t('book.next')}</button>
-          </div>
         </div>
       </div>
       <ReaderStatusBar theme={theme} />
       </div>
 
-      {toc && <ChapterSheet sections={book.sections} current={index} onPick={setIndex} onClose={() => setToc(false)} />}
+      {toc && <ChapterSheet sections={book.sections} current={index} onPick={jump} onClose={() => setToc(false)} />}
 
       {tools && (
         <ReaderTools key={tools} initialTab={tools} glossary={NO_GLOSSARY} lang={lang} rules={rules} onRulesChange={changeRules}
@@ -255,10 +315,59 @@ function isHeadingLine(line: string, n: number, label: string | null) {
   return !rest || rest === label?.trim();
 }
 
-function currentProgress(el: HTMLElement | null) {
-  if (!el) return 0;
-  const max = el.scrollHeight - el.clientHeight;
-  return max > 0 ? Math.min(1, Math.max(0, el.scrollTop / max)) : 0;
+type PartStyle = {
+  accent: string; headingSize: number | string; gap: number; fontSize: number; lineH: number;
+  align: CSSProperties['textAlign']; pageFrame: CSSProperties;
+};
+
+/**
+ * One part of the book in the long scroll: its heading, then its original pages or
+ * its text. Marked `data-ready` once its content is in, so the reader knows the
+ * height is real before adding the next part.
+ */
+function BookPart({ bookId, index, meta, name, pages, pageW, fix, st, color, onReady }: {
+  bookId: number; index: number; meta: LocalSectionMeta | undefined; name: string;
+  pages: boolean; pageW: number; fix: (s: string) => string; st: PartStyle; color: string;
+  onReady: (index: number) => void;
+}) {
+  const t = useT();
+  // "Chương 12" above the chapter's own title; a chapter without one shows "Chương 12" once.
+  const heading = meta?.label ?? name;
+  const q = useAsync(() => (pages ? Promise.resolve(null) : getLocalSection(bookId, index)), [bookId, index, pages]);
+  const ready = q.status !== 'loading';
+  useEffect(() => { if (ready) onReady(index); }, [ready]);
+
+  return (
+    <section data-part={index} data-ready={ready ? 'true' : undefined} style={{ paddingBottom: 28 }}>
+      {heading !== name && (
+        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: st.accent }}>{name}</div>
+      )}
+      <h2 style={{ margin: '4px 0 18px', fontSize: st.headingSize, color }}>{fix(heading)}</h2>
+      {pages && meta?.pages && pageRange(meta.pages).map(n => (
+        <img key={n} src={bookPageUrl(bookId, n, pageW)} alt={t('book.page', { n })} loading="lazy" decoding="async"
+          onLoad={e => { const i = e.currentTarget; i.style.aspectRatio = `${i.naturalWidth} / ${i.naturalHeight}`; }}
+          style={{ display: 'block', width: '100%', aspectRatio: '1 / 1.414', margin: `0 0 ${st.gap}px`, ...st.pageFrame }} />
+      ))}
+      {q.status === 'loading' && (
+        <div role="status" style={{ display: 'flex', alignItems: 'center', gap: 10, opacity: .75 }}><Spinner size={16} />{t('book.loading')}</div>
+      )}
+      {q.status === 'failed' && <p role="alert">{String(q.error)}</p>}
+      {q.status === 'ready' && q.data && q.data.paragraphs.length === 0 && <p style={{ opacity: .7 }}>{t('book.empty')}</p>}
+      {q.status === 'ready' && q.data?.paragraphs.map((para, i) => {
+        // The chapter's own "Chương 629." line repeats the heading shown above.
+        if (i === 0 && meta?.number != null && isHeadingLine(para, meta.number, meta.label)) return null;
+        const key = imageKey(para);
+        return key !== null ? (
+          // A picture the book can't provide just disappears.
+          <img key={i} src={bookImageUrl(bookId, key)} alt="" loading="lazy" decoding="async"
+            onError={e => { e.currentTarget.style.display = 'none'; }}
+            style={{ display: 'block', maxWidth: '100%', height: 'auto', margin: `0 auto ${st.gap}px`, borderRadius: 4 }} />
+        ) : (
+          <p key={i} style={{ margin: `0 0 ${st.gap}px`, fontSize: st.fontSize, lineHeight: st.lineH, textAlign: st.align, textWrap: 'pretty' }}>{fix(para)}</p>
+        );
+      })}
+    </section>
+  );
 }
 
 function pageRange([from, to]: [number, number]) {

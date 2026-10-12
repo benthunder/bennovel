@@ -309,8 +309,6 @@ export const vi: Record<MessageKey, string> = {
   'book.tocNone': 'Không có chương nào khớp.',
   'book.part': 'Phần {n} / {total}',
   'book.pages': 'Trang {from}–{to}',
-  'book.prev': '‹ Phần trước',
-  'book.next': 'Phần sau ›',
   'book.loading': 'Đang tải…',
   'book.empty': 'Phần này không có chữ.',
   'book.viewPages': 'Trang gốc',

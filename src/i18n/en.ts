@@ -307,8 +307,6 @@ export const en = {
   'book.tocNone': 'No chapter matches.',
   'book.part': 'Part {n} of {total}',
   'book.pages': 'Pages {from}–{to}',
-  'book.prev': '‹ Previous part',
-  'book.next': 'Next part ›',
   'book.loading': 'Loading…',
   'book.empty': 'This part has no text.',
   'book.viewPages': 'Pages',
