@@ -2,6 +2,8 @@
 // The catalog (novels, categories, collections, languages) is small, so it is loaded
 // from Supabase once at startup and served synchronously; chapters and glossaries are
 // fetched on demand. Until it has loaded (or when offline) the catalog is empty.
+import { invoke } from '@tauri-apps/api/core';
+import { canOpenLocalBooks } from '../lib/localBook';
 import { supabase } from '../lib/supabase';
 import { load, save } from '../lib/storage';
 import { findDownload, offlineChapter, offlineChapters, offlineGlossary } from '../lib/offline';
@@ -232,8 +234,10 @@ export async function getGlossary(novelId: number): Promise<Record<string, Gloss
   return out;
 }
 
-// Replace rules belong to the reader. Signed in to Supabase they live in `replace_rules`
-// (row level security keeps them private); otherwise they stay on this device.
+// Replace rules belong to the reader. In the native app they live in the library file
+// (one list per novel and language) and travel with the Sync button; online novels are
+// keyed by their Supabase id, imported books by the book (see src-tauri/src/library/rules.rs).
+// The web build keeps them in Supabase `replace_rules` when signed in, else on this device.
 const rulesKey = (novelId: number, lang: ContentLang) => `replaceRules.${novelId}.${lang}`;
 
 async function signedInUserId(): Promise<string | null> {
@@ -241,8 +245,27 @@ async function signedInUserId(): Promise<string | null> {
   return data.session?.user.id ?? null;
 }
 
-/** The reader's replace rules for a novel in one language, in the order they apply. */
-export async function getReplaceRules(novelId: number, lang: ContentLang): Promise<ReplaceRule[]> {
+type RuleScope = 'online' | 'book';
+
+const libraryRules = (user: string, kind: RuleScope, id: number, lang: ContentLang) =>
+  invoke<ReplaceRule[] | null>('replace_rules_get', { user, kind, id, lang });
+
+const saveLibraryRules = (user: string, kind: RuleScope, id: number, lang: ContentLang, rules: ReplaceRule[]) =>
+  invoke<void>('replace_rules_set', { user, kind, id, lang, rules });
+
+/**
+ * Rules from the library file; the first time, those kept before (`legacy`) are moved in.
+ * An empty legacy list is not written, so it can't replace another device's list on sync.
+ */
+async function libraryRulesOr(user: string, kind: RuleScope, id: number, lang: ContentLang, legacy: () => Promise<ReplaceRule[]>) {
+  const stored = await libraryRules(user, kind, id, lang);
+  if (stored) return stored;
+  const old = await legacy().catch(() => []);
+  if (old.length) await saveLibraryRules(user, kind, id, lang, old);
+  return old;
+}
+
+async function supabaseRules(novelId: number, lang: ContentLang): Promise<ReplaceRule[]> {
   if (!(await signedInUserId())) return load<ReplaceRule[]>(rulesKey(novelId, lang), []);
   const rows = must(await supabase.from('replace_rules')
     .select('find, replace')
@@ -252,8 +275,15 @@ export async function getReplaceRules(novelId: number, lang: ContentLang): Promi
   return rows;
 }
 
-/** Replaces the reader's whole rule list for a novel in one language. */
-export async function saveReplaceRules(novelId: number, lang: ContentLang, rules: ReplaceRule[]): Promise<void> {
+/** The reader's replace rules for an online novel in one language, in the order they apply. */
+export async function getReplaceRules(user: string, novelId: number, lang: ContentLang): Promise<ReplaceRule[]> {
+  if (canOpenLocalBooks()) return libraryRulesOr(user, 'online', novelId, lang, () => supabaseRules(novelId, lang));
+  return supabaseRules(novelId, lang);
+}
+
+/** Replaces the reader's whole rule list for an online novel in one language. */
+export async function saveReplaceRules(user: string, novelId: number, lang: ContentLang, rules: ReplaceRule[]): Promise<void> {
+  if (canOpenLocalBooks()) return saveLibraryRules(user, 'online', novelId, lang, rules);
   if (!(await signedInUserId())) return save(rulesKey(novelId, lang), rules.length ? rules : null);
   const del = await supabase.from('replace_rules').delete().eq('novel_id', novelId).eq('lang', lang);
   if (del.error) throw new Error(`Saving replace rules failed: ${del.error.message}`);
@@ -262,6 +292,19 @@ export async function saveReplaceRules(novelId: number, lang: ContentLang, rules
     .insert(rules.map((r, position) => ({ novel_id: novelId, lang, find: r.find, replace: r.replace, position })));
   if (ins.error) throw new Error(`Saving replace rules failed: ${ins.error.message}`);
 }
+
+/**
+ * Rules for a book in the on-device library. Lists kept on the device before (under
+ * `legacyKey`) move into the library file the first time.
+ */
+export async function getBookRules(user: string, novelId: number, lang: ContentLang, legacyKey: string): Promise<ReplaceRule[]> {
+  const rules = await libraryRulesOr(user, 'book', novelId, lang, async () => load<ReplaceRule[]>(legacyKey, []));
+  save(legacyKey, null);
+  return rules;
+}
+
+export const saveBookRules = (user: string, novelId: number, lang: ContentLang, rules: ReplaceRule[]) =>
+  saveLibraryRules(user, 'book', novelId, lang, rules);
 
 /** Applies each rule to `text` in order, replacing every occurrence (case-sensitive, plain text). */
 export const applyReplaceRules = (text: string, rules: ReplaceRule[]) =>

@@ -730,3 +730,122 @@ pub async fn offline_numbers<R: Runtime>(
     let path = db_path(&app, &user)?;
     blocking(move || Ok(super::offline::numbers(&db::open(&path)?, novel_id)?)).await
 }
+
+/// The reader's replace rules for a novel ("online": Supabase id; "book": library id)
+/// in one language; null when none were ever saved on this device.
+#[tauri::command]
+pub async fn replace_rules_get<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    kind: super::rules::Kind,
+    id: i64,
+    lang: String,
+) -> Result<Option<Vec<super::rules::Rule>>, BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || Ok(super::rules::get(&db::open(&path)?, kind, id, &lang)?)).await
+}
+
+#[tauri::command]
+pub async fn replace_rules_set<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    kind: super::rules::Kind,
+    id: i64,
+    lang: String,
+    rules: Vec<super::rules::Rule>,
+) -> Result<(), BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || Ok(super::rules::set(&db::open(&path)?, kind, id, &lang, &rules)?)).await
+}
+
+impl From<super::s3::S3Error> for BookError {
+    fn from(e: super::s3::S3Error) -> Self {
+        use super::s3::S3Error as E;
+        // The app looks for these words to say what went wrong.
+        let key = match e {
+            E::Sync(e) => return e.into(),
+            E::Db(e) => return BookError::Db(e),
+            E::Io(e) => return BookError::Io(e),
+            E::Config(key) => key.to_string(),
+            E::Busy => "s3-busy".into(),
+            E::Network(msg) => format!("s3-network {msg}"),
+            E::Status { status: 401 | 403, code } => format!("s3-auth {code}"),
+            E::Status { code, .. } if code == "NoSuchBucket" => "s3-bucket".into(),
+            E::Status { status: 413, code } => format!("s3-too-large {code}"),
+            E::Status { code, .. } if code == "EntityTooLarge" => "s3-too-large".into(),
+            E::Status { status, code } => format!("s3-error {status} {code}"),
+        };
+        BookError::Parse(key)
+    }
+}
+
+/// The S3 settings of a library, without the secret key.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct S3Settings {
+    pub endpoint: String,
+    pub region: String,
+    pub bucket: String,
+    pub folder: String,
+    pub access_key: String,
+    pub has_secret: bool,
+}
+
+/// The library's own S3 storage to sync with, if one is set.
+#[tauri::command]
+pub async fn s3_config_get<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+) -> Result<Option<S3Settings>, BookError> {
+    let path = super::s3::config_path(&db_path(&app, &user)?);
+    Ok(super::s3::load_config(&path).map(|c| S3Settings {
+        has_secret: !c.secret_key.is_empty(),
+        endpoint: c.endpoint,
+        region: c.region,
+        bucket: c.bucket,
+        folder: c.folder,
+        access_key: c.access_key,
+    }))
+}
+
+/// Sets the S3 storage to sync with, after checking it can be reached with these keys;
+/// an empty secret key keeps the saved one. `None` goes back to the account's storage.
+#[tauri::command]
+pub async fn s3_config_set<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    config: Option<super::s3::Config>,
+) -> Result<(), BookError> {
+    let path = super::s3::config_path(&db_path(&app, &user)?);
+    blocking(move || {
+        let Some(mut config) = config else {
+            return Ok(super::s3::save_config(&path, None)?);
+        };
+        if config.secret_key.trim().is_empty() {
+            config.secret_key = super::s3::load_config(&path)
+                .map(|c| c.secret_key)
+                .unwrap_or_default();
+        }
+        let config = config.normalized()?;
+        super::s3::check(&config)?;
+        Ok(super::s3::save_config(&path, Some(&config))?)
+    })
+    .await
+}
+
+/// Syncs the library with its S3 storage. Returns when (epoch ms).
+#[tauri::command]
+pub async fn s3_sync<R: Runtime>(app: AppHandle<R>, user: String) -> Result<i64, BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || {
+        let config = super::s3::load_config(&super::s3::config_path(&path))
+            .ok_or_else(|| BookError::Parse("s3-not-set".into()))?;
+        for id in super::s3::sync(&path, &config)? {
+            if let Some(file) = super::original_file(&path, id) {
+                let _ = std::fs::remove_file(file);
+            }
+        }
+        Ok(db::now_ms())
+    })
+    .await
+}
