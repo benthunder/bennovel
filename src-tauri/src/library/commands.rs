@@ -3,7 +3,7 @@ use super::{db, DbBook, LibraryBook};
 use crate::book::commands::{open_picked, pdfium_dirs, Books};
 use crate::book::{detect, open_source, BookError, BookFormat, BookInfo, BookSource, OpenCtx};
 use serde::Serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tauri_plugin_fs::FilePath;
 
@@ -412,12 +412,321 @@ pub async fn reading_load<R: Runtime>(
     blocking(move || Ok(super::reading::load(&db::open(&path)?)?)).await
 }
 
+/// False when the lists were loaded before the last sync and must be reloaded.
 #[tauri::command]
 pub async fn reading_save<R: Runtime>(
     app: AppHandle<R>,
     user: String,
     state: super::reading::ReadingState,
-) -> Result<(), BookError> {
+) -> Result<bool, BookError> {
     let path = db_path(&app, &user)?;
     blocking(move || Ok(super::reading::save(&mut db::open(&path)?, &state)?)).await
+}
+
+/// Hands the guest's library (imported books, favourites, history) to an account the
+/// first time it signs in on this device: the guest file becomes the account's file.
+/// Does nothing when the account already has a library here or the guest has none.
+#[tauri::command]
+pub async fn library_claim_guest<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+) -> Result<bool, BookError> {
+    let guest = db_path(&app, "")?;
+    let own = db_path(&app, &user)?;
+    blocking(move || claim_guest(&guest, &own)).await
+}
+
+fn claim_guest(guest: &Path, own: &Path) -> Result<bool, BookError> {
+    if guest == own || own.exists() || !guest.exists() {
+        return Ok(false);
+    }
+    // Fold the write-ahead log into the file so it moves as one piece.
+    db::open(guest)?.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+    std::fs::rename(guest, own)?;
+    for ext in ["sqlite3-wal", "sqlite3-shm"] {
+        let _ = std::fs::remove_file(guest.with_extension(ext));
+    }
+    Ok(true)
+}
+
+impl From<super::sync::SyncError> for BookError {
+    fn from(e: super::sync::SyncError) -> Self {
+        match e {
+            super::sync::SyncError::Db(e) => BookError::Db(e),
+            super::sync::SyncError::Io(e) => BookError::Io(e),
+            // The app looks for this word to ask for an update.
+            super::sync::SyncError::Outdated => BookError::Parse("sync-outdated".into()),
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncStatus {
+    /// Server version this library was last synced with (0 = never).
+    pub last_version: i64,
+    /// Epoch ms of the last sync.
+    pub synced_at: Option<i64>,
+}
+
+#[tauri::command]
+pub async fn sync_status<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+) -> Result<SyncStatus, BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || {
+        let (last_version, synced_at) = super::sync::status(&db::open(&path)?)?;
+        Ok(SyncStatus {
+            last_version,
+            synced_at,
+        })
+    })
+    .await
+}
+
+/// The library file as a gzipped snapshot, sent to the app as raw bytes for upload.
+#[tauri::command]
+pub async fn sync_export<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+) -> Result<tauri::ipc::Response, BookError> {
+    let path = db_path(&app, &user)?;
+    let tmp = path.with_extension("sync-out");
+    blocking(move || {
+        Ok(tauri::ipc::Response::new(super::sync::export(
+            &db::open(&path)?,
+            &tmp,
+        )?))
+    })
+    .await
+}
+
+/// Merges a downloaded snapshot (the raw request body) into the library of the user
+/// named in the `x-user` header (URI-encoded).
+#[tauri::command]
+pub async fn sync_merge<R: Runtime>(
+    app: AppHandle<R>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<(), BookError> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err(BookError::Parse("expected the snapshot bytes".into()));
+    };
+    let user = request
+        .headers()
+        .get("x-user")
+        .and_then(|v| v.to_str().ok())
+        .map(percent_decode)
+        .unwrap_or_default();
+    let bytes = bytes.clone();
+    let path = db_path(&app, &user)?;
+    let tmp = path.with_extension("sync-in");
+    blocking(move || {
+        let gone = super::sync::merge(&mut db::open(&path)?, &bytes, &tmp)?;
+        for id in gone {
+            if let Some(file) = super::original_file(&path, id) {
+                let _ = std::fs::remove_file(file);
+            }
+        }
+        Ok(())
+    })
+    .await
+}
+
+/// Records that the library now matches server version `version`.
+#[tauri::command]
+pub async fn sync_mark<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    version: i64,
+) -> Result<(), BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || Ok(super::sync::mark_synced(&db::open(&path)?, version)?)).await
+}
+
+/// Decodes %XX escapes (the user name travels in a header).
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(b) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(b);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/* ---------- Online novels downloaded to read offline (offline.rs) ---------- */
+
+/// Starts (or restarts) downloading an online novel; returns the start time for
+/// `offline_finish`.
+#[tauri::command]
+pub async fn offline_start<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+    data: serde_json::Value,
+    total: i64,
+) -> Result<i64, BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || {
+        Ok(super::offline::start(
+            &db::open(&path)?,
+            novel_id,
+            &data,
+            total,
+        )?)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn offline_add<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+    chapters: Vec<super::offline::ChapterRow>,
+) -> Result<(), BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || {
+        Ok(super::offline::add(
+            &mut db::open(&path)?,
+            novel_id,
+            &chapters,
+        )?)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn offline_set_glossary<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+    entries: Vec<super::offline::GlossaryRow>,
+) -> Result<(), BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || {
+        Ok(super::offline::set_glossary(
+            &mut db::open(&path)?,
+            novel_id,
+            &entries,
+        )?)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn offline_finish<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+    started: i64,
+) -> Result<(), BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || {
+        Ok(super::offline::finish(
+            &mut db::open(&path)?,
+            novel_id,
+            started,
+        )?)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn offline_list<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+) -> Result<Vec<super::offline::Download>, BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || Ok(super::offline::list(&db::open(&path)?)?)).await
+}
+
+#[tauri::command]
+pub async fn offline_chapters<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+) -> Result<Vec<super::offline::ChapterInfo>, BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || Ok(super::offline::chapters(&db::open(&path)?, novel_id)?)).await
+}
+
+#[tauri::command]
+pub async fn offline_chapter<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+    number: i64,
+    lang: String,
+) -> Result<Option<super::offline::ChapterText>, BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || {
+        Ok(super::offline::chapter(
+            &db::open(&path)?,
+            novel_id,
+            number,
+            &lang,
+        )?)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn offline_glossary<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+) -> Result<Vec<super::offline::GlossaryRow>, BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || Ok(super::offline::glossary(&db::open(&path)?, novel_id)?)).await
+}
+
+#[tauri::command]
+pub async fn offline_delete<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+) -> Result<(), BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || Ok(super::offline::delete(&db::open(&path)?, novel_id)?)).await
+}
+
+/// Lists an online novel for a chapter downloaded on its own.
+#[tauri::command]
+pub async fn offline_ensure<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+    data: serde_json::Value,
+    total: i64,
+) -> Result<(), BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || {
+        Ok(super::offline::ensure(
+            &db::open(&path)?,
+            novel_id,
+            &data,
+            total,
+        )?)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn offline_numbers<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+) -> Result<Vec<i64>, BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || Ok(super::offline::numbers(&db::open(&path)?, novel_id)?)).await
 }

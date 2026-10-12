@@ -1,16 +1,21 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { load, save } from '../lib/storage';
 import type { Category, CollectionKey, ContentLang, HistoryEntry, User } from '../data/types';
 import { findNovel, rememberNovels, type ListSource } from '../data/repository';
 import { useCatalog } from '../data/useCatalog';
 import { useT } from '../i18n';
-import { libraryUser, type LibraryPlace, type LocalBook } from '../lib/localBook';
+import { canOpenLocalBooks, libraryUser, type LibraryPlace, type LocalBook } from '../lib/localBook';
 import { loadReading, saveReading } from '../lib/readingStore';
+import { getSyncStatus, syncLibrary, SyncFailure } from '../lib/sync';
+import { canDownload, deleteDownload, downloadChapter, downloadLang, downloadNovel, listDownloads, setDownloads, type Download } from '../lib/offline';
+import { claimGuestLibrary, listenForSignInLinks, signOut, takeOAuthProvider, takeRecovery, toUser } from '../lib/auth';
+import { supabase } from '../lib/supabase';
 
 export type Tab = 'home' | 'category' | 'library' | 'profile';
 
 export type Route =
-  | { s: 'login' }
+  /** `recovery`: signed in from a password reset email, so a new password is asked for. */
+  | { s: 'login'; recovery?: boolean }
   | { s: 'home' }
   | { s: 'detail'; id: number }
   | { s: 'list'; src: ListSource }
@@ -98,8 +103,8 @@ function useStored<T>(key: string, init: T | (() => T)) {
 
 /**
  * Keeps favourites and history in the user's reading store (SQLite in the native app)
- * with a snapshot of each novel, so they show offline. Loads when the user changes;
- * a user with nothing saved yet starts from the current lists.
+ * with a snapshot of each novel, so they show offline. Loads when the user changes and
+ * after a sync (`reload`); a user with nothing saved yet starts from the current lists.
  */
 function useReadingStore(
   user: string,
@@ -108,7 +113,11 @@ function useReadingStore(
   status: string
 ) {
   const loadedFor = useRef<string | null>(null);
+  /** Version of the lists as loaded; saves from older lists are refused after a sync. */
+  const rev = useRef(0);
   const [loads, setLoads] = useState(0);
+  const [reloads, setReloads] = useState(0);
+  const reload = useCallback(() => setReloads(n => n + 1), []);
 
   useEffect(() => {
     let gone = false;
@@ -120,6 +129,7 @@ function useReadingStore(
     };
     loadReading(user).then(state => {
       if (gone) return;
+      rev.current = state?.rev ?? 0;
       if (state) {
         rememberNovels(state.novels);
         setFavs(state.favs);
@@ -128,15 +138,91 @@ function useReadingStore(
       done();
     }, e => { console.error(e); done(); });
     return () => { gone = true; };
-  }, [user]);
+  }, [user, reloads]);
 
   // Saves after every change, and again once the catalog has loaded to refresh the snapshots.
   useEffect(() => {
     if (loadedFor.current !== user) return;
     const ids = [...new Set([...favs, ...history.map(h => h.id)])];
     const novels = ids.map(id => ({ id, data: findNovel(id) ?? null }));
-    saveReading(user, { favs, history, novels }).catch(console.error);
-  }, [user, favs, history, status, loads]);
+    saveReading(user, { favs, history, novels, rev: rev.current })
+      .then(saved => { if (saved === false) reload(); })
+      .catch(console.error);
+  }, [user, favs, history, status, loads, reload]);
+
+  return reload;
+}
+
+/**
+ * Online novels downloaded to read offline (native app): the list of `user`, the
+ * progress of running downloads, and actions to start or remove one.
+ */
+function useDownloads(user: string, showToast: (msg: string) => void, tr: ReturnType<typeof useT>) {
+  const [list, setList] = useState<Download[]>([]);
+  const [progress, setProgress] = useState<Record<number, { done: number; total: number }>>({});
+
+  const refresh = useCallback(async () => {
+    try {
+      const got = await listDownloads(user);
+      setDownloads(user, got);
+      rememberNovels(got);
+      setList(got);
+    } catch (e) {
+      console.error(e);
+    }
+  }, [user]);
+  useEffect(() => {
+    setDownloads(user, []);
+    setList([]);
+    refresh();
+  }, [refresh, user]);
+
+  const start = useCallback(async (id: number) => {
+    const novel = findNovel(id);
+    if (!novel || progress[id]) return;
+    setProgress(p => ({ ...p, [id]: { done: 0, total: novel.chapters } }));
+    try {
+      await downloadNovel(user, novel, (done, total) => setProgress(p => ({ ...p, [id]: { done, total } })));
+      showToast(tr('download.done', { title: novel.title }));
+    } catch (e) {
+      console.error(e);
+      showToast(tr('download.failed'));
+    } finally {
+      await refresh();
+      setProgress(({ [id]: _, ...rest }) => rest);
+    }
+  }, [progress, refresh, showToast, tr, user]);
+
+  /** Chapters downloading on their own, as `novelId:number`. */
+  const [chapterBusy, setChapterBusy] = useState<string[]>([]);
+  const startChapter = useCallback(async (id: number, number: number) => {
+    const novel = findNovel(id), key = `${id}:${number}`;
+    if (!novel || chapterBusy.includes(key)) return;
+    setChapterBusy(b => [...b, key]);
+    try {
+      await downloadChapter(user, novel, number);
+      showToast(tr('download.chapterDone', { n: number }));
+    } catch (e) {
+      console.error(e);
+      showToast(tr('download.failed'));
+    } finally {
+      await refresh();
+      setChapterBusy(b => b.filter(k => k !== key));
+    }
+  }, [chapterBusy, refresh, showToast, tr, user]);
+
+  const remove = useCallback(async (id: number) => {
+    try {
+      await deleteDownload(user, id);
+      showToast(tr('download.removed'));
+    } catch (e) {
+      console.error(e);
+    }
+    await refresh();
+  }, [refresh, showToast, tr, user]);
+
+  const byId = useMemo(() => new Map(list.map(d => [d.id, d])), [list]);
+  return { enabled: canDownload(), user, list, byId, progress, start, chapterBusy, startChapter, remove };
 }
 
 function useAppState() {
@@ -149,13 +235,12 @@ function useAppState() {
   const [contentLang, setContentLang] = useStored<ContentLang | null>('defaultLang', null);
   const [readerPrefs, setReaderPrefs] = useStored<ReaderPrefs>('readerPrefs', DEFAULT_READER_PREFS);
   const [localLast, setLocalLast] = useStored<LocalLast | null>('localLast', null);
-  useReadingStore(libraryUser(user), favs, setFavs, history, setHistory, catalog.status);
+  const reloadReading = useReadingStore(libraryUser(user), favs, setFavs, history, setHistory, catalog.status);
 
   // The app opens on the library (books on the device and saved novels).
   const [stack, setStack] = useState<Route[]>(() => [load('onboarded', false) || user ? { s: 'library' } : { s: 'login' }]);
   const [tab, setTab] = useState<Tab | null>(() => (stack[0].s === 'library' ? 'library' : null));
   const [langDialog, setLangDialog] = useState<LangDialog | null>(null);
-  const [authLoading, setAuthLoading] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
@@ -169,12 +254,14 @@ function useAppState() {
   const back = useCallback(() => setStack(s => (s.length > 1 ? s.slice(0, -1) : s)), []);
   const switchTab = useCallback((t: Tab) => { setTab(t); setStack([tabRoot(t)]); }, []);
 
-  // Chapters come from the server, so a novel's page needs a connection.
+  const downloads = useDownloads(libraryUser(user), showToast, tr);
+
+  // Chapters come from the server, so a novel's page needs a connection unless it was downloaded.
   const openDetail = useCallback((id: number) => {
     // While the catalog is still loading the page waits for it (see App).
-    if (catalog.status === 'offline') showToast(tr('load.needsConnection'));
+    if (catalog.status === 'offline' && !downloads.byId.has(id)) showToast(tr('load.needsConnection'));
     else push({ s: 'detail', id });
-  }, [catalog.status, push, showToast, tr]);
+  }, [catalog.status, downloads.byId, push, showToast, tr]);
   const openCategory = useCallback((value: Category) => push({ s: 'list', src: { type: 'category', value } }), [push]);
   const openAuthor = useCallback((value: string) => push({ s: 'list', src: { type: 'author', value } }), [push]);
   const openCollection = useCallback((value: CollectionKey) => push({ s: 'list', src: { type: 'collection', value } }), [push]);
@@ -187,10 +274,14 @@ function useAppState() {
 
   /** Opens a chapter in the saved language, or asks first when none is saved. */
   const openChapter = useCallback((id: number, ch: number) => {
-    if (catalog.status === 'offline') showToast(tr('load.needsConnection'));
+    const dl = downloads.byId.get(id);
+    // Offline, a download opens in a language it has (the language list needs a connection).
+    const offlineLang = dl && catalog.status === 'offline' ? downloadLang(dl, contentLang) : null;
+    if (offlineLang) goReader(id, ch, offlineLang);
+    else if (catalog.status === 'offline') showToast(tr('load.needsConnection'));
     else if (contentLang) goReader(id, ch, contentLang);
     else setLangDialog({ mode: 'chapter', id, ch });
-  }, [catalog.status, contentLang, goReader, showToast, tr]);
+  }, [catalog.status, contentLang, downloads.byId, goReader, showToast, tr]);
 
   const setReaderLang = useCallback((lang: ContentLang) => {
     setStack(s => {
@@ -199,18 +290,64 @@ function useAppState() {
     });
   }, []);
 
-  const login = useCallback((provider: string, name: string, email: string, welcome: string) => {
-    setAuthLoading(provider);
-    // Simulated network round-trip until the auth API exists.
-    setTimeout(() => {
-      setAuthLoading(null);
-      setUser({ name, email, provider });
-      save('onboarded', true);
-      setStack(s => (s.length > 1 ? s.slice(0, -1) : [{ s: 'library' }]));
-      setTab(t => t ?? 'library');
-      showToast(welcome);
-    }, 750);
+  /** After signing in: the guest's library goes to the account the first time, then back to where the user was. */
+  const signedIn = useCallback(async (u: User, welcome: string) => {
+    await claimGuestLibrary(u);
+    setUser(u);
+    save('onboarded', true);
+    setStack(s => (s.length > 1 ? s.slice(0, -1) : [{ s: 'library' }]));
+    setTab(t => t ?? 'library');
+    showToast(welcome);
   }, [setUser, showToast]);
+
+  /** Back to a guest; the account's lists stay in its own library file. */
+  const resetToGuest = useCallback(() => {
+    setFavs([]);
+    setHistory([]);
+    setUser(null);
+  }, [setFavs, setHistory, setUser]);
+
+  const userRef = useRef(user);
+  userRef.current = user;
+  // Auth listeners are registered once; they call the latest callbacks.
+  const signedInRef = useRef(signedIn);
+  signedInRef.current = signedIn;
+  const trRef = useRef(tr);
+  trRef.current = tr;
+  useEffect(() => {
+    const { data } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'SIGNED_OUT') resetToGuest();
+      else if (event === 'PASSWORD_RECOVERY' || (event === 'INITIAL_SESSION' && takeRecovery())) {
+        takeRecovery();
+        // Opened from the reset email (link or code): ask for the new password.
+        const route: Route = { s: 'login', recovery: true };
+        setStack(s => (s[s.length - 1].s === 'login' ? [...s.slice(0, -1), route] : [...s, route]));
+      } else if (event === 'INITIAL_SESSION' && !session) {
+        // Without a session only sign-ins saved before real accounts existed are dropped:
+        // an expired session that can't be refreshed offline still counts as signed in.
+        setUser(u => (u && !u.id ? null : u));
+      } else if (session && (event === 'INITIAL_SESSION' || event === 'USER_UPDATED')) {
+        // Back from Google or an email link (web): take the session like a normal sign-in.
+        if (event === 'INITIAL_SESSION' && !userRef.current) {
+          const u = toUser(session.user, takeOAuthProvider() ?? 'email');
+          signedInRef.current(u, trRef.current('auth.welcome', { name: u.name.split(' ')[0] }));
+        } else setUser(u => (u?.id === session.user.id ? { ...toUser(session.user), provider: u.provider } : u));
+      }
+    });
+    return () => data.subscription.unsubscribe();
+  }, [resetToGuest, setUser]);
+
+  // Native app: Google sends the reader back through a bennovel:// link.
+  useEffect(() => {
+    if (!canOpenLocalBooks()) return;
+    let stop: (() => void) | undefined;
+    let gone = false;
+    listenForSignInLinks(
+      u => signedInRef.current(u, trRef.current('auth.welcome', { name: u.name.split(' ')[0] })),
+      key => showToast(trRef.current(key))
+    ).then(un => { if (gone) un(); else stop = un; }, console.error);
+    return () => { gone = true; stop?.(); };
+  }, []);
 
   const skipLogin = useCallback(() => {
     save('onboarded', true);
@@ -218,13 +355,48 @@ function useAppState() {
     else switchTab('library');
   }, [stack.length, back, switchTab]);
 
-  const logout = useCallback(() => setUser(null), [setUser]);
+  const logout = useCallback(() => {
+    resetToGuest();
+    signOut();
+  }, [resetToGuest]);
 
   const toggleFav = useCallback((id: number) => {
     const was = favs.includes(id);
     setFavs(f => (was ? f.filter(x => x !== id) : [...f, id]));
     return !was;
   }, [favs, setFavs]);
+
+  const [syncing, setSyncing] = useState(false);
+  /** Epoch ms of this library's last sync, null before the first. */
+  const [syncedAt, setSyncedAt] = useState<number | null>(null);
+  /** Bumped after a sync, so screens list the library books again. */
+  const [libraryRev, setLibraryRev] = useState(0);
+  /** Sync needs an account and the library file of the native app. */
+  const canSync = !!user?.id && canOpenLocalBooks();
+  const libKey = libraryUser(user);
+  useEffect(() => {
+    setSyncedAt(null);
+    if (!canSync) return;
+    let gone = false;
+    getSyncStatus(libKey).then(s => { if (!gone) setSyncedAt(s.syncedAt); }, console.error);
+    return () => { gone = true; };
+  }, [canSync, libKey]);
+
+  const syncNow = useCallback(async () => {
+    if (!canSync || !user?.id || syncing) return;
+    setSyncing(true);
+    try {
+      setSyncedAt(await syncLibrary(libKey, user.id));
+      showToast(tr('sync.done'));
+    } catch (e) {
+      showToast(tr(e instanceof SyncFailure ? e.key : 'sync.err.generic'));
+    } finally {
+      // A sync that failed after merging still changed the lists here.
+      reloadReading();
+      setLibraryRev(n => n + 1);
+      setSyncing(false);
+    }
+  }, [canSync, user?.id, syncing, libKey, showToast, tr, reloadReading]);
 
   const markLocalRead = useCallback((e: Omit<LocalLast, 'at'>) => setLocalLast({ ...e, at: Date.now() }), [setLocalLast]);
   const forgetLocal = useCallback((novelId: number) => setLocalLast(l => (l?.novelId === novelId ? null : l)), [setLocalLast]);
@@ -234,11 +406,12 @@ function useAppState() {
   const lastLocal = localLast && localLast.user === libraryUser(user) && (!last || localLast.at >= last.at) ? localLast : null;
 
   return {
-    user, favs, history, contentLang, readerPrefs, stack, tab, langDialog, authLoading, toast, last, lastLocal,
+    user, favs, history, contentLang, readerPrefs, stack, tab, langDialog, toast, last, lastLocal,
     top: stack[stack.length - 1], canBack: stack.length > 1,
     push, back, switchTab, openDetail, openCategory, openAuthor, openCollection,
     openChapter, goReader, setReaderLang, setContentLang, setLangDialog, setReaderPrefs,
-    login, skipLogin, logout, toggleFav, showToast, markLocalRead, forgetLocal
+    signedIn, skipLogin, logout, toggleFav, showToast, markLocalRead, forgetLocal,
+    canSync, syncing, syncedAt, libraryRev, syncNow, downloads
   };
 }
 

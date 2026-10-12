@@ -1,6 +1,6 @@
 [package]
 name = "bennovel"
-version = "0.7.0"
+version = "0.8.0"
 description = "BenNovel — novel reader"
 edition = "2021"
 
@@ -28,4 +28,11 @@ zip = { version = "3", default-features = false, features = ["deflate"] }
 libchm = "0.3.0"
 djvu-rs = { version = "0.41.0", features = ["mmap"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
+flate2 = "1"
 tauri-plugin-folder-picker = { path = "plugins/folder-picker" }
+tauri-plugin-deep-link = "2"
+tauri-plugin-opener = "2"
+
+# Sends a second launch (a sign-in link, a file to open) to the running app.
+[target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }

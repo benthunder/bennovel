@@ -17,7 +17,7 @@ import { LocalBookScreen } from './screens/LocalBookScreen';
 
 function renderRoute(r: Route) {
   switch (r.s) {
-    case 'login': return <LoginScreen />;
+    case 'login': return <LoginScreen recovery={r.recovery} />;
     case 'home': return <HomeScreen />;
     case 'detail': return <DetailScreen id={r.id} />;
     case 'list': return <ListScreen src={r.src} />;
