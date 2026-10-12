@@ -62,7 +62,7 @@ export const vi: Record<MessageKey, string> = {
   'auth.err.codeFormat': 'Nhập mã trong email',
   'auth.err.credentials': 'Sai email hoặc mật khẩu',
   'auth.err.notConfirmed': 'Bạn cần xác nhận email trước: mở link chúng tôi đã gửi',
-  'auth.err.exists': 'Email này đã có tài khoản. Hãy đăng nhập.',
+  'auth.err.exists': 'Email này đã có tài khoản. Hãy đăng nhập, hoặc bấm “Quên mật khẩu?” để đặt mật khẩu nếu bạn từng đăng ký bằng Google/Facebook.',
   'auth.err.weak': 'Mật khẩu quá yếu, hãy chọn mật khẩu khác',
   'auth.err.samePassword': 'Mật khẩu mới phải khác mật khẩu cũ',
   'auth.err.rateLimit': 'Thử quá nhiều lần. Đợi một lát rồi thử lại.',

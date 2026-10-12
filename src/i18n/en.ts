@@ -60,7 +60,7 @@ export const en = {
   'auth.err.codeFormat': 'Enter the code from the email',
   'auth.err.credentials': 'Wrong email or password',
   'auth.err.notConfirmed': 'Confirm your email first: open the link we sent you',
-  'auth.err.exists': 'This email already has an account. Log in instead.',
+  'auth.err.exists': 'This email already has an account. Log in, or use “Forgot password?” to set a password if you signed up with Google or Facebook.',
   'auth.err.weak': 'Choose a stronger password',
   'auth.err.samePassword': 'Pick a password different from the old one',
   'auth.err.rateLimit': 'Too many tries. Wait a little and try again.',
