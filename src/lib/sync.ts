@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { Channel, invoke } from '@tauri-apps/api/core';
 import type { MessageKey } from '../i18n/en';
 import { supabase } from './supabase';
 
@@ -8,8 +8,8 @@ import { supabase } from './supabase';
  * the sync (src-tauri/src/library/remote.rs): it downloads the newer file, merges it row
  * by row, and uploads the result only if no other device synced in between.
  * A signed-in account syncs through the BenNovel server, the Edge Function `sync`
- * (supabase/functions/sync), which holds the storage keys; the app only sends its
- * session. A library set to the user's own S3 storage syncs there instead (s3.ts).
+ * (supabase/functions/sync), which holds the storage keys and hands out signed links;
+ * the app only sends its session, and the file goes straight to storage in parts. A library set to the user's own S3 storage syncs there instead (s3.ts).
  * Native app only: the web build has no library file.
  */
 
@@ -61,10 +61,19 @@ async function account() {
   };
 }
 
-/** Syncs the library of `user` (its key). Returns the time of the sync (epoch ms). */
-export async function syncLibrary(user: string): Promise<number> {
+/** Where a sync is (src-tauri/src/library/remote.rs `Step`); byte counts may have total 0 (unknown). */
+export type SyncStep =
+  | { step: 'download' | 'upload'; done: number; total: number }
+  | { step: 'merge' | 'pack' };
+
+/**
+ * Syncs the library of `user` (its key), telling `onStep` how far it has come.
+ * Returns the time of the sync (epoch ms).
+ */
+export async function syncLibrary(user: string, onStep?: (step: SyncStep) => void): Promise<number> {
   try {
-    return await invoke<number>('library_sync', { user, account: await account() });
+    const onProgress = new Channel<SyncStep>(onStep);
+    return await invoke<number>('library_sync', { user, account: await account(), onProgress });
   } catch (e) {
     throw syncFailure(e);
   }

@@ -765,17 +765,22 @@ pub async fn s3_config_set<R: Runtime>(
 }
 
 /// Syncs the library with its own S3 storage when one is set, else with the BenNovel
-/// server for the signed-in `account`. Returns when (epoch ms).
+/// server for the signed-in `account`, telling `on_progress` each step. Returns when
+/// (epoch ms).
 #[tauri::command]
 pub async fn library_sync<R: Runtime>(
     app: AppHandle<R>,
     user: String,
     account: Option<super::remote::Account>,
+    on_progress: tauri::ipc::Channel<super::remote::Step>,
 ) -> Result<i64, BookError> {
     let path = db_path(&app, &user)?;
     blocking(move || {
         let remote = super::remote::open(&path, account)?;
-        for id in super::remote::sync(&path, remote.as_ref())? {
+        let progress = |step| {
+            let _ = on_progress.send(step);
+        };
+        for id in super::remote::sync(&path, remote.as_ref(), &progress)? {
             if let Some(file) = super::original_file(&path, id) {
                 let _ = std::fs::remove_file(file);
             }
