@@ -5,19 +5,23 @@
 //! Adding a place (or letting an admin panel choose one) means a new `Remote` and a line
 //! in `open`; nothing else changes.
 //!
+//! Files go through disk, not memory: the snapshot is packed into a file, uploaded from
+//! it, and a download is saved to a file before it is merged.
+//!
 //! The places today:
 //! - the BenNovel server (server.rs), for signed-in accounts: a Supabase Edge Function
-//!   that holds the storage keys, so the app never has them;
+//!   that holds the storage keys and hands out signed links, so the app never has them;
 //! - S3-compatible storage the user runs (s3.rs), with keys they entered on this device.
 
 use super::{db, s3, server, sync};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use std::io::Read;
 use std::path::Path;
 use std::time::Duration;
 
 const ATTEMPTS: usize = 3;
-/// Snapshots are read whole into memory; refuse a download larger than this.
-pub const MAX_DOWNLOAD: u64 = 1 << 30;
+/// Refuse to download a file larger than this.
+pub const MAX_DOWNLOAD: u64 = 4 << 30;
 
 /// The synced file, as fetched.
 #[derive(Debug, PartialEq)]
@@ -26,10 +30,8 @@ pub enum Fetched {
     Unchanged,
     /// Nothing synced yet.
     Missing,
-    File {
-        body: Vec<u8>,
-        etag: Option<String>,
-    },
+    /// Downloaded into the file given to `fetch`.
+    File { etag: Option<String> },
 }
 
 /// What came of storing the file.
@@ -41,13 +43,45 @@ pub enum Stored {
     Conflict,
 }
 
+/// Where a sync is, for the app to show.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(tag = "step", rename_all = "camelCase")]
+pub enum Step {
+    /// Bytes downloaded so far, of `total` (0 when not known yet).
+    Download {
+        done: u64,
+        total: u64,
+    },
+    Merge,
+    /// Packing the library into the file to upload.
+    Pack,
+    Upload {
+        done: u64,
+        total: u64,
+    },
+}
+
+/// Told each step of a sync, and how far a transfer has come.
+pub type Progress<'a> = dyn Fn(Step) + 'a;
+
 pub trait Remote {
     /// Names the file synced with, so switching places starts over.
     fn target(&self) -> String;
-    /// The file, unless its ETag is still `known`.
-    fn fetch(&self, known: Option<&str>) -> Result<Fetched, RemoteError>;
-    /// Stores `body` only if the file still has ETag `current` (`None`: if there is none).
-    fn store(&self, body: &[u8], current: Option<&str>) -> Result<Stored, RemoteError>;
+    /// Downloads the file into `dest`, unless its ETag is still `known`.
+    fn fetch(
+        &self,
+        known: Option<&str>,
+        dest: &Path,
+        progress: &Progress,
+    ) -> Result<Fetched, RemoteError>;
+    /// Uploads the file at `file`, only if the stored one still has ETag `current`
+    /// (`None`: only if there is none).
+    fn store(
+        &self,
+        file: &Path,
+        current: Option<&str>,
+        progress: &Progress,
+    ) -> Result<Stored, RemoteError>;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -115,9 +149,78 @@ pub fn agent() -> ureq::Agent {
 const ETAG: &str = "s3_etag";
 const TARGET: &str = "s3_target";
 
+/// A reader that reports how many bytes went through it, every 256 KiB or so.
+pub struct Counted<'a, R> {
+    inner: R,
+    done: u64,
+    reported: u64,
+    report: &'a dyn Fn(u64),
+}
+
+impl<'a, R: Read> Counted<'a, R> {
+    pub fn new(inner: R, start: u64, report: &'a dyn Fn(u64)) -> Self {
+        Self {
+            inner,
+            done: start,
+            reported: start,
+            report,
+        }
+    }
+}
+
+impl<R: Read> Read for Counted<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.done += n as u64;
+        if n == 0 || self.done - self.reported >= 256 * 1024 {
+            self.reported = self.done;
+            (self.report)(self.done);
+        }
+        Ok(n)
+    }
+}
+
+/// Saves a download into `dest`, telling `progress` how far it has come.
+pub fn save_download(
+    res: ureq::Response,
+    dest: &Path,
+    progress: &Progress,
+) -> Result<(), RemoteError> {
+    let total = res
+        .header("content-length")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let report = |done| progress(Step::Download { done, total });
+    report(0);
+    let mut body = Counted::new(res.into_reader().take(MAX_DOWNLOAD), 0, &report);
+    let mut file = std::io::BufWriter::new(std::fs::File::create(dest)?);
+    std::io::copy(&mut body, &mut file).map_err(|e| RemoteError::Network(e.to_string()))?;
+    std::io::Write::flush(&mut file)?;
+    Ok(())
+}
+
 /// Syncs the library at `path` with `remote`. Returns the ids of local books removed
 /// because they were deleted on another device.
-pub fn sync(path: &Path, remote: &dyn Remote) -> Result<Vec<i64>, RemoteError> {
+pub fn sync(
+    path: &Path,
+    remote: &dyn Remote,
+    progress: &Progress,
+) -> Result<Vec<i64>, RemoteError> {
+    let incoming = path.with_extension("sync-in.gz");
+    let outgoing = path.with_extension("sync-out.gz");
+    let result = sync_files(path, remote, progress, &incoming, &outgoing);
+    let _ = std::fs::remove_file(&incoming);
+    let _ = std::fs::remove_file(&outgoing);
+    result
+}
+
+fn sync_files(
+    path: &Path,
+    remote: &dyn Remote,
+    progress: &Progress,
+    incoming: &Path,
+    outgoing: &Path,
+) -> Result<Vec<i64>, RemoteError> {
     let target = remote.target();
     let mut gone = Vec::new();
     for _ in 0..ATTEMPTS {
@@ -126,13 +229,16 @@ pub fn sync(path: &Path, remote: &dyn Remote) -> Result<Vec<i64>, RemoteError> {
             .filter(|_| db::get_state(&conn, TARGET).ok().flatten().as_deref() == Some(&target));
 
         // Take in what other devices synced since this one last did.
-        let current = match remote.fetch(known.as_deref())? {
-            Fetched::File { body, etag } => {
-                gone.extend(sync::merge(
+        let current = match remote.fetch(known.as_deref(), incoming, progress)? {
+            Fetched::File { etag } => {
+                progress(Step::Merge);
+                let file = std::io::BufReader::new(std::fs::File::open(incoming)?);
+                gone.extend(sync::merge_from(
                     &mut conn,
-                    &body,
+                    file,
                     &path.with_extension("sync-in"),
                 )?);
+                let _ = std::fs::remove_file(incoming);
                 known = etag.clone();
                 etag
             }
@@ -144,8 +250,9 @@ pub fn sync(path: &Path, remote: &dyn Remote) -> Result<Vec<i64>, RemoteError> {
             db::set_state(&conn, ETAG, etag)?;
         }
 
-        let bytes = sync::export(&conn, &path.with_extension("sync-out"))?;
-        match remote.store(&bytes, current.as_deref())? {
+        progress(Step::Pack);
+        sync::export_to(&conn, &path.with_extension("sync-out"), outgoing)?;
+        match remote.store(outgoing, current.as_deref(), progress)? {
             Stored::Saved(etag) => {
                 db::set_state(&conn, TARGET, &target)?;
                 match etag {
@@ -193,17 +300,34 @@ mod tests {
         fn target(&self) -> String {
             "memory".into()
         }
-        fn fetch(&self, known: Option<&str>) -> Result<Fetched, RemoteError> {
+        fn fetch(
+            &self,
+            known: Option<&str>,
+            dest: &Path,
+            _: &Progress,
+        ) -> Result<Fetched, RemoteError> {
             Ok(match &*self.file.borrow() {
                 None => Fetched::Missing,
                 Some((_, etag)) if Some(etag.as_str()) == known => Fetched::Unchanged,
-                Some((body, etag)) => Fetched::File {
-                    body: body.clone(),
-                    etag: Some(etag.clone()),
-                },
+                Some((body, etag)) => {
+                    std::fs::write(dest, body)?;
+                    Fetched::File {
+                        etag: Some(etag.clone()),
+                    }
+                }
             })
         }
-        fn store(&self, body: &[u8], current: Option<&str>) -> Result<Stored, RemoteError> {
+        fn store(
+            &self,
+            file: &Path,
+            current: Option<&str>,
+            progress: &Progress,
+        ) -> Result<Stored, RemoteError> {
+            let body = std::fs::read(file)?;
+            progress(Step::Upload {
+                done: body.len() as u64,
+                total: body.len() as u64,
+            });
             *self.stores.borrow_mut() += 1;
             if let Some(other) = self.race.borrow_mut().take() {
                 self.put(other);
@@ -212,7 +336,7 @@ mod tests {
             if now.as_deref() != current {
                 return Ok(Stored::Conflict);
             }
-            Ok(Stored::Saved(Some(self.put(body.to_vec()))))
+            Ok(Stored::Saved(Some(self.put(body))))
         }
     }
 
@@ -244,14 +368,27 @@ mod tests {
         rules::set(&db::open(&a).unwrap(), Kind::Online, 1, "en", &rule("one")).unwrap();
         rules::set(&db::open(&b).unwrap(), Kind::Online, 2, "en", &rule("two")).unwrap();
 
-        sync(&a, &&place).unwrap(); // first upload
-        sync(&b, &&place).unwrap(); // takes A's, adds its own
-        sync(&a, &&place).unwrap(); // takes B's
+        let steps = RefCell::new(Vec::new());
+        let progress = |s: Step| steps.borrow_mut().push(s);
+        sync(&a, &&place, &progress).unwrap(); // first upload
+        sync(&b, &&place, &|_| ()).unwrap(); // takes A's, adds its own
+        sync(&a, &&place, &progress).unwrap(); // takes B's
         for path in [&a, &b] {
             assert_eq!(rules_of(path, 1), Some(rule("one")));
             assert_eq!(rules_of(path, 2), Some(rule("two")));
         }
         assert_eq!(*place.stores.borrow(), 3);
+        let names: Vec<_> = steps
+            .borrow()
+            .iter()
+            .map(|s| match s {
+                Step::Download { .. } => "download",
+                Step::Merge => "merge",
+                Step::Pack => "pack",
+                Step::Upload { .. } => "upload",
+            })
+            .collect();
+        assert_eq!(names, ["pack", "upload", "merge", "pack", "upload"]);
         assert!(sync::synced_at(&db::open(&a).unwrap()).unwrap().is_some());
     }
 
@@ -265,10 +402,10 @@ mod tests {
 
         // B stores its file between A's download and A's upload.
         *place.race.borrow_mut() = Some(b_file);
-        sync(&a, &&place).unwrap();
+        sync(&a, &&place, &|_| ()).unwrap();
         assert_eq!(*place.stores.borrow(), 2);
         assert_eq!(rules_of(&a, 2), Some(rule("two")));
-        sync(&b, &&place).unwrap();
+        sync(&b, &&place, &|_| ()).unwrap();
         assert_eq!(rules_of(&b, 1), Some(rule("one")));
     }
 }

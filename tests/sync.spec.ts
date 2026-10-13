@@ -39,7 +39,7 @@ async function boot(page: Page) {
  * brings in `There Tale` from another device, or fails with `fail`. Calls go to
  * `window.__calls`, the account each sync was given to `window.__accounts`.
  */
-async function nativeApp(page: Page, opts: { saved?: Record<string, unknown>; refuse?: string; fail?: string } = {}) {
+async function nativeApp(page: Page, opts: { saved?: Record<string, unknown>; refuse?: string; fail?: string; hold?: boolean } = {}) {
   await page.addInitScript(({ here, there, opts }) => {
     const w = window as unknown as Record<string, unknown>;
     const calls: string[] = [];
@@ -47,6 +47,10 @@ async function nativeApp(page: Page, opts: { saved?: Record<string, unknown>; re
     w.__calls = calls;
     w.__accounts = accounts;
     let next = 1;
+    const callbacks = new Map<number, (m: unknown) => void>();
+    /** With `hold`, a sync reports half its upload and waits for `window.__release()`. */
+    let release = () => undefined as void;
+    w.__release = () => release();
     let rev = 0;
     let favs = [here.id];
     let novels = [{ id: here.id, data: here }];
@@ -56,7 +60,10 @@ async function nativeApp(page: Page, opts: { saved?: Record<string, unknown>; re
     w.isTauri = true;
     w.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => undefined };
     w.__TAURI_INTERNALS__ = {
-      transformCallback: () => next++,
+      transformCallback: (cb: (m: unknown) => void) => {
+        callbacks.set(next, cb);
+        return next++;
+      },
       unregisterCallback: () => undefined,
       convertFileSrc: (p: string, proto: string) => `${proto}://localhost/${p}`,
       invoke: async (cmd: string, args: Record<string, unknown>) => {
@@ -82,6 +89,12 @@ async function nativeApp(page: Page, opts: { saved?: Record<string, unknown>; re
           case 'library_sync': {
             accounts.push((args as { account: unknown }).account);
             if (opts.fail) throw `cannot read book: ${opts.fail}`;
+            if (opts.hold) {
+              const send = callbacks.get((args as { onProgress: { id: number } }).onProgress.id)!;
+              send({ index: 0, message: { step: 'pack' } });
+              send({ index: 1, message: { step: 'upload', done: 12 * 1024 * 1024, total: 30 * 1024 * 1024 } });
+              await new Promise<void>(r => { release = r; });
+            }
             favs = [...favs, there.id];
             novels = [...novels, { id: there.id, data: there }];
             rev++;
@@ -145,6 +158,19 @@ test('sync goes through the BenNovel server with the session, and shows the merg
     token: expect.stringMatching(/^eyJ.+\..+\.sig$/)
   }]);
   expect(syncCalls(server)).toEqual([]);
+});
+
+test('a sync shows how far its upload has come', async ({ page }) => {
+  await boot(page);
+  await nativeApp(page, { hold: true });
+  await fakeSupabase(page);
+  await page.goto('/');
+  await openProfile(page);
+  await page.getByRole('button', { name: 'Sync', exact: true }).click();
+  await expect(page.getByText('Uploading… 40% · 12 / 30 MB')).toBeVisible();
+  await page.evaluate(() => (window as unknown as { __release: () => void }).__release());
+  await expect(page.getByText('Library synced')).toBeVisible();
+  await expect(page.getByText('Last synced: Just now')).toBeVisible();
 });
 
 test('a refused session asks to log in again', async ({ page }) => {

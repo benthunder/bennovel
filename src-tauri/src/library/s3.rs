@@ -7,7 +7,7 @@
 //! there was none). A server that ignores those headers still works, but the last
 //! upload then wins.
 
-use super::remote::{agent, Fetched, Remote, RemoteError, Stored, MAX_DOWNLOAD};
+use super::remote::{agent, Fetched, Progress, Remote, RemoteError, Step, Stored, MAX_DOWNLOAD};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -227,7 +227,13 @@ impl Remote for S3 {
         self.config.target()
     }
 
-    fn fetch(&self, known: Option<&str>) -> Result<Fetched, RemoteError> {
+    fn fetch(
+        &self,
+        known: Option<&str>,
+        dest: &Path,
+        progress: &Progress,
+    ) -> Result<Fetched, RemoteError> {
+        progress(Step::Download { done: 0, total: 0 });
         let mut headers = Vec::new();
         if let Some(etag) = known {
             headers.push(("if-none-match", etag));
@@ -235,17 +241,26 @@ impl Remote for S3 {
         let r =
             Client::new(&self.config).send("GET", Some(&self.config.object()), &[], &headers)?;
         match r.status {
-            200 => Ok(Fetched::File {
-                body: r.body,
-                etag: r.etag,
-            }),
+            200 => {
+                std::fs::write(dest, &r.body)?;
+                Ok(Fetched::File { etag: r.etag })
+            }
             304 => Ok(Fetched::Unchanged),
             404 => Ok(Fetched::Missing),
             _ => Err(fail(&r)),
         }
     }
 
-    fn store(&self, body: &[u8], current: Option<&str>) -> Result<Stored, RemoteError> {
+    fn store(
+        &self,
+        file: &Path,
+        current: Option<&str>,
+        progress: &Progress,
+    ) -> Result<Stored, RemoteError> {
+        // Sent in one request, the way any S3 server takes it.
+        let body = std::fs::read(file)?;
+        let total = body.len() as u64;
+        progress(Step::Upload { done: 0, total });
         let condition = match current {
             Some(etag) => ("if-match", etag),
             None => ("if-none-match", "*"),
@@ -253,11 +268,14 @@ impl Remote for S3 {
         let r = Client::new(&self.config).send(
             "PUT",
             Some(&self.config.object()),
-            body,
+            &body,
             &[condition, ("content-type", "application/gzip")],
         )?;
         match r.status {
-            200 => Ok(Stored::Saved(r.etag)),
+            200 => {
+                progress(Step::Upload { done: total, total });
+                Ok(Stored::Saved(r.etag))
+            }
             412 | 409 => Ok(Stored::Conflict),
             _ => Err(fail(&r)),
         }
@@ -521,7 +539,7 @@ pub(crate) mod tests {
         rules::set(&db::open(&b).unwrap(), Kind::Online, 2, "en", &rule("two")).unwrap();
 
         let place = S3::new(config.clone());
-        let sync = |path: &Path| super::super::remote::sync(path, &place).unwrap();
+        let sync = |path: &Path| super::super::remote::sync(path, &place, &|_| ()).unwrap();
         sync(&a); // first upload
         sync(&b); // takes A's, adds its own
         sync(&a); // takes B's

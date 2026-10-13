@@ -31,9 +31,9 @@ pub fn synced_at(conn: &Connection) -> rusqlite::Result<Option<i64>> {
     Ok(db::get_state(conn, SYNCED_AT)?.and_then(|v| v.parse().ok()))
 }
 
-/// A consistent copy of the library file (the live one is in WAL mode), gzipped.
-/// `tmp` is a scratch path that must not exist.
-pub fn export(conn: &Connection, tmp: &Path) -> Result<Vec<u8>, SyncError> {
+/// A consistent copy of the library file (the live one is in WAL mode), gzipped into
+/// `out`; returns its size. `tmp` is a scratch path that must not exist.
+pub fn export_to(conn: &Connection, tmp: &Path, out: &Path) -> Result<u64, SyncError> {
     let _ = std::fs::remove_file(tmp);
     conn.execute("vacuum into ?1", [tmp.to_string_lossy()])?;
     let result = (|| {
@@ -42,24 +42,47 @@ pub fn export(conn: &Connection, tmp: &Path) -> Result<Vec<u8>, SyncError> {
         super::offline::strip(&copy)?;
         copy.execute("vacuum", [])?;
         drop(copy);
-        let mut enc = GzEncoder::new(Vec::new(), Compression::default());
+        let file = std::io::BufWriter::new(std::fs::File::create(out)?);
+        let mut enc = GzEncoder::new(file, Compression::default());
         std::io::copy(&mut std::fs::File::open(tmp)?, &mut enc)?;
-        Ok::<_, SyncError>(enc.finish()?)
+        enc.finish()?
+            .into_inner()
+            .map_err(|e| e.into_error())?
+            .sync_all()?;
+        Ok::<_, SyncError>(std::fs::metadata(out)?.len())
     })();
     let _ = std::fs::remove_file(tmp);
+    result
+}
+
+/// `export_to`, in memory.
+#[cfg(test)]
+pub fn export(conn: &Connection, tmp: &Path) -> Result<Vec<u8>, SyncError> {
+    let out = tmp.with_extension("gz");
+    let result = export_to(conn, tmp, &out).and_then(|_| Ok(std::fs::read(&out)?));
+    let _ = std::fs::remove_file(&out);
     result
 }
 
 /// Merges a downloaded snapshot (gzipped, from `export` on any device) into `conn`.
 /// `tmp` is a scratch path for the unpacked file. Returns the ids of local books
 /// removed because they were deleted elsewhere (their kept originals can go).
+#[cfg(test)]
 pub fn merge(conn: &mut Connection, snapshot: &[u8], tmp: &Path) -> Result<Vec<i64>, SyncError> {
+    merge_from(conn, snapshot, tmp)
+}
+
+/// `merge`, reading the snapshot from `snapshot` as it goes (a downloaded file).
+pub fn merge_from(
+    conn: &mut Connection,
+    snapshot: impl Read,
+    tmp: &Path,
+) -> Result<Vec<i64>, SyncError> {
     let _ = std::fs::remove_file(tmp);
     let result = (|| {
-        let mut file = std::fs::File::create(tmp)?;
-        let mut raw = Vec::new();
-        GzDecoder::new(snapshot).read_to_end(&mut raw)?;
-        file.write_all(&raw)?;
+        let mut file = std::io::BufWriter::new(std::fs::File::create(tmp)?);
+        std::io::copy(&mut GzDecoder::new(snapshot), &mut file)?;
+        file.flush()?;
         drop(file);
         // Brings a file from an older app up to this schema.
         let remote = db::open(tmp)?;

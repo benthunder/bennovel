@@ -3,87 +3,87 @@
 // _ACCESS_KEY and _SECRET_KEY are set; skipped otherwise.
 
 import { assertEquals } from 'jsr:@std/assert@1.0.13';
-import { type Deps, handle } from './handler.ts';
+import { type Deps, handle, MAX_PARTS } from './handler.ts';
 import { type SyncStorage, s3Storage } from './storage.ts';
 
-/** Storage in memory, with numbered ETags. */
-function memory(): SyncStorage & { files: Map<string, { body: Uint8Array<ArrayBuffer>; etag: string }> } {
-  const files = new Map<string, { body: Uint8Array<ArrayBuffer>; etag: string }>();
-  let n = 0;
+/** Records what it is asked; the file "has" ETag `"1"`. */
+function fake(): SyncStorage & { calls: string[] } {
+  const calls: string[] = [];
   return {
-    files,
-    get(key, known) {
-      const f = files.get(key);
-      if (!f) return Promise.resolve({ kind: 'missing' });
-      if (f.etag === known) return Promise.resolve({ kind: 'unchanged' });
-      return Promise.resolve({ kind: 'file', body: f.body, etag: f.etag });
+    calls,
+    download: key => Promise.resolve(`get:${key}`),
+    startUpload: (key, parts) => {
+      calls.push(`start ${key} ${parts}`);
+      return Promise.resolve({ uploadId: 'up-1', urls: Array.from({ length: parts }, (_, i) => `put:${key}:${i + 1}`) });
     },
-    put(key, body, expected) {
-      if ((files.get(key)?.etag ?? null) !== expected) return Promise.resolve({ kind: 'conflict' });
-      const etag = `"${++n}"`;
-      files.set(key, { body, etag });
-      return Promise.resolve({ kind: 'stored', etag });
+    finishUpload: (key, uploadId, parts, expected) => {
+      calls.push(`finish ${key} ${uploadId} ${parts.join(',')} ${expected}`);
+      return Promise.resolve(expected === '"1"' ? { kind: 'stored', etag: '"2"' } : { kind: 'conflict' });
+    },
+    abortUpload: (key, uploadId) => {
+      calls.push(`abort ${key} ${uploadId}`);
+      return Promise.resolve();
     }
   };
 }
 
 const deps = (storage: SyncStorage | null): Deps => ({
-  userId: token => Promise.resolve(token === 'mai-token' ? 'mai' : token === 'an-token' ? 'an' : null),
+  userId: token => Promise.resolve(token === 'mai-token' ? 'mai' : null),
   storage: () => storage
 });
 
-const call = (d: Deps, method: string, token: string | null, headers: Record<string, string> = {}, body?: string) =>
-  handle(
+async function call(d: Deps, token: string | null, body: unknown, method = 'POST') {
+  const res = await handle(
     new Request('https://x.supabase.co/functions/v1/sync', {
       method,
-      body,
-      headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...headers }
+      body: method === 'POST' ? JSON.stringify(body) : undefined,
+      headers: token ? { authorization: `Bearer ${token}` } : {}
     }),
     d
   );
+  return { status: res.status, body: await res.json() };
+}
 
-Deno.test('each account reads and writes only its own file, one device at a time', async () => {
-  const store = memory();
-  const d = deps(store);
+const KEY = 'users/mai/library.sqlite.gz';
 
-  assertEquals((await call(d, 'GET', 'mai-token')).status, 404);
-  const first = await call(d, 'PUT', 'mai-token', {}, 'v1');
-  assertEquals(first.status, 200);
-  const etag = first.headers.get('x-sync-etag')!;
-  assertEquals(await first.json(), { etag });
-  assertEquals([...store.files.keys()], ['users/mai/library.sqlite.gz']);
-
-  // A device that never synced cannot overwrite it; one that has the file can.
-  assertEquals((await call(d, 'PUT', 'mai-token', {}, 'v2')).status, 412);
-  assertEquals((await call(d, 'PUT', 'mai-token', { 'x-sync-expected': '"stale"' }, 'v2')).status, 412);
-  const second = await call(d, 'PUT', 'mai-token', { 'x-sync-expected': etag }, 'v2');
-  assertEquals(second.status, 200);
-  const etag2 = second.headers.get('x-sync-etag')!;
-
-  const got = await call(d, 'GET', 'mai-token', { 'x-sync-etag': etag });
-  assertEquals(got.status, 200);
-  assertEquals(got.headers.get('x-sync-etag'), etag2);
-  assertEquals(await got.text(), 'v2');
-  assertEquals((await call(d, 'GET', 'mai-token', { 'x-sync-etag': etag2 })).status, 304);
-
-  // Another account sees nothing of it.
-  assertEquals((await call(d, 'GET', 'an-token')).status, 404);
+Deno.test("links and uploads are only for the account's own file", async () => {
+  const s = fake();
+  const d = deps(s);
+  assertEquals(await call(d, 'mai-token', { op: 'download' }), { status: 200, body: { url: `get:${KEY}` } });
+  assertEquals(await call(d, 'mai-token', { op: 'upload-start', parts: 2 }), {
+    status: 200,
+    body: { uploadId: 'up-1', urls: [`put:${KEY}:1`, `put:${KEY}:2`] }
+  });
+  const finish = { op: 'upload-finish', uploadId: 'up-1', parts: ['"a"', '"b"'] };
+  assertEquals(await call(d, 'mai-token', { ...finish, etag: '"1"' }), { status: 200, body: { etag: '"2"' } });
+  assertEquals((await call(d, 'mai-token', { ...finish, etag: '"0"' })).status, 412);
+  assertEquals((await call(d, 'mai-token', finish)).status, 412);
+  assertEquals(await call(d, 'mai-token', { op: 'upload-abort', uploadId: 'up-1' }), { status: 200, body: {} });
+  assertEquals(s.calls, [
+    `start ${KEY} 2`,
+    `finish ${KEY} up-1 "a","b" "1"`,
+    `finish ${KEY} up-1 "a","b" "0"`,
+    `finish ${KEY} up-1 "a","b" null`,
+    `abort ${KEY} up-1`
+  ]);
 });
 
-Deno.test('refuses requests without a valid session or storage', async () => {
-  assertEquals((await call(deps(memory()), 'GET', null)).status, 401);
-  assertEquals((await call(deps(memory()), 'GET', 'forged')).status, 401);
-  assertEquals((await call(deps(memory()), 'DELETE', 'mai-token')).status, 405);
-  const off = await call(deps(null), 'GET', 'mai-token');
-  assertEquals(off.status, 503);
-  assertEquals(await off.json(), { error: 'not-configured' });
-  assertEquals((await call(deps(memory()), 'PUT', 'mai-token', {}, '')).status, 400);
+Deno.test('refuses requests without a valid session, storage or request', async () => {
+  const d = deps(fake());
+  assertEquals((await call(d, null, { op: 'download' })).status, 401);
+  assertEquals((await call(d, 'forged', { op: 'download' })).status, 401);
+  assertEquals((await call(d, 'mai-token', null, 'GET')).status, 405);
+  assertEquals(await call(deps(null), 'mai-token', { op: 'download' }), { status: 503, body: { error: 'not-configured' } });
+  assertEquals((await call(d, 'mai-token', { op: 'delete' })).status, 400);
+  assertEquals((await call(d, 'mai-token', { op: 'upload-start', parts: 0 })).status, 400);
+  assertEquals((await call(d, 'mai-token', { op: 'upload-start', parts: MAX_PARTS + 1 })).status, 413);
+  assertEquals((await call(d, 'mai-token', { op: 'upload-finish', uploadId: 'up-1', parts: [] })).status, 400);
 });
 
 const env = (name: string) => Deno.env.get(`SYNC_TEST_S3_${name}`);
 
 Deno.test({
-  name: 'S3 storage keeps the file and refuses stale writes',
+  name: 'S3: parts uploaded through links become the file, stale uploads are refused',
   ignore: !env('ENDPOINT'),
   async fn() {
     const s3 = s3Storage({
@@ -94,17 +94,38 @@ Deno.test({
       secretKey: env('SECRET_KEY')!
     });
     const key = `bennovel-test/${crypto.randomUUID()}/library.sqlite.gz`;
-    assertEquals(await s3.get(key, null), { kind: 'missing' });
-    const first = await s3.put(key, new TextEncoder().encode('v1'), null);
+    const MiB = 1024 * 1024;
+    /** Uploads `sizes` as the parts of one file, then finishes it expecting `expected`. */
+    async function upload(sizes: number[], fill: number, expected: string | null) {
+      const { uploadId, urls } = await s3.startUpload(key, sizes.length);
+      const etags = [];
+      for (const [i, size] of sizes.entries()) {
+        const res = await fetch(urls[i], { method: 'PUT', body: new Uint8Array(size).fill(fill) });
+        assertEquals(res.status, 200);
+        etags.push(res.headers.get('etag')!);
+        await res.body?.cancel();
+      }
+      return s3.finishUpload(key, uploadId, etags, expected);
+    }
+
+    const missing = await fetch(await s3.download(key));
+    assertEquals(missing.status, 404);
+    await missing.body?.cancel();
+
+    const first = await upload([5 * MiB, 10], 1, null);
     if (first.kind !== 'stored' || !first.etag) throw new Error(`not stored: ${JSON.stringify(first)}`);
-    assertEquals((await s3.put(key, new TextEncoder().encode('v2'), null)).kind, 'conflict');
-    assertEquals((await s3.put(key, new TextEncoder().encode('v2'), '"stale"')).kind, 'conflict');
-    assertEquals(await s3.get(key, first.etag), { kind: 'unchanged' });
-    const second = await s3.put(key, new TextEncoder().encode('v2'), first.etag);
+    assertEquals((await upload([10], 2, null)).kind, 'conflict');
+    assertEquals((await upload([10], 2, '"stale"')).kind, 'conflict');
+    const second = await upload([7], 3, first.etag);
     if (second.kind !== 'stored') throw new Error('not stored');
-    const got = await s3.get(key, first.etag);
-    if (got.kind !== 'file') throw new Error(`expected the file, got ${got.kind}`);
-    assertEquals(new TextDecoder().decode(got.body), 'v2');
+
+    const url = await s3.download(key);
+    const unchanged = await fetch(url, { headers: { 'if-none-match': second.etag! } });
+    assertEquals(unchanged.status, 304);
+    await unchanged.body?.cancel();
+    const got = await fetch(url);
+    assertEquals([got.status, got.headers.get('etag')], [200, second.etag]);
+    assertEquals(new Uint8Array(await got.arrayBuffer()), new Uint8Array(7).fill(3));
 
     // Clean up.
     const { AwsClient } = await import('npm:aws4fetch@1.0.20');
