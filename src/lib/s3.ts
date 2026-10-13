@@ -1,12 +1,12 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { MessageKey } from '../i18n/en';
-import { SyncFailure } from './sync';
+import { SyncFailure, syncFailure } from './sync';
 
 /*
- * Sync through the user's own S3-compatible storage (MinIO, RustFS…) instead of the
- * account's Supabase Storage. The native app does all of it (src-tauri/src/library/s3.rs):
- * the keys are kept on this device beside the library, never in the synced file, and
- * the secret key never comes back to this side.
+ * Settings for syncing through the user's own S3-compatible storage (MinIO, RustFS…)
+ * instead of the BenNovel server; the sync itself is syncLibrary (sync.ts). The native
+ * app does all of it (src-tauri/src/library/s3.rs): the keys are kept on this device
+ * beside the library, never in the synced file, and the secret key never comes back
+ * to this side.
  */
 
 /** The storage set for a library, as shown (no secret key). */
@@ -29,20 +29,10 @@ export interface S3Config {
   secretKey: string;
 }
 
-/** What the native app's error says went wrong, as a message to show. */
+/** A failure while checking the storage: a network error means this server. */
 function failure(error: unknown): SyncFailure {
-  console.error(error);
-  const text = String((error as { message?: string } | null)?.message ?? error);
-  const key: MessageKey =
-    text.includes('sync-outdated') ? 'sync.err.outdated'
-      : text.includes('s3-endpoint') ? 's3.err.endpoint'
-        : text.includes('s3-bucket') ? 's3.err.bucket'
-          : text.includes('s3-keys') || text.includes('s3-auth') ? 's3.err.keys'
-            : text.includes('s3-network') ? 's3.err.network'
-              : text.includes('s3-too-large') ? 'sync.err.tooLarge'
-                : text.includes('s3-busy') ? 'sync.err.busy'
-                  : 'sync.err.generic';
-  return new SyncFailure(key, error);
+  const f = syncFailure(error);
+  return f.key === 'sync.err.network' ? new SyncFailure('s3.err.network', error) : f;
 }
 
 export const getS3Settings = (user: string) => invoke<S3Settings | null>('s3_config_get', { user });
@@ -51,15 +41,6 @@ export const getS3Settings = (user: string) => invoke<S3Settings | null>('s3_con
 export async function setS3Config(user: string, config: S3Config | null): Promise<void> {
   try {
     await invoke('s3_config_set', { user, config });
-  } catch (e) {
-    throw failure(e);
-  }
-}
-
-/** Syncs the library of `user` with its storage. Returns the time of the sync (epoch ms). */
-export async function syncS3(user: string): Promise<number> {
-  try {
-    return await invoke<number>('s3_sync', { user });
   } catch (e) {
     throw failure(e);
   }

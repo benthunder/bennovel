@@ -1,7 +1,6 @@
-//! Sync between devices through one file per user in Supabase Storage. The app (JS)
-//! does the network part; here the library file is exported as a gzipped snapshot and
-//! a downloaded snapshot is merged into it row by row, so changes made on two devices
-//! both survive:
+//! Sync between devices through one file per user (remote.rs does the network part).
+//! Here the library file is exported as a gzipped snapshot, and a downloaded snapshot
+//! is merged into it row by row, so changes made on two devices both survive:
 //! - favourites: the later of "added" and "removed" wins (a tie keeps it);
 //! - history and progress: the most recent read wins; a removal newer than the read wins;
 //! - imported books: matched by `book_key`; a book missing here is copied whole
@@ -25,21 +24,11 @@ pub enum SyncError {
     Outdated,
 }
 
-const LAST_VERSION: &str = "last_version";
 pub(super) const SYNCED_AT: &str = "synced_at";
 
-/// The server version this file was last synced with, and when (epoch ms).
-pub fn status(conn: &Connection) -> rusqlite::Result<(i64, Option<i64>)> {
-    let version = db::get_state(conn, LAST_VERSION)?
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
-    let at = db::get_state(conn, SYNCED_AT)?.and_then(|v| v.parse().ok());
-    Ok((version, at))
-}
-
-pub fn mark_synced(conn: &Connection, version: i64) -> rusqlite::Result<()> {
-    db::set_state(conn, LAST_VERSION, &version.to_string())?;
-    db::set_state(conn, SYNCED_AT, &db::now_ms().to_string())
+/// When this file was last synced (epoch ms).
+pub fn synced_at(conn: &Connection) -> rusqlite::Result<Option<i64>> {
+    Ok(db::get_state(conn, SYNCED_AT)?.and_then(|v| v.parse().ok()))
 }
 
 /// A consistent copy of the library file (the live one is in WAL mode), gzipped.
