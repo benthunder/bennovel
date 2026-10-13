@@ -3,8 +3,8 @@ import type { MessageKey } from '../i18n/en';
 import { SyncFailure } from './sync';
 
 /*
- * Sync through S3-compatible storage: the user's own (MinIO, RustFS…), or the BenNovel
- * sync server built into the app for signed-in accounts, instead of Supabase Storage. The native app does all of it (src-tauri/src/library/s3.rs):
+ * Sync through the user's own S3-compatible storage (MinIO, RustFS…) instead of the
+ * account's Supabase Storage. The native app does all of it (src-tauri/src/library/s3.rs):
  * the keys are kept on this device beside the library, never in the synced file, and
  * the secret key never comes back to this side.
  */
@@ -56,16 +56,10 @@ export async function setS3Config(user: string, config: S3Config | null): Promis
   }
 }
 
-/** Whether this build has the BenNovel sync server, for signed-in accounts. */
-export const hasBuiltinS3 = () => invoke<boolean>('s3_builtin');
-
-/**
- * Syncs the library of `user` with its own storage, else (given the account id `uid`)
- * with the account's folder on the BenNovel sync server. Returns when (epoch ms).
- */
-export async function syncS3(user: string, uid?: string): Promise<number> {
+/** Syncs the library of `user` with its storage. Returns the time of the sync (epoch ms). */
+export async function syncS3(user: string): Promise<number> {
   try {
-    return await invoke<number>('s3_sync', { user, uid: uid ?? null });
+    return await invoke<number>('s3_sync', { user });
   } catch (e) {
     throw failure(e);
   }

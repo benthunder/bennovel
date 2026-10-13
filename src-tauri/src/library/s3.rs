@@ -54,33 +54,6 @@ pub enum S3Error {
     Busy,
 }
 
-/// The BenNovel sync server built into the app (see build.rs), with the account's own
-/// folder `users/<uid>`; `None` when this build has no server set.
-pub fn builtin(uid: &str) -> Option<Config> {
-    let uid: String = uid
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
-        .collect();
-    if uid.is_empty() || env!("BENNOVEL_S3_SECRET_KEY").is_empty() {
-        return None;
-    }
-    Config {
-        endpoint: env!("BENNOVEL_S3_ENDPOINT").into(),
-        region: env!("BENNOVEL_S3_REGION").into(),
-        bucket: env!("BENNOVEL_S3_BUCKET").into(),
-        folder: format!("users/{uid}"),
-        access_key: env!("BENNOVEL_S3_ACCESS_KEY").into(),
-        secret_key: env!("BENNOVEL_S3_SECRET_KEY").into(),
-    }
-    .normalized()
-    .ok()
-}
-
-/// Whether this build has the BenNovel sync server.
-pub fn has_builtin() -> bool {
-    builtin("x").is_some()
-}
-
 /// Where a library's S3 settings are kept: beside the library file.
 pub fn config_path(library: &Path) -> PathBuf {
     library.with_extension("s3.json")
@@ -505,16 +478,6 @@ mod tests {
         assert!(matches!(no_bucket, Err(S3Error::Config("s3-bucket"))));
         let path = Config { endpoint: "https://h/x".into(), ..c }.normalized();
         assert!(matches!(path, Err(S3Error::Config("s3-endpoint"))));
-    }
-
-    #[test]
-    fn the_built_in_server_keeps_each_account_in_its_folder() {
-        assert!(builtin("").is_none());
-        // Only when this build has the server's keys (.env.local or CI secrets).
-        if let Some(c) = builtin("7b0c2a52-1f4e/../x") {
-            assert_eq!(c.object(), "users/7b0c2a52-1f4ex/library.sqlite.gz");
-            assert!(has_builtin());
-        }
     }
 
     #[test]

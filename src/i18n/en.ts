@@ -194,7 +194,6 @@ export const en = {
   'sync.err.generic': 'Sync failed. Please try again.',
   's3.via': 'Sync to: {where}',
   's3.account': 'your account',
-  's3.server': 'BenNovel server',
   's3.setUp': 'Use your own storage',
   's3.change': 'Storage settings',
   's3.guestHint': 'No account? Sync through your own S3 storage (MinIO, RustFS…).',
