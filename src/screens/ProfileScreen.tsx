@@ -7,7 +7,7 @@ import { findNovel, getContentLangs, getNovels } from '../data/repository';
 import { relativeTime, useI18n } from '../i18n';
 import type { MessageKey } from '../i18n/en';
 import { s3Host, setS3Config, type S3Config } from '../lib/s3';
-import { SyncFailure } from '../lib/sync';
+import { SyncFailure, type SyncStep } from '../lib/sync';
 import { useApp } from '../store/AppStore';
 import { useLayout } from '../lib/useLayout';
 import { canOpenLocalBooks, libraryUser, listLibrary, localCover, openLibraryBook, type LibraryBook } from '../lib/localBook';
@@ -103,6 +103,19 @@ export function ProfileScreen() {
   );
 }
 
+const MB = 1024 * 1024;
+
+/** What a running sync is doing, e.g. "Uploading… 40% · 12 / 30 MB". */
+function stepText(t: ReturnType<typeof useI18n>['t'], step: SyncStep | null): string {
+  if (!step) return t('sync.syncing');
+  if (!('done' in step)) return t(`sync.step.${step.step}`);
+  const mb = (n: number) => (n / MB).toFixed(n < 10 * MB ? 1 : 0);
+  const progress = step.total > 0
+    ? `${Math.floor((step.done / step.total) * 100)}% · ${mb(step.done)} / ${mb(step.total)} MB`
+    : step.done > 0 ? `${mb(step.done)} MB` : '';
+  return t(`sync.step.${step.step}`, { progress }).trim();
+}
+
 /**
  * The Sync button: brings this device's library and its synced copy together, in the
  * account's storage or the user's own S3 storage.
@@ -111,7 +124,7 @@ function SyncCard() {
   const { t } = useI18n();
   const app = useApp();
   const [editing, setEditing] = useState(false);
-  const status = app.syncing ? t('sync.syncing') : app.syncedAt ? t('sync.last', { time: relativeTime(t, app.syncedAt) }) : t('sync.never');
+  const status = app.syncing ? stepText(t, app.syncStep) : app.syncedAt ? t('sync.last', { time: relativeTime(t, app.syncedAt) }) : t('sync.never');
   const where = app.s3 ? `${app.s3.bucket} · ${s3Host(app.s3)}` : t('s3.account');
   return (
     <div style={{ marginTop: 12, borderRadius: 28, background: 'var(--color-surface)', padding: '12px 12px 10px 18px', display: 'flex', flexDirection: 'column', gap: 6 }}>

@@ -7,7 +7,7 @@ import { useT } from '../i18n';
 import { canOpenLocalBooks, libraryUser, type LibraryPlace, type LocalBook } from '../lib/localBook';
 import { loadReading, saveReading } from '../lib/readingStore';
 import { getS3Settings, type S3Settings } from '../lib/s3';
-import { getSyncStatus, syncLibrary, SyncFailure } from '../lib/sync';
+import { getSyncStatus, syncLibrary, SyncFailure, type SyncStep } from '../lib/sync';
 import { canDownload, deleteDownload, downloadChapter, downloadLang, downloadNovel, listDownloads, setDownloads, type Download } from '../lib/offline';
 import { claimGuestLibrary, listenForSignInLinks, signOut, takeOAuthProvider, takeRecovery, toUser } from '../lib/auth';
 import { supabase } from '../lib/supabase';
@@ -368,6 +368,8 @@ function useAppState() {
   }, [favs, setFavs]);
 
   const [syncing, setSyncing] = useState(false);
+  /** Where the running sync is. */
+  const [syncStep, setSyncStep] = useState<SyncStep | null>(null);
   /** Epoch ms of this library's last sync, null before the first. */
   const [syncedAt, setSyncedAt] = useState<number | null>(null);
   /** Bumped after a sync, so screens list the library books again. */
@@ -396,7 +398,7 @@ function useAppState() {
     if (!canSync || syncing) return;
     setSyncing(true);
     try {
-      setSyncedAt(await syncLibrary(libKey));
+      setSyncedAt(await syncLibrary(libKey, setSyncStep));
       showToast(tr('sync.done'));
     } catch (e) {
       showToast(tr(e instanceof SyncFailure ? e.key : 'sync.err.generic'));
@@ -404,6 +406,7 @@ function useAppState() {
       // A sync that failed after merging still changed the lists here.
       reloadReading();
       setLibraryRev(n => n + 1);
+      setSyncStep(null);
       setSyncing(false);
     }
   }, [canSync, syncing, libKey, showToast, tr, reloadReading]);
@@ -421,7 +424,7 @@ function useAppState() {
     push, back, switchTab, openDetail, openCategory, openAuthor, openCollection,
     openChapter, goReader, setReaderLang, setContentLang, setLangDialog, setReaderPrefs,
     signedIn, skipLogin, logout, toggleFav, showToast, markLocalRead, forgetLocal,
-    canSync, syncing, syncedAt, libraryRev, syncNow, s3, refreshS3, downloads
+    canSync, syncing, syncStep, syncedAt, libraryRev, syncNow, s3, refreshS3, downloads
   };
 }
 

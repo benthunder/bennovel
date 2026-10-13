@@ -1,24 +1,30 @@
 // Where the synced library files are kept. Each kind of storage is a `SyncStorage`; the
 // function only talks to that interface, so moving the files elsewhere means adding a
-// driver here and choosing it in `loadStorage`, with no change to the app.
+// driver here and choosing it in `loadStorage`, with no change to the app. A driver
+// hands out signed links, so the files themselves never pass through the function.
 
 import { AwsClient } from 'npm:aws4fetch@1.0.20';
 
-export type Fetched =
-  | { kind: 'unchanged' }
-  | { kind: 'missing' }
-  | { kind: 'file'; body: Uint8Array<ArrayBuffer>; etag: string | null };
+/** An upload in parts: one signed link per part, in order. */
+export interface Upload {
+  uploadId: string;
+  urls: string[];
+}
 
-export type Stored = { kind: 'stored'; etag: string | null } | { kind: 'conflict' };
+export type Finished = { kind: 'stored'; etag: string | null } | { kind: 'conflict' };
 
 export interface SyncStorage {
-  /** The file at `key`; `unchanged` when its ETag is still `known`. */
-  get(key: string, known: string | null): Promise<Fetched>;
+  /** A signed link to download the file at `key` (the app may add `if-none-match`). */
+  download(key: string): Promise<string>;
+  /** Starts an upload of the file at `key` in `parts` parts. */
+  startUpload(key: string, parts: number): Promise<Upload>;
   /**
-   * Writes the file only if it is still the one the device merged: ETag `expected`, or
-   * no file at all when `expected` is null. Otherwise `conflict`.
+   * Puts the uploaded parts (their ETags, in order) together as the file, only if the
+   * file is still the one the device merged: ETag `expected`, or none at all when null.
+   * Otherwise the upload is dropped and the answer is `conflict`.
    */
-  put(key: string, body: Uint8Array<ArrayBuffer>, expected: string | null): Promise<Stored>;
+  finishUpload(key: string, uploadId: string, parts: string[], expected: string | null): Promise<Finished>;
+  abortUpload(key: string, uploadId: string): Promise<void>;
 }
 
 /** The storage answered with an error. */
@@ -37,13 +43,15 @@ export interface S3Settings {
   secretKey: string;
 }
 
-/** The `<Code>` of an S3 error answer. */
-async function errorCode(res: Response): Promise<string> {
-  const text = await res.text().catch(() => '');
-  return /<Code>([^<]*)<\/Code>/.exec(text)?.[1] ?? '';
-}
+/** How long a link works. The storage checks it when a request starts. */
+export const LINK_SECONDS = 60 * 60;
 
-/** S3-compatible storage (RustFS, MinIO, AWS S3…), using conditional writes. */
+const xmlValue = (xml: string, tag: string) =>
+  new RegExp(`<${tag}>([^<]*)</${tag}>`).exec(xml)?.[1]?.replaceAll('&quot;', '"').replaceAll('&#34;', '"') ?? null;
+
+const escapeXml = (s: string) => s.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('"', '&quot;');
+
+/** S3-compatible storage (RustFS, MinIO, AWS S3…): presigned links, multipart uploads. */
 export function s3Storage(s: S3Settings): SyncStorage {
   const aws = new AwsClient({
     accessKeyId: s.accessKey,
@@ -51,37 +59,60 @@ export function s3Storage(s: S3Settings): SyncStorage {
     region: s.region,
     service: 's3'
   });
-  const url = (key: string) =>
-    `${s.endpoint}/${encodeURIComponent(s.bucket)}/${key.split('/').map(encodeURIComponent).join('/')}`;
+  const objectUrl = (key: string, query = '') =>
+    `${s.endpoint}/${encodeURIComponent(s.bucket)}/${key.split('/').map(encodeURIComponent).join('/')}${query}`;
+  const presign = async (method: string, url: string) => {
+    const u = new URL(url);
+    u.searchParams.set('X-Amz-Expires', String(LINK_SECONDS));
+    return (await aws.sign(u.toString(), { method, aws: { signQuery: true } })).url;
+  };
+  const fail = async (res: Response): Promise<never> => {
+    throw new StorageError(res.status, xmlValue(await res.text().catch(() => ''), 'Code') ?? '');
+  };
+  const abortUpload = async (key: string, uploadId: string) => {
+    const res = await aws.fetch(objectUrl(key, `?uploadId=${encodeURIComponent(uploadId)}`), { method: 'DELETE' });
+    await res.body?.cancel();
+  };
 
   return {
-    async get(key, known) {
-      const res = await aws.fetch(url(key), { headers: known ? { 'if-none-match': known } : {} });
-      if (res.status === 304) return { kind: 'unchanged' };
-      if (res.status === 404) {
-        await res.body?.cancel();
-        return { kind: 'missing' };
-      }
-      if (res.status !== 200) throw new StorageError(res.status, await errorCode(res));
-      return { kind: 'file', body: new Uint8Array(await res.arrayBuffer()), etag: res.headers.get('etag') };
-    },
-    async put(key, body, expected) {
-      const res = await aws.fetch(url(key), {
-        method: 'PUT',
-        body,
-        headers: {
-          'content-type': 'application/gzip',
-          ...(expected ? { 'if-match': expected } : { 'if-none-match': '*' })
-        }
+    download: key => presign('GET', objectUrl(key)),
+
+    async startUpload(key, parts) {
+      const res = await aws.fetch(objectUrl(key, '?uploads'), {
+        method: 'POST',
+        headers: { 'content-type': 'application/gzip' }
       });
-      if (res.status === 412 || res.status === 409) {
-        await res.body?.cancel();
+      if (res.status !== 200) await fail(res);
+      const uploadId = xmlValue(await res.text(), 'UploadId');
+      if (!uploadId) throw new StorageError(res.status, 'NoUploadId');
+      const id = encodeURIComponent(uploadId);
+      const urls = await Promise.all(
+        Array.from({ length: parts }, (_, i) => presign('PUT', objectUrl(key, `?partNumber=${i + 1}&uploadId=${id}`)))
+      );
+      return { uploadId, urls };
+    },
+
+    async finishUpload(key, uploadId, parts, expected) {
+      const xml = `<CompleteMultipartUpload>${parts
+        .map((etag, i) => `<Part><PartNumber>${i + 1}</PartNumber><ETag>${escapeXml(etag)}</ETag></Part>`)
+        .join('')}</CompleteMultipartUpload>`;
+      const res = await aws.fetch(objectUrl(key, `?uploadId=${encodeURIComponent(uploadId)}`), {
+        method: 'POST',
+        body: xml,
+        headers: expected ? { 'if-match': expected } : { 'if-none-match': '*' }
+      });
+      const text = await res.text();
+      // Some servers answer 200 with the error in the body.
+      const code = xmlValue(text, 'Code');
+      if (res.status === 412 || res.status === 409 || code === 'PreconditionFailed') {
+        await abortUpload(key, uploadId).catch(console.error);
         return { kind: 'conflict' };
       }
-      if (res.status !== 200) throw new StorageError(res.status, await errorCode(res));
-      await res.body?.cancel();
-      return { kind: 'stored', etag: res.headers.get('etag') };
-    }
+      if (res.status !== 200 || code) throw new StorageError(res.status, code ?? '');
+      return { kind: 'stored', etag: xmlValue(text, 'ETag') ?? res.headers.get('etag') };
+    },
+
+    abortUpload
   };
 }
 
