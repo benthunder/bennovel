@@ -6,7 +6,7 @@ import { useCatalog } from '../data/useCatalog';
 import { useT } from '../i18n';
 import { canOpenLocalBooks, libraryUser, type LibraryPlace, type LocalBook } from '../lib/localBook';
 import { loadReading, saveReading } from '../lib/readingStore';
-import { getS3Settings, syncS3, type S3Settings } from '../lib/s3';
+import { getS3Settings, type S3Settings } from '../lib/s3';
 import { getSyncStatus, syncLibrary, SyncFailure } from '../lib/sync';
 import { canDownload, deleteDownload, downloadChapter, downloadLang, downloadNovel, listDownloads, setDownloads, type Download } from '../lib/offline';
 import { claimGuestLibrary, listenForSignInLinks, signOut, takeOAuthProvider, takeRecovery, toUser } from '../lib/auth';
@@ -396,7 +396,7 @@ function useAppState() {
     if (!canSync || syncing) return;
     setSyncing(true);
     try {
-      setSyncedAt(s3 ? await syncS3(libKey) : await syncLibrary(libKey, user?.id ?? ''));
+      setSyncedAt(await syncLibrary(libKey));
       showToast(tr('sync.done'));
     } catch (e) {
       showToast(tr(e instanceof SyncFailure ? e.key : 'sync.err.generic'));
@@ -406,7 +406,7 @@ function useAppState() {
       setLibraryRev(n => n + 1);
       setSyncing(false);
     }
-  }, [canSync, s3, user, syncing, libKey, showToast, tr, reloadReading]);
+  }, [canSync, syncing, libKey, showToast, tr, reloadReading]);
 
   const markLocalRead = useCallback((e: Omit<LocalLast, 'at'>) => setLocalLast({ ...e, at: Date.now() }), [setLocalLast]);
   const forgetLocal = useCallback((novelId: number) => setLocalLast(l => (l?.novelId === novelId ? null : l)), [setLocalLast]);

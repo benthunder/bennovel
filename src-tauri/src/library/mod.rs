@@ -8,8 +8,10 @@ pub mod db;
 pub mod folder;
 pub mod offline;
 pub mod reading;
+pub mod remote;
 pub mod rules;
 pub mod s3;
+pub mod server;
 pub mod sync;
 
 use crate::book::image::{self, Image};
