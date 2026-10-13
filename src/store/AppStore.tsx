@@ -6,6 +6,7 @@ import { useCatalog } from '../data/useCatalog';
 import { useT } from '../i18n';
 import { canOpenLocalBooks, libraryUser, type LibraryPlace, type LocalBook } from '../lib/localBook';
 import { loadReading, saveReading } from '../lib/readingStore';
+import { getS3Settings, type S3Settings } from '../lib/s3';
 import { getSyncStatus, syncLibrary, SyncFailure } from '../lib/sync';
 import { canDownload, deleteDownload, downloadChapter, downloadLang, downloadNovel, listDownloads, setDownloads, type Download } from '../lib/offline';
 import { claimGuestLibrary, listenForSignInLinks, signOut, takeOAuthProvider, takeRecovery, toUser } from '../lib/auth';
@@ -371,9 +372,18 @@ function useAppState() {
   const [syncedAt, setSyncedAt] = useState<number | null>(null);
   /** Bumped after a sync, so screens list the library books again. */
   const [libraryRev, setLibraryRev] = useState(0);
-  /** Sync needs an account and the library file of the native app. */
-  const canSync = !!user?.id && canOpenLocalBooks();
+  /** The library's own S3 storage, when it syncs there instead of the account's. */
+  const [s3, setS3] = useState<S3Settings | null>(null);
   const libKey = libraryUser(user);
+  /** Sync needs the library file of the native app, and an account or own storage. */
+  const canSync = canOpenLocalBooks() && (!!user?.id || !!s3);
+  const refreshS3 = useCallback(async () => {
+    if (canOpenLocalBooks()) setS3(await getS3Settings(libKey).catch(() => null));
+  }, [libKey]);
+  useEffect(() => {
+    setS3(null);
+    void refreshS3();
+  }, [refreshS3]);
   useEffect(() => {
     setSyncedAt(null);
     if (!canSync) return;
@@ -383,10 +393,10 @@ function useAppState() {
   }, [canSync, libKey]);
 
   const syncNow = useCallback(async () => {
-    if (!canSync || !user?.id || syncing) return;
+    if (!canSync || syncing) return;
     setSyncing(true);
     try {
-      setSyncedAt(await syncLibrary(libKey, user.id));
+      setSyncedAt(await syncLibrary(libKey));
       showToast(tr('sync.done'));
     } catch (e) {
       showToast(tr(e instanceof SyncFailure ? e.key : 'sync.err.generic'));
@@ -396,7 +406,7 @@ function useAppState() {
       setLibraryRev(n => n + 1);
       setSyncing(false);
     }
-  }, [canSync, user?.id, syncing, libKey, showToast, tr, reloadReading]);
+  }, [canSync, syncing, libKey, showToast, tr, reloadReading]);
 
   const markLocalRead = useCallback((e: Omit<LocalLast, 'at'>) => setLocalLast({ ...e, at: Date.now() }), [setLocalLast]);
   const forgetLocal = useCallback((novelId: number) => setLocalLast(l => (l?.novelId === novelId ? null : l)), [setLocalLast]);
@@ -411,7 +421,7 @@ function useAppState() {
     push, back, switchTab, openDetail, openCategory, openAuthor, openCollection,
     openChapter, goReader, setReaderLang, setContentLang, setLangDialog, setReaderPrefs,
     signedIn, skipLogin, logout, toggleFav, showToast, markLocalRead, forgetLocal,
-    canSync, syncing, syncedAt, libraryRev, syncNow, downloads
+    canSync, syncing, syncedAt, libraryRev, syncNow, s3, refreshS3, downloads
   };
 }
 

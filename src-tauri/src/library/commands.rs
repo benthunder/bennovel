@@ -463,8 +463,6 @@ impl From<super::sync::SyncError> for BookError {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncStatus {
-    /// Server version this library was last synced with (0 = never).
-    pub last_version: i64,
     /// Epoch ms of the last sync.
     pub synced_at: Option<i64>,
 }
@@ -476,91 +474,11 @@ pub async fn sync_status<R: Runtime>(
 ) -> Result<SyncStatus, BookError> {
     let path = db_path(&app, &user)?;
     blocking(move || {
-        let (last_version, synced_at) = super::sync::status(&db::open(&path)?)?;
         Ok(SyncStatus {
-            last_version,
-            synced_at,
+            synced_at: super::sync::synced_at(&db::open(&path)?)?,
         })
     })
     .await
-}
-
-/// The library file as a gzipped snapshot, sent to the app as raw bytes for upload.
-#[tauri::command]
-pub async fn sync_export<R: Runtime>(
-    app: AppHandle<R>,
-    user: String,
-) -> Result<tauri::ipc::Response, BookError> {
-    let path = db_path(&app, &user)?;
-    let tmp = path.with_extension("sync-out");
-    blocking(move || {
-        Ok(tauri::ipc::Response::new(super::sync::export(
-            &db::open(&path)?,
-            &tmp,
-        )?))
-    })
-    .await
-}
-
-/// Merges a downloaded snapshot (the raw request body) into the library of the user
-/// named in the `x-user` header (URI-encoded).
-#[tauri::command]
-pub async fn sync_merge<R: Runtime>(
-    app: AppHandle<R>,
-    request: tauri::ipc::Request<'_>,
-) -> Result<(), BookError> {
-    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
-        return Err(BookError::Parse("expected the snapshot bytes".into()));
-    };
-    let user = request
-        .headers()
-        .get("x-user")
-        .and_then(|v| v.to_str().ok())
-        .map(percent_decode)
-        .unwrap_or_default();
-    let bytes = bytes.clone();
-    let path = db_path(&app, &user)?;
-    let tmp = path.with_extension("sync-in");
-    blocking(move || {
-        let gone = super::sync::merge(&mut db::open(&path)?, &bytes, &tmp)?;
-        for id in gone {
-            if let Some(file) = super::original_file(&path, id) {
-                let _ = std::fs::remove_file(file);
-            }
-        }
-        Ok(())
-    })
-    .await
-}
-
-/// Records that the library now matches server version `version`.
-#[tauri::command]
-pub async fn sync_mark<R: Runtime>(
-    app: AppHandle<R>,
-    user: String,
-    version: i64,
-) -> Result<(), BookError> {
-    let path = db_path(&app, &user)?;
-    blocking(move || Ok(super::sync::mark_synced(&db::open(&path)?, version)?)).await
-}
-
-/// Decodes %XX escapes (the user name travels in a header).
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(b) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                out.push(b);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 /* ---------- Online novels downloaded to read offline (offline.rs) ---------- */
@@ -729,4 +647,140 @@ pub async fn offline_numbers<R: Runtime>(
 ) -> Result<Vec<i64>, BookError> {
     let path = db_path(&app, &user)?;
     blocking(move || Ok(super::offline::numbers(&db::open(&path)?, novel_id)?)).await
+}
+
+/// The reader's replace rules for a novel ("online": Supabase id; "book": library id)
+/// in one language; null when none were ever saved on this device.
+#[tauri::command]
+pub async fn replace_rules_get<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    kind: super::rules::Kind,
+    id: i64,
+    lang: String,
+) -> Result<Option<Vec<super::rules::Rule>>, BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || Ok(super::rules::get(&db::open(&path)?, kind, id, &lang)?)).await
+}
+
+#[tauri::command]
+pub async fn replace_rules_set<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    kind: super::rules::Kind,
+    id: i64,
+    lang: String,
+    rules: Vec<super::rules::Rule>,
+) -> Result<(), BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || {
+        Ok(super::rules::set(
+            &db::open(&path)?,
+            kind,
+            id,
+            &lang,
+            &rules,
+        )?)
+    })
+    .await
+}
+
+impl From<super::remote::RemoteError> for BookError {
+    fn from(e: super::remote::RemoteError) -> Self {
+        use super::remote::RemoteError as E;
+        // The app looks for these words to say what went wrong.
+        let key = match e {
+            E::Sync(e) => return e.into(),
+            E::Db(e) => return BookError::Db(e),
+            E::Io(e) => return BookError::Io(e),
+            E::Config(key) => key.to_string(),
+            E::Busy => "sync-busy".into(),
+            E::SignIn => "sync-sign-in".into(),
+            E::Network(msg) => format!("sync-network {msg}"),
+            E::Status {
+                status: 401 | 403,
+                code,
+            } => format!("s3-auth {code}"),
+            E::Status { code, .. } if code == "NoSuchBucket" => "s3-bucket".into(),
+            E::Status { status: 413, code } => format!("s3-too-large {code}"),
+            E::Status { code, .. } if code == "EntityTooLarge" => "s3-too-large".into(),
+            E::Status { status, code } => format!("s3-error {status} {code}"),
+        };
+        BookError::Parse(key)
+    }
+}
+
+/// The S3 settings of a library, without the secret key.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct S3Settings {
+    pub endpoint: String,
+    pub region: String,
+    pub bucket: String,
+    pub folder: String,
+    pub access_key: String,
+    pub has_secret: bool,
+}
+
+/// The library's own S3 storage to sync with, if one is set.
+#[tauri::command]
+pub async fn s3_config_get<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+) -> Result<Option<S3Settings>, BookError> {
+    let path = super::s3::config_path(&db_path(&app, &user)?);
+    Ok(super::s3::load_config(&path).map(|c| S3Settings {
+        has_secret: !c.secret_key.is_empty(),
+        endpoint: c.endpoint,
+        region: c.region,
+        bucket: c.bucket,
+        folder: c.folder,
+        access_key: c.access_key,
+    }))
+}
+
+/// Sets the S3 storage to sync with, after checking it can be reached with these keys;
+/// an empty secret key keeps the saved one. `None` goes back to the account's storage.
+#[tauri::command]
+pub async fn s3_config_set<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    config: Option<super::s3::Config>,
+) -> Result<(), BookError> {
+    let path = super::s3::config_path(&db_path(&app, &user)?);
+    blocking(move || {
+        let Some(mut config) = config else {
+            return Ok(super::s3::save_config(&path, None)?);
+        };
+        if config.secret_key.trim().is_empty() {
+            config.secret_key = super::s3::load_config(&path)
+                .map(|c| c.secret_key)
+                .unwrap_or_default();
+        }
+        let config = config.normalized()?;
+        super::s3::check(&config)?;
+        Ok(super::s3::save_config(&path, Some(&config))?)
+    })
+    .await
+}
+
+/// Syncs the library with its own S3 storage when one is set, else with the BenNovel
+/// server for the signed-in `account`. Returns when (epoch ms).
+#[tauri::command]
+pub async fn library_sync<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    account: Option<super::remote::Account>,
+) -> Result<i64, BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || {
+        let remote = super::remote::open(&path, account)?;
+        for id in super::remote::sync(&path, remote.as_ref())? {
+            if let Some(file) = super::original_file(&path, id) {
+                let _ = std::fs::remove_file(file);
+            }
+        }
+        Ok(db::now_ms())
+    })
+    .await
 }
