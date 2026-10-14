@@ -2,14 +2,14 @@ import { useEffect, useState } from 'react';
 import { GlobeIcon, LanguagesIcon, LogOutIcon, RefreshIcon, SparklesIcon } from '../components/Icons';
 import { NovelCover } from '../components/NovelCover';
 import { UiLangDialog, uiLangLabel } from '../components/UiLangDialog';
-import { CoverGrid, Segmented } from '../components/ui';
+import { CoverGrid, Segmented, Spinner } from '../components/ui';
 import { findNovel, getContentLangs, getNovels } from '../data/repository';
 import { relativeTime, useI18n } from '../i18n';
 import type { MessageKey } from '../i18n/en';
 import { AiFailure, LLM_PROVIDERS, aiErrorDetail, getLlmSettings, setLlmConfig, type LlmConfig, type LlmSettings } from '../lib/ai';
 import { s3Host, setS3Config, type S3Config } from '../lib/s3';
 import { useAsync } from '../lib/useAsync';
-import { SyncFailure, type SyncStep } from '../lib/sync';
+import { createBackup, restoreBackup, SyncFailure, type SyncStep } from '../lib/sync';
 import { useApp } from '../store/AppStore';
 import { useLayout } from '../lib/useLayout';
 import { canOpenLocalBooks, libraryUser, listLibrary, localCover, openLibraryBook, type LibraryBook } from '../lib/localBook';
@@ -162,7 +162,46 @@ function SyncCard() {
           {app.s3 ? t('s3.change') : t('s3.setUp')}
         </button>
       </div>
+      <BackupRow />
       {editing && <S3Dialog onClose={() => setEditing(false)} />}
+    </div>
+  );
+}
+
+/**
+ * A backup of the whole library in a file the user keeps (books with their AI
+ * translations, history, favourites, downloads), and bringing one back.
+ */
+function BackupRow() {
+  const { t } = useI18n();
+  const app = useApp();
+  const user = libraryUser(app.user);
+  const [busy, setBusy] = useState<'backup' | 'restore' | null>(null);
+  const run = async (kind: 'backup' | 'restore') => {
+    setBusy(kind);
+    try {
+      if (kind === 'backup') {
+        if (await createBackup(user)) app.showToast(t('backup.done'));
+      } else if (await restoreBackup(user)) {
+        app.reloadLibrary();
+        app.showToast(t('backup.restored'));
+      }
+    } catch (e) {
+      console.error(e);
+      app.showToast(`${t(kind === 'backup' ? 'backup.failed' : 'backup.restoreFailed')} ${String(e)}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, borderTop: '1px solid var(--color-neutral-200)', paddingTop: 6 }}>
+      <span className="muted" style={{ flex: 1, minWidth: 0, fontSize: 12 }}>{t('backup.hint')}</span>
+      <button className="btn btn-ghost" style={{ fontSize: 12, padding: '0 6px', gap: 6 }} disabled={!!busy || app.syncing} onClick={() => void run('backup')}>
+        {busy === 'backup' && <Spinner size={12} />}{t('backup.create')}
+      </button>
+      <button className="btn btn-ghost" style={{ fontSize: 12, padding: '0 6px', gap: 6 }} disabled={!!busy || app.syncing} onClick={() => void run('restore')}>
+        {busy === 'restore' && <Spinner size={12} />}{t('backup.restore')}
+      </button>
     </div>
   );
 }

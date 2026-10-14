@@ -52,6 +52,10 @@ async function nativeApp(page: Page, { llm = true } = {}) {
           case 'ai_translate_book': return { queued: 2, mode: 'translate' };
           case 'ai_progress': return [];
           case 'ai_versions': return [];
+          case 'plugin:dialog|save': return '/home/lina/bennovel-backup.bnbackup';
+          case 'plugin:dialog|open': return '/home/lina/bennovel-backup.bnbackup';
+          case 'library_backup': return 1024;
+          case 'library_restore': return null;
           default: return null;
         }
       }
@@ -112,4 +116,17 @@ test('without an LLM the book page points to the settings', async ({ page }) => 
   await expect(page.getByText(/No LLM set up yet/).filter({ visible: true }).first()).toBeVisible();
   await page.getByRole('button', { name: 'Set up LLM' }).filter({ visible: true }).first().click();
   await expect(page.getByRole('button', { name: /AI translation \(your LLM\)/ })).toBeVisible();
+});
+
+test('the whole library is backed up to a file and brought back', async ({ page }) => {
+  await nativeApp(page);
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Profile' }).filter({ visible: true }).first().click();
+  await page.getByRole('button', { name: 'Create backup' }).click();
+  await expect(page.getByText('Backup saved.')).toBeVisible();
+  await page.getByRole('button', { name: 'Restore' }).click();
+  await expect(page.getByText('Backup restored.')).toBeVisible();
+  const all = await calls(page);
+  expect(all.find(c => c.cmd === 'library_backup')?.args).toMatchObject({ user: '', path: '/home/lina/bennovel-backup.bnbackup' });
+  expect(all.find(c => c.cmd === 'library_restore')?.args).toMatchObject({ user: '', path: '/home/lina/bennovel-backup.bnbackup' });
 });

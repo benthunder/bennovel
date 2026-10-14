@@ -34,12 +34,24 @@ pub fn synced_at(conn: &Connection) -> rusqlite::Result<Option<i64>> {
 /// A consistent copy of the library file (the live one is in WAL mode), gzipped into
 /// `out`; returns its size. `tmp` is a scratch path that must not exist.
 pub fn export_to(conn: &Connection, tmp: &Path, out: &Path) -> Result<u64, SyncError> {
+    snapshot(conn, tmp, out, false)
+}
+
+/// A backup: like the synced copy, with the downloaded online novels kept too. The
+/// LLM settings and the AI queue are still left out.
+pub fn backup_to(conn: &Connection, tmp: &Path, out: &Path) -> Result<u64, SyncError> {
+    snapshot(conn, tmp, out, true)
+}
+
+fn snapshot(conn: &Connection, tmp: &Path, out: &Path, downloads: bool) -> Result<u64, SyncError> {
     let _ = std::fs::remove_file(tmp);
     conn.execute("vacuum into ?1", [tmp.to_string_lossy()])?;
     let result = (|| {
-        // Downloaded online novels stay on this device, and so does the LLM.
         let copy = Connection::open(tmp)?;
-        super::offline::strip(&copy)?;
+        // Downloaded online novels stay on this device (a backup keeps them).
+        if !downloads {
+            super::offline::strip(&copy)?;
+        }
         // The LLM settings (with their API key) and the AI queue never leave the device.
         super::translate::strip(&copy)?;
         copy.execute("vacuum", [])?;
@@ -80,6 +92,26 @@ pub fn merge_from(
     snapshot: impl Read,
     tmp: &Path,
 ) -> Result<Vec<i64>, SyncError> {
+    merge_with(conn, snapshot, tmp, false)
+}
+
+/// Brings a backup (`backup_to`) back: merged like a sync, except that what the backup
+/// holds comes back even if it was removed here since. A book deleted here returns
+/// as a new book, so the deletion other devices know of doesn't remove it again.
+pub fn restore_from(
+    conn: &mut Connection,
+    snapshot: impl Read,
+    tmp: &Path,
+) -> Result<Vec<i64>, SyncError> {
+    merge_with(conn, snapshot, tmp, true)
+}
+
+fn merge_with(
+    conn: &mut Connection,
+    snapshot: impl Read,
+    tmp: &Path,
+    restore: bool,
+) -> Result<Vec<i64>, SyncError> {
     let _ = std::fs::remove_file(tmp);
     let result = (|| {
         let mut file = std::io::BufWriter::new(std::fs::File::create(tmp)?);
@@ -97,6 +129,13 @@ pub fn merge_from(
         conn.execute("attach database ?1 as r", [tmp.to_string_lossy()])?;
         let merged = (|| {
             let tx = conn.transaction()?;
+            if restore {
+                tx.execute_batch(
+                    "delete from r.tombstones;
+                     update r.novels set book_key = lower(hex(randomblob(16))) where book_key in (
+                       select key from main.tombstones where kind = 'book');",
+                )?;
+            }
             let gone = merge_attached(&tx)?;
             super::reading::bump_rev(&tx)?;
             tx.commit()?;
@@ -179,6 +218,7 @@ fn merge_attached(tx: &Transaction) -> Result<Vec<i64>, SyncError> {
                 if updated_at > local_updated {
                     copy_details(tx, rid, lid)?;
                 }
+                merge_ai_texts(tx, rid, lid)?;
                 lid
             }
         };
@@ -194,6 +234,13 @@ fn merge_attached(tx: &Transaction) -> Result<Vec<i64>, SyncError> {
             params![rid, lid],
         )?;
     }
+
+    // Downloaded online novels: only a backup carries them (sync leaves them out).
+    tx.execute_batch(
+        "insert or ignore into main.offline_novels select * from r.offline_novels;
+         insert or ignore into main.offline_chapters select * from r.offline_chapters;
+         insert or ignore into main.offline_glossary select * from r.offline_glossary;",
+    )?;
 
     // Books deleted on another device.
     let gone: Vec<i64> = tx
@@ -228,6 +275,27 @@ fn author_for(tx: &Transaction, rid: i64) -> rusqlite::Result<i64> {
         [rid],
         |r| r.get(0),
     )
+}
+
+/// AI translations made on the other device for a book both have: per chapter,
+/// language and style, the newer one wins.
+fn merge_ai_texts(tx: &Transaction, rid: i64, lid: i64) -> rusqlite::Result<()> {
+    tx.execute(
+        "insert into main.chapter_translations (chapter_id, lang, style, source, state, title, content,
+            word_count, model, created_at, updated_at)
+         select c.id, t.lang, t.style, t.source, t.state, t.title, t.content,
+           t.word_count, t.model, t.created_at, t.updated_at
+         from r.chapter_translations t
+         join r.chapters rc on rc.id = t.chapter_id
+         join main.chapters c on c.novel_id = ?2 and c.number = rc.number
+         where rc.novel_id = ?1 and t.source = 'ai'
+         on conflict (chapter_id, lang, style) do update set
+           title = excluded.title, content = excluded.content, word_count = excluded.word_count,
+           model = excluded.model, updated_at = excluded.updated_at
+         where excluded.updated_at > chapter_translations.updated_at",
+        params![rid, lid],
+    )?;
+    Ok(())
 }
 
 /// Copies remote book `rid` with everything in it; returns the new local id.
@@ -529,6 +597,94 @@ mod tests {
         assert!(super::super::list(&a).unwrap().is_empty());
         send(&a, &pa, &mut b, &pb);
         assert!(super::super::list(&b).unwrap().is_empty());
+    }
+
+    /// An AI translation of chapter `number` of book `id`, as translate.rs saves it.
+    fn ai_text(conn: &Connection, id: i64, number: i64, content: &str) {
+        conn.execute(
+            "insert into chapter_translations (chapter_id, lang, style, source, state, title, content, model)
+             select id, 'vi', 'natural', 'ai', 'published', 'T', ?3, 'm' from chapters
+             where novel_id = ?1 and number = ?2
+             on conflict (chapter_id, lang, style) do update set content = excluded.content,
+               updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+            params![id, number, content],
+        )
+        .unwrap();
+    }
+
+    fn ai_texts(conn: &Connection) -> Vec<String> {
+        conn.prepare("select content from chapter_translations where source = 'ai' order by chapter_id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn ai_translations_made_later_reach_the_other_device() {
+        let (mut a, pa) = device("ai-a");
+        let (mut b, pb) = device("ai-b");
+        let id =
+            super::super::import(&mut a, BookFormat::Txt, &mut Book, "thu.txt", |_, _| {}).unwrap();
+        send(&a, &pa, &mut b, &pb);
+        // Both have the book; A translates a chapter afterwards.
+        ai_text(&a, id, 1, "Bản dịch 1");
+        send(&a, &pa, &mut b, &pb);
+        assert_eq!(ai_texts(&b), vec!["Bản dịch 1"]);
+        // A newer translation on B wins back on A.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let bid = super::super::list(&b).unwrap()[0].novel_id;
+        ai_text(&b, bid, 1, "Bản dịch mới");
+        send(&b, &pb, &mut a, &pa);
+        assert_eq!(ai_texts(&a), vec!["Bản dịch mới"]);
+    }
+
+    #[test]
+    fn a_backup_brings_back_a_deleted_book_with_its_translations() {
+        let (mut a, pa) = device("bak-a");
+        let (mut b, pb) = device("bak-b");
+        let id =
+            super::super::import(&mut a, BookFormat::Txt, &mut Book, "thu.txt", |_, _| {}).unwrap();
+        ai_text(&a, id, 2, "Bản dịch 2");
+        super::super::offline::start(&a, 9, &serde_json::json!({ "id": 9 }), 1).unwrap();
+        super::super::llm::save(
+            &a,
+            Some(&super::super::llm::Config {
+                provider: "openai".into(),
+                base_url: "https://api.openai.com/v1".into(),
+                api_key: "sk-secret".into(),
+                model: "m".into(),
+            }),
+        )
+        .unwrap();
+        send(&a, &pa, &mut b, &pb);
+
+        let backup = pa.with_extension("bak.gz");
+        backup_to(&a, &pa.with_extension("bak"), &backup).unwrap();
+        // The key never goes into a backup.
+        let raw = {
+            let mut s = Vec::new();
+            GzDecoder::new(std::fs::File::open(&backup).unwrap()).read_to_end(&mut s).unwrap();
+            s
+        };
+        assert!(!raw.windows(9).any(|w| w == b"sk-secret"));
+
+        // Deleted, and the deletion synced: a plain sync doesn't bring it back…
+        super::super::delete(&a, id).unwrap();
+        super::super::offline::delete(&a, 9).unwrap();
+        send(&a, &pa, &mut b, &pb);
+        assert!(super::super::list(&b).unwrap().is_empty());
+        // …the backup does, translation and download included.
+        restore_from(&mut a, std::fs::File::open(&backup).unwrap(), &pa.with_extension("in")).unwrap();
+        assert_eq!(super::super::list(&a).unwrap().len(), 1);
+        assert_eq!(ai_texts(&a), vec!["Bản dịch 2"]);
+        assert_eq!(super::super::offline::list(&a).unwrap().len(), 1);
+        // And it stays when synced with the device that saw the deletion.
+        send(&b, &pb, &mut a, &pa);
+        assert_eq!(super::super::list(&a).unwrap().len(), 1);
+        send(&a, &pa, &mut b, &pb);
+        assert_eq!(super::super::list(&b).unwrap().len(), 1);
     }
 
     #[test]

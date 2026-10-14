@@ -310,13 +310,13 @@ fn step(db_file: &std::path::Path) -> Result<Step, AiError> {
         requeue(&conn, job.id)?;
         return Ok(Step::Paused(job.novel_id, AiError::NotSet));
     };
-    let model = llm::OpenAi::new(config);
+    let model = std::sync::Arc::new(llm::OpenAi::new(config));
     // Already translated on its own from the reader meanwhile.
     let done = translate::get(&conn, job.chapter_id, &job.lang, &job.style)?.is_some();
     match if done {
         Ok(())
     } else {
-        translate::run(&conn, &model, job.request()).map(|_| ())
+        translate::run(&conn, model, job.request()).map(|_| ())
     } {
         Ok(_) => finish(&conn, job.id, None)?,
         Err(e) if pauses(&e) => {
@@ -387,11 +387,11 @@ mod tests {
     #[test]
     fn queues_works_through_and_skips_done_chapters() {
         let (conn, novel) = book("queue");
-        let llm = Fake::new("en");
+        let llm = std::sync::Arc::new(Fake::new("en"));
         // Chapter 2 already has its translation: only chapter 1 is queued.
         translate::run(
             &conn,
-            &llm,
+            llm.clone(),
             Request {
                 novel_id: novel,
                 chapter_id: 11,
@@ -407,7 +407,7 @@ mod tests {
         let job = claim(&conn).unwrap().unwrap();
         assert_eq!(job.chapter_id, 10);
         assert!(claim(&conn).unwrap().is_none());
-        translate::run(&conn, &llm, job.request()).unwrap();
+        translate::run(&conn, llm.clone(), job.request()).unwrap();
         finish(&conn, job.id, None).unwrap();
         let p = progress(&conn, novel).unwrap();
         assert_eq!((p[0].total, p[0].done, p[0].queued), (1, 1, 0));

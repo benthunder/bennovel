@@ -457,6 +457,8 @@ function useAppState() {
   }, [canSync, syncing, libKey, showToast, tr, reloadReading]);
 
   const aiRev = useAiQueue(libKey, showToast);
+  /** Lists everything again after the library file changed (a backup brought back). */
+  const reloadLibrary = useCallback(() => { reloadReading(); setLibraryRev(n => n + 1); }, [reloadReading]);
 
   const markLocalRead = useCallback((e: Omit<LocalLast, 'at'>) => setLocalLast({ ...e, at: Date.now() }), [setLocalLast]);
   const forgetLocal = useCallback((novelId: number) => setLocalLast(l => (l?.novelId === novelId ? null : l)), [setLocalLast]);
@@ -471,7 +473,7 @@ function useAppState() {
     push, back, switchTab, openDetail, openCategory, openAuthor, openCollection,
     openChapter, goReader, setReaderLang, setContentLang, setLangDialog, setReaderPrefs,
     signedIn, skipLogin, logout, toggleFav, showToast, markLocalRead, forgetLocal,
-    canSync, syncing, syncStep, syncedAt, libraryRev, syncNow, s3, refreshS3, downloads, aiRev
+    canSync, syncing, syncStep, syncedAt, libraryRev, syncNow, s3, refreshS3, downloads, aiRev, reloadLibrary
   };
 }
 

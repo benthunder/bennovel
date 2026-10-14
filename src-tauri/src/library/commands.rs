@@ -957,10 +957,10 @@ pub async fn ai_translate_chapter<R: Runtime>(
                 return Ok(t);
             }
         }
-        let model = llm_for(&conn)?;
+        let model = std::sync::Arc::new(llm_for(&conn)?);
         translate::run(
             &conn,
-            &model,
+            model,
             translate::Request { novel_id, chapter_id, lang, style, glossary },
         )
     })
@@ -1075,4 +1075,59 @@ pub async fn ai_resume<R: Runtime>(
     ai_blocking(move || Ok(queue::recover(&db::open(&db_file)?)?)).await?;
     queue.kick(path, user, ui_lang);
     Ok(())
+}
+
+/* ---------- Backups (sync.rs): the whole library in one file the user keeps ---------- */
+
+/// Writes a backup of the library to `path` (picked in the save dialog): books with
+/// their AI translations, history, favourites, replace rules and downloaded novels.
+/// The LLM settings stay out. Returns its size in bytes.
+#[tauri::command]
+pub async fn library_backup<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    path: FilePath,
+) -> Result<u64, BookError> {
+    use tauri_plugin_fs::{FsExt, OpenOptions};
+    let db_file = db_path(&app, &user)?;
+    blocking(move || {
+        let gz = db_file.with_extension("backup.gz");
+        let result = (|| {
+            let size = super::sync::backup_to(&db::open(&db_file)?, &db_file.with_extension("backup"), &gz)?;
+            let mut opts = OpenOptions::new();
+            opts.write(true).create(true).truncate(true);
+            let mut out = app.fs().open(path, opts)?;
+            std::io::copy(&mut std::fs::File::open(&gz)?, &mut out)?;
+            out.sync_all()?;
+            Ok(size)
+        })();
+        let _ = std::fs::remove_file(&gz);
+        result
+    })
+    .await
+}
+
+/// Brings back a backup picked by the user, merged into the library: what it holds
+/// returns even if it was deleted here since.
+#[tauri::command]
+pub async fn library_restore<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    path: FilePath,
+) -> Result<(), BookError> {
+    use tauri_plugin_fs::{FsExt, OpenOptions};
+    let db_file = db_path(&app, &user)?;
+    blocking(move || {
+        let mut opts = OpenOptions::new();
+        opts.read(true);
+        let file = app.fs().open(path, opts)?;
+        let mut conn = db::open(&db_file)?;
+        for id in super::sync::restore_from(&mut conn, std::io::BufReader::new(file), &db_file.with_extension("restore"))? {
+            if let Some(f) = super::original_file(&db_file, id) {
+                let _ = std::fs::remove_file(f);
+            }
+        }
+        Ok(())
+    })
+    .await
 }

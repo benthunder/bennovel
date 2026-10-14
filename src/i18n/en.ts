@@ -402,6 +402,13 @@ export const en = {
   'ai.versions': 'AI versions',
   'ai.versionRow': '{lang} · {style} · {n} chapters',
   'ai.hint': 'Uses the LLM set in Profile. If the book is already in the target language, the AI rewrites it in the chosen style with correct grammar.',
+  'backup.hint': 'Backup: books with AI translations, history, downloads.',
+  'backup.create': 'Create backup',
+  'backup.restore': 'Restore',
+  'backup.done': 'Backup saved.',
+  'backup.restored': 'Backup restored.',
+  'backup.failed': 'Couldn’t save the backup.',
+  'backup.restoreFailed': 'Couldn’t restore this backup.',
 };
 
 

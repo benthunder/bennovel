@@ -1,25 +1,29 @@
 //! AI translation of an imported book's chapter with the user's own LLM (llm.rs).
 //!
-//! LangGraph has no Rust version, so the flow is the same idea written out: a small
-//! graph of nodes over one shared state, each node returning the next one.
+//! The flow is a LangGraph graph, built with the `rust-langgraph` crate:
 //!
 //! ```text
-//! Detect ──► Route ──► Translate ──┐
-//!                 └──► Rewrite  ───┴──► Save ──► End
+//! START ─► detect ─► translate ─► rewrite ─► save ─► END
 //! ```
 //!
-//! - Detect: the LLM names the language of the first 50 words of the book's first
-//!   chapter (asked once per book, kept in `ai_books`).
-//! - Route: another language than the one asked for → Translate; the same → Rewrite
-//!   (polish it in the chosen style, correct in that language).
-//! - Save: the result goes in `chapter_translations` as `source = 'ai'` with its
+//! - detect: the LLM names the language of the first 50 words of the book's first
+//!   chapter (asked once per book, kept in `ai_books`), and picks the mode: another
+//!   language than the one asked for → translate; the same → rewrite (polish it in
+//!   the chosen style, correct in that language).
+//! - translate and rewrite each run only in their mode and pass the state on
+//!   otherwise. (rust-langgraph 0.1.1 accepts `add_conditional_edges` but `compile`
+//!   drops them, so the branch is made by the nodes; once fixed upstream it can be a
+//!   conditional edge from detect.)
+//! - save: the result goes in `chapter_translations` as `source = 'ai'` with its
 //!   style. That row is the mark that the chapter is done: the queue skips it, and the
 //!   input is always the original text (`source <> 'ai'`), never an AI result, so a
-//!   rewrite is never rewritten again. The graph also stops after `MAX_STEPS`.
+//!   rewrite is never rewritten again. The graph has no loop and a step limit too.
 
 use super::llm::{AiError, Chat};
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::Serialize;
+use rust_langgraph::{Config, Error as GraphError, State, StateGraph};
+use serde::{Deserialize, Serialize};
+use std::sync::{Arc, Mutex};
 
 /// Target languages offered: English and Vietnamese.
 pub const LANGS: &[&str] = &["en", "vi"];
@@ -31,10 +35,11 @@ const IMAGE_MARK: char = '\u{FFFC}';
 const CHUNK_CHARS: usize = 3500;
 /// Words of the first chapter the language is told from.
 const DETECT_WORDS: usize = 50;
-const MAX_STEPS: usize = 8;
+/// Supersteps allowed: the four nodes, run once each.
+const MAX_STEPS: usize = 6;
 
 /// What to do with one chapter.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
     pub novel_id: i64,
     pub chapter_id: i64,
@@ -46,7 +51,7 @@ pub struct Request {
     pub glossary: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
     Translate,
@@ -63,102 +68,203 @@ pub struct Translated {
     pub model: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum Node {
-    Detect,
-    Route,
-    Translate,
-    Rewrite,
-    Save,
-    End,
-}
-
-/// What the nodes share.
-struct State {
+/// The graph's state: everything the nodes read and write. Loaded from the library
+/// before the run; `save` writes it back.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Flow {
+    db: String,
     req: Request,
+    /// The book's language when it was asked before.
+    known_lang: Option<String>,
+    /// The first 50 words, to ask it from; the book's guess when there is no text.
+    sample: Option<String>,
+    guess_lang: String,
     source_lang: Option<String>,
     mode: Option<Mode>,
+    terms: Vec<(String, String)>,
     title: String,
     paragraphs: Vec<String>,
     out_title: String,
     out: Vec<String>,
 }
 
-/// Runs the graph for one chapter and saves the result.
-pub fn run(conn: &Connection, llm: &dyn Chat, req: Request) -> Result<Translated, AiError> {
+impl State for Flow {
+    /// Each node hands back the whole state, so its write replaces the last one.
+    fn merge(&mut self, other: Self) -> rust_langgraph::Result<()> {
+        *self = other;
+        Ok(())
+    }
+}
+
+/// Runs the graph for one chapter and saves the result. `conn` must be a library
+/// file on disk (the save node opens it again).
+pub fn run(conn: &Connection, llm: Arc<dyn Chat>, req: Request) -> Result<Translated, AiError> {
     check_request(&req)?;
     let (title, content) = source_text(conn, req.chapter_id)?;
-    let mut st = State {
+    let (known_lang, sample, guess_lang) = detect_input(conn, req.novel_id)?;
+    let terms = if req.glossary {
+        glossary(conn, req.novel_id, &req.lang)?
+    } else {
+        Vec::new()
+    };
+    let flow = Flow {
+        db: conn.path().unwrap_or_default().to_string(),
         req,
+        known_lang,
+        sample,
+        guess_lang,
         source_lang: None,
         mode: None,
-        paragraphs: split_paragraphs(&content),
+        terms,
         title,
+        paragraphs: split_paragraphs(&content),
         out_title: String::new(),
         out: Vec::new(),
     };
-    let mut node = Node::Detect;
-    for _ in 0..MAX_STEPS {
-        node = match node {
-            Node::Detect => {
-                st.source_lang = Some(detect(conn, llm, st.req.novel_id)?);
-                Node::Route
-            }
-            Node::Route => {
-                if st.source_lang.as_deref() == Some(st.req.lang.as_str()) {
-                    st.mode = Some(Mode::Rewrite);
-                    Node::Rewrite
-                } else {
-                    st.mode = Some(Mode::Translate);
-                    Node::Translate
-                }
-            }
-            Node::Translate => {
-                let terms = if st.req.glossary {
-                    glossary(conn, st.req.novel_id, &st.req.lang)?
-                } else {
-                    Vec::new()
-                };
-                let system = translate_prompt(
-                    st.source_lang.as_deref().unwrap_or("auto"),
-                    &st.req.lang,
-                    &st.req.style,
-                    &terms,
-                );
-                st.out = run_chunks(llm, &system, &st.paragraphs)?;
-                st.out_title = if st.title.trim().is_empty() {
-                    String::new()
-                } else {
-                    clean(&llm.chat(&title_prompt(&st.req.lang), &st.title)?)
-                        .lines()
-                        .next()
-                        .unwrap_or_default()
-                        .to_string()
-                };
-                Node::Save
-            }
-            Node::Rewrite => {
-                let system = rewrite_prompt(&st.req.lang, &st.req.style);
-                st.out = run_chunks(llm, &system, &st.paragraphs)?;
-                // Same language: the chapter keeps its title.
-                st.out_title = st.title.clone();
-                Node::Save
-            }
-            Node::Save => {
-                save(conn, &st.req, &st.out_title, &st.out, llm.model())?;
-                Node::End
-            }
-            Node::End => {
-                return Ok(Translated {
-                    title: st.out_title,
-                    paragraphs: st.out,
-                    mode: st.mode.unwrap_or(Mode::Translate),
-                    model: Some(llm.model().to_string()),
-                })
-            }
-        };
+    let failed: Arc<Mutex<Option<AiError>>> = Arc::default();
+    let model = llm.model().to_string();
+    let mut app = graph(llm, failed.clone())
+        .compile(None)
+        .map_err(|e| AiError::Other(e.to_string()))?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| AiError::Other(e.to_string()))?;
+    let config = Config::default().with_recursion_limit(MAX_STEPS);
+    let out = runtime.block_on(app.invoke(flow, config)).map_err(|e| {
+        failed
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap_or_else(|| AiError::Other(e.to_string()))
+    })?;
+    if out.out.is_empty() && !out.paragraphs.is_empty() {
+        return Err(AiError::Other("translation flow did not finish".into()));
     }
-    Err(AiError::Other("translation flow did not finish".into()))
+    Ok(Translated {
+        title: out.out_title,
+        paragraphs: out.out,
+        mode: out.mode.unwrap_or(Mode::Translate),
+        model: Some(model),
+    })
+}
+
+/// The nodes and edges. A node's AiError goes in `failed` (the graph only carries
+/// its own error type), so the caller gets it back as it was.
+fn graph(llm: Arc<dyn Chat>, failed: Arc<Mutex<Option<AiError>>>) -> StateGraph<Flow> {
+    // Runs a node's work and turns an AiError into a graph error, keeping it.
+    fn step(
+        failed: &Arc<Mutex<Option<AiError>>>,
+        r: Result<Flow, AiError>,
+    ) -> rust_langgraph::Result<Flow> {
+        r.map_err(|e| {
+            let text = e.to_string();
+            *failed.lock().unwrap() = Some(e);
+            GraphError::ExecutionError(text)
+        })
+    }
+
+    let mut g = StateGraph::new();
+    {
+        let (llm, failed) = (llm.clone(), failed.clone());
+        g.add_node("detect", move |mut f: Flow, _: &Config| {
+            let (llm, failed) = (llm.clone(), failed.clone());
+            async move {
+                let r = (|| {
+                    let lang = match (&f.known_lang, &f.sample) {
+                        (Some(l), _) => l.clone(),
+                        (None, Some(sample)) => {
+                            ask_lang(llm.as_ref(), sample)?.unwrap_or_else(|| f.guess_lang.clone())
+                        }
+                        (None, None) => f.guess_lang.clone(),
+                    };
+                    f.mode = Some(if lang == f.req.lang {
+                        Mode::Rewrite
+                    } else {
+                        Mode::Translate
+                    });
+                    f.source_lang = Some(lang);
+                    Ok(f)
+                })();
+                step(&failed, r)
+            }
+        });
+    }
+    {
+        let (llm, failed) = (llm.clone(), failed.clone());
+        g.add_node("translate", move |mut f: Flow, _: &Config| {
+            let (llm, failed) = (llm.clone(), failed.clone());
+            async move {
+                if f.mode != Some(Mode::Translate) {
+                    return Ok(f);
+                }
+                let r = (|| {
+                    let system = translate_prompt(
+                        f.source_lang.as_deref().unwrap_or("auto"),
+                        &f.req.lang,
+                        &f.req.style,
+                        &f.terms,
+                    );
+                    f.out = run_chunks(llm.as_ref(), &system, &f.paragraphs)?;
+                    f.out_title = if f.title.trim().is_empty() {
+                        String::new()
+                    } else {
+                        clean(&llm.chat(&title_prompt(&f.req.lang), &f.title)?)
+                            .lines()
+                            .next()
+                            .unwrap_or_default()
+                            .to_string()
+                    };
+                    Ok(f)
+                })();
+                step(&failed, r)
+            }
+        });
+    }
+    {
+        let (llm, failed) = (llm.clone(), failed.clone());
+        g.add_node("rewrite", move |mut f: Flow, _: &Config| {
+            let (llm, failed) = (llm.clone(), failed.clone());
+            async move {
+                if f.mode != Some(Mode::Rewrite) {
+                    return Ok(f);
+                }
+                let r = (|| {
+                    let system = rewrite_prompt(&f.req.lang, &f.req.style);
+                    f.out = run_chunks(llm.as_ref(), &system, &f.paragraphs)?;
+                    // Same language: the chapter keeps its title.
+                    f.out_title = f.title.clone();
+                    Ok(f)
+                })();
+                step(&failed, r)
+            }
+        });
+    }
+    {
+        let (llm, failed) = (llm.clone(), failed.clone());
+        g.add_node("save", move |f: Flow, _: &Config| {
+            let (llm, failed) = (llm.clone(), failed.clone());
+            async move {
+                let r = (|| {
+                    let conn = super::db::open(std::path::Path::new(&f.db))?;
+                    if f.known_lang.is_none() {
+                        if let Some(lang) = &f.source_lang {
+                            remember_lang(&conn, f.req.novel_id, lang)?;
+                        }
+                    }
+                    save(&conn, &f.req, &f.out_title, &f.out, llm.model())?;
+                    Ok(f)
+                })();
+                step(&failed, r)
+            }
+        });
+    }
+    g.set_entry_point("detect");
+    g.add_edge("detect", "translate");
+    g.add_edge("translate", "rewrite");
+    g.add_edge("rewrite", "save");
+    g.set_finish_point("save");
+    g
 }
 
 fn check_request(req: &Request) -> Result<(), AiError> {
@@ -194,18 +300,26 @@ fn split_paragraphs(content: &str) -> Vec<String> {
         .collect()
 }
 
-/// The book's language as the LLM tells it from the first 50 words of its first
-/// chapter; asked once per book.
-pub fn detect(conn: &Connection, llm: &dyn Chat, novel_id: i64) -> Result<String, AiError> {
-    if let Some(lang) = conn
+/// What `detect` needs: the language found before, else the first 50 words of the
+/// first chapter with text (None when there is none) and the import's guess.
+fn detect_input(
+    conn: &Connection,
+    novel_id: i64,
+) -> Result<(Option<String>, Option<String>, String), AiError> {
+    let guess: String = conn.query_row(
+        "select original_lang from novels where id = ?1",
+        [novel_id],
+        |r| r.get(0),
+    )?;
+    let known = conn
         .query_row(
             "select source_lang from ai_books where novel_id = ?1",
             [novel_id],
             |r| r.get::<_, String>(0),
         )
-        .optional()?
-    {
-        return Ok(lang);
+        .optional()?;
+    if known.is_some() {
+        return Ok((known, None, guess));
     }
     let first: Option<i64> = conn
         .query_row(
@@ -217,23 +331,39 @@ pub fn detect(conn: &Connection, llm: &dyn Chat, novel_id: i64) -> Result<String
             |r| r.get(0),
         )
         .optional()?;
-    let fallback: String = conn.query_row(
-        "select original_lang from novels where id = ?1",
-        [novel_id],
-        |r| r.get(0),
-    )?;
-    let Some(first) = first else {
-        return Ok(fallback);
+    let sample = match first {
+        Some(id) => Some(first_words(&source_text(conn, id)?.1, DETECT_WORDS)),
+        None => None,
     };
-    let (_, content) = source_text(conn, first)?;
-    let sample = first_words(&content, DETECT_WORDS);
-    let reply = llm.chat(DETECT_PROMPT, &sample)?;
-    let lang = parse_lang(&reply).unwrap_or(fallback);
+    Ok((None, sample, guess))
+}
+
+/// The language the LLM names for `sample`, if it gives a code.
+fn ask_lang(llm: &dyn Chat, sample: &str) -> Result<Option<String>, AiError> {
+    Ok(parse_lang(&llm.chat(DETECT_PROMPT, sample)?))
+}
+
+fn remember_lang(conn: &Connection, novel_id: i64, lang: &str) -> rusqlite::Result<()> {
     conn.execute(
         "insert into ai_books (novel_id, source_lang) values (?1, ?2)
          on conflict (novel_id) do update set source_lang = excluded.source_lang",
         params![novel_id, lang],
     )?;
+    Ok(())
+}
+
+/// The book's language as the LLM tells it from the first 50 words of its first
+/// chapter (the detect node, on its own); asked once per book.
+pub fn detect(conn: &Connection, llm: &dyn Chat, novel_id: i64) -> Result<String, AiError> {
+    let (known, sample, guess) = detect_input(conn, novel_id)?;
+    if let Some(lang) = known {
+        return Ok(lang);
+    }
+    let Some(sample) = sample else {
+        return Ok(guess);
+    };
+    let lang = ask_lang(llm, &sample)?.unwrap_or(guess);
+    remember_lang(conn, novel_id, &lang)?;
     Ok(lang)
 }
 
@@ -556,8 +686,8 @@ pub(crate) mod tests {
     #[test]
     fn translates_when_the_language_differs() {
         let (conn, _) = book("tr");
-        let llm = Fake::new("en");
-        let out = run(&conn, &llm, req(10, "vi")).unwrap();
+        let llm = std::sync::Arc::new(Fake::new("en"));
+        let out = run(&conn, llm.clone(), req(10, "vi")).unwrap();
         assert_eq!(out.mode, Mode::Translate);
         assert_eq!(
             out.paragraphs,
@@ -570,7 +700,7 @@ pub(crate) mod tests {
         assert_eq!(saved.paragraphs, out.paragraphs);
         assert_eq!(saved.model.as_deref(), Some("fake-1"));
         // The language is asked once per book.
-        run(&conn, &llm, req(11, "vi")).unwrap();
+        run(&conn, llm.clone(), req(11, "vi")).unwrap();
         assert_eq!(llm.count(), 6);
         assert_eq!(
             versions(&conn, 1).unwrap(),
@@ -585,13 +715,13 @@ pub(crate) mod tests {
     #[test]
     fn rewrites_the_original_when_the_language_matches() {
         let (conn, _) = book("re");
-        let llm = Fake::new("en");
-        let out = run(&conn, &llm, req(11, "en")).unwrap();
+        let llm = std::sync::Arc::new(Fake::new("en"));
+        let out = run(&conn, llm.clone(), req(11, "en")).unwrap();
         assert_eq!(out.mode, Mode::Rewrite);
         assert_eq!(out.paragraphs, vec!["[re] Second chapter."]);
         assert_eq!(out.title, "Chapter 2");
         // Again: the input is still the original, not the rewrite.
-        let again = run(&conn, &llm, req(11, "en")).unwrap();
+        let again = run(&conn, llm.clone(), req(11, "en")).unwrap();
         assert_eq!(again.paragraphs, vec!["[re] Second chapter."]);
         assert_eq!(
             get(&conn, 11, "en", "natural").unwrap().unwrap().mode,
@@ -620,6 +750,26 @@ pub(crate) mod tests {
         assert!(super::super::llm::settings(&conn).unwrap().unwrap().has_key);
         strip(&conn).unwrap();
         assert!(super::super::llm::load(&conn).unwrap().is_none());
+    }
+
+    struct Refused;
+    impl Chat for Refused {
+        fn chat(&self, _: &str, _: &str) -> Result<String, AiError> {
+            Err(AiError::Auth("bad key".into()))
+        }
+        fn model(&self) -> &str {
+            "x"
+        }
+    }
+
+    #[test]
+    fn an_llm_error_comes_out_of_the_graph_as_it_was() {
+        let (conn, _) = book("err");
+        match run(&conn, std::sync::Arc::new(Refused), req(10, "vi")) {
+            Err(AiError::Auth(m)) => assert_eq!(m, "bad key"),
+            other => panic!("{other:?}"),
+        }
+        assert!(get(&conn, 10, "vi", "natural").unwrap().is_none());
     }
 
     #[test]
