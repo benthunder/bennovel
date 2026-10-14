@@ -73,8 +73,6 @@ export const imageKey = (paragraph: string) => (paragraph.startsWith(IMAGE_MARK)
  */
 export const bookImageUrl = (id: number, key: string) => convertFileSrc(`${id}/i/${key}`, 'bookimg');
 
-/** Page `page` (1-based) of a PDF/DjVu drawn `width` pixels wide. */
-export const bookPageUrl = (id: number, page: number, width: number) => convertFileSrc(`${id}/p/${page}/${width}`, 'bookimg');
 
 /** Text of one section; the app keeps only the sections around it in memory. */
 export const getLocalSection = (id: number, index: number) => invoke<LocalSection>('book_section', { id, index });
