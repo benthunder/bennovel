@@ -215,6 +215,20 @@ create table offline_glossary (
   primary key (novel_id, term_key, lang)
 );
 "#,
+    r#"
+-- The reader's replace rules (see rules.rs), one list per novel and language, synced.
+-- `scope` 'online': `key` is the Supabase novel id; 'book': `key` is the imported
+-- book's book_key. `rules` is a JSON array of {find, replace}; an emptied list stays
+-- as '[]' so the removal reaches other devices. `updated_at` is epoch ms.
+create table rule_lists (
+  scope      text not null check (scope in ('online', 'book')),
+  key        text not null,
+  lang       text not null,
+  rules      text not null,
+  updated_at integer not null,
+  primary key (scope, key, lang)
+);
+"#,
 ];
 
 /// Epoch milliseconds now.

@@ -55,6 +55,8 @@ async function nativeApp(page: Page, opts: { file?: boolean; reading?: typeof SA
           case 'book_section': return { index: args.index, paragraphs: [`Words of section ${Number(args.index) + 1}.`] };
           case 'library_list': return books;
           case 'library_open': return { book, novelId: args.novelId, lang: 'en', index: 1, progress: 0 };
+          case 'library_detail': return { book: (books as { novelId: number }[]).find(b => b.novelId === args.novelId), sections: book.sections };
+          case 'library_update': w.__updated = args; return null;
           case 'reading_load': return reading;
           case 'reading_save': w.__saved = args.state; return null;
           default: return null;
@@ -146,6 +148,31 @@ test('history lists online novels and books on the device, newest first', async 
   // The imported book opens offline, where it was left.
   await rows.nth(0).click();
   await expect(page.getByText('Words of section 2.', { exact: true })).toBeVisible();
+});
+
+test('a book on the device has a details page like an online novel', async ({ page }) => {
+  await goOffline(page);
+  const imported = {
+    novelId: 1, title: 'Device Diary', author: null, description: '', lang: 'en', format: 'txt', sourceName: 'diary.txt', chapterCount: 2,
+    createdAt: '2026-10-01T00:00:00.000Z', lastRead: { index: 1, progress: 0.5, lastReadAt: new Date().toISOString() }
+  };
+  await nativeApp(page, { books: [imported] });
+  await boot(page);
+  await page.goto('/');
+  await page.getByText('Device Diary').filter({ visible: true }).first().click();
+  // Details, chapters and Continue, all without a connection.
+  await expect(page.getByRole('heading', { name: 'Device Diary' })).toBeVisible();
+  await expect(page.getByText('File: diary.txt')).toBeVisible();
+  await expect(page.locator('.novel-row').filter({ visible: true })).toHaveCount(2);
+  await expect(page.getByRole('button', { name: /Continue · Part 2 of 2/ }).filter({ visible: true })).toBeVisible();
+  // Editing the details from here.
+  await page.getByRole('button', { name: 'Edit details' }).click();
+  await page.getByLabel('Author').fill('Lina Hart');
+  await page.getByRole('button', { name: 'Save' }).click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __updated?: { author: string } }).__updated?.author)).toBe('Lina Hart');
+  // A chapter opens in the reader.
+  await page.locator('.novel-row').filter({ visible: true }).first().click();
+  await expect(page.getByText('Words of section 1.', { exact: true })).toBeVisible();
 });
 
 test('favourites and history are written back to the store with snapshots', async ({ page }) => {

@@ -7,7 +7,8 @@ import { useT } from '../i18n';
 import { canOpenLocalBooks, libraryUser, type LibraryPlace, type LocalBook } from '../lib/localBook';
 import { runOcr } from '../lib/ocr';
 import { loadReading, saveReading } from '../lib/readingStore';
-import { getSyncStatus, syncLibrary, SyncFailure } from '../lib/sync';
+import { getS3Settings, type S3Settings } from '../lib/s3';
+import { getSyncStatus, syncLibrary, SyncFailure, type SyncStep } from '../lib/sync';
 import { canDownload, deleteDownload, downloadChapter, downloadLang, downloadNovel, listDownloads, setDownloads, type Download } from '../lib/offline';
 import { claimGuestLibrary, listenForSignInLinks, signOut, takeOAuthProvider, takeRecovery, toUser } from '../lib/auth';
 import { supabase } from '../lib/supabase';
@@ -23,6 +24,8 @@ export type Route =
   | { s: 'library' }
   | { s: 'profile' }
   | { s: 'reader'; id: number; ch: number; lang: ContentLang }
+  /** A book in the on-device library. */
+  | { s: 'bookDetail'; novelId: number }
   /** `path`: a file opened without saving, which can still be imported from the reader. */
   | { s: 'book'; book: LocalBook; place?: LibraryPlace; path?: string };
 
@@ -370,13 +373,24 @@ function useAppState() {
   }, [favs, setFavs]);
 
   const [syncing, setSyncing] = useState(false);
+  /** Where the running sync is. */
+  const [syncStep, setSyncStep] = useState<SyncStep | null>(null);
   /** Epoch ms of this library's last sync, null before the first. */
   const [syncedAt, setSyncedAt] = useState<number | null>(null);
   /** Bumped after a sync, so screens list the library books again. */
   const [libraryRev, setLibraryRev] = useState(0);
-  /** Sync needs an account and the library file of the native app. */
-  const canSync = !!user?.id && canOpenLocalBooks();
+  /** The library's own S3 storage, when it syncs there instead of the account's. */
+  const [s3, setS3] = useState<S3Settings | null>(null);
   const libKey = libraryUser(user);
+  /** Sync needs the library file of the native app, and an account or own storage. */
+  const canSync = canOpenLocalBooks() && (!!user?.id || !!s3);
+  const refreshS3 = useCallback(async () => {
+    if (canOpenLocalBooks()) setS3(await getS3Settings(libKey).catch(() => null));
+  }, [libKey]);
+  useEffect(() => {
+    setS3(null);
+    void refreshS3();
+  }, [refreshS3]);
   useEffect(() => {
     setSyncedAt(null);
     if (!canSync) return;
@@ -386,10 +400,10 @@ function useAppState() {
   }, [canSync, libKey]);
 
   const syncNow = useCallback(async () => {
-    if (!canSync || !user?.id || syncing) return;
+    if (!canSync || syncing) return;
     setSyncing(true);
     try {
-      setSyncedAt(await syncLibrary(libKey, user.id));
+      setSyncedAt(await syncLibrary(libKey, setSyncStep));
       showToast(tr('sync.done'));
     } catch (e) {
       showToast(tr(e instanceof SyncFailure ? e.key : 'sync.err.generic'));
@@ -397,9 +411,10 @@ function useAppState() {
       // A sync that failed after merging still changed the lists here.
       reloadReading();
       setLibraryRev(n => n + 1);
+      setSyncStep(null);
       setSyncing(false);
     }
-  }, [canSync, user?.id, syncing, libKey, showToast, tr, reloadReading]);
+  }, [canSync, syncing, libKey, showToast, tr, reloadReading]);
 
   const markLocalRead = useCallback((e: Omit<LocalLast, 'at'>) => setLocalLast({ ...e, at: Date.now() }), [setLocalLast]);
   const forgetLocal = useCallback((novelId: number) => setLocalLast(l => (l?.novelId === novelId ? null : l)), [setLocalLast]);
@@ -414,7 +429,7 @@ function useAppState() {
     push, back, switchTab, openDetail, openCategory, openAuthor, openCollection,
     openChapter, goReader, setReaderLang, setContentLang, setLangDialog, setReaderPrefs,
     signedIn, skipLogin, logout, toggleFav, showToast, markLocalRead, forgetLocal,
-    canSync, syncing, syncedAt, libraryRev, syncNow, downloads
+    canSync, syncing, syncStep, syncedAt, libraryRev, syncNow, s3, refreshS3, downloads
   };
 }
 

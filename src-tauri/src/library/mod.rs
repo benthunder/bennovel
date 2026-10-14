@@ -9,6 +9,10 @@ pub mod folder;
 pub mod ocr;
 pub mod offline;
 pub mod reading;
+pub mod remote;
+pub mod rules;
+pub mod s3;
+pub mod server;
 pub mod sync;
 
 use crate::book::image::{self, Image};
@@ -400,6 +404,10 @@ pub fn delete(conn: &Connection, novel_id: i64) -> rusqlite::Result<()> {
          select 'book', book_key, ?2 from novels where id = ?1 and book_key is not null
          on conflict (kind, key) do update set deleted_at = excluded.deleted_at",
         params![novel_id, db::now_ms()],
+    )?;
+    conn.execute(
+        "delete from rule_lists where scope = 'book' and key = (select book_key from novels where id = ?1)",
+        [novel_id],
     )?;
     conn.execute("delete from novels where id = ?1", [novel_id])?;
     conn.execute(

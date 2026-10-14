@@ -1,22 +1,19 @@
-import { invoke } from '@tauri-apps/api/core';
+import { Channel, invoke } from '@tauri-apps/api/core';
 import type { MessageKey } from '../i18n/en';
 import { supabase } from './supabase';
 
 /*
  * Sync between a user's devices, run from the Sync button. The whole on-device library
- * (imported books, favourites, history) is one gzipped SQLite file in Supabase Storage,
- * in the user's own folder. A sync downloads the newer file, merges it into the library
- * row by row (src-tauri/src/library/sync.rs), uploads the result and commits it with
- * `commit_sync`, which only succeeds when no other device synced in between.
+ * (imported books, favourites, history) is one gzipped SQLite file. The native app does
+ * the sync (src-tauri/src/library/remote.rs): it downloads the newer file, merges it row
+ * by row, and uploads the result only if no other device synced in between.
+ * A signed-in account syncs through the BenNovel server, the Edge Function `sync`
+ * (supabase/functions/sync), which holds the storage keys and hands out signed links;
+ * the app only sends its session, and the file goes straight to storage in parts. A library set to the user's own S3 storage syncs there instead (s3.ts).
  * Native app only: the web build has no library file.
  */
 
-const BUCKET = 'user-sync';
-const ATTEMPTS = 3;
-
 export interface SyncStatus {
-  /** Server version this library was last synced with (0 = never). */
-  lastVersion: number;
   /** Epoch ms of the last sync. */
   syncedAt: number | null;
 }
@@ -30,69 +27,54 @@ export class SyncFailure extends Error {
 
 export const getSyncStatus = (user: string) => invoke<SyncStatus>('sync_status', { user });
 
-/** A fresh name per upload, so two devices never write the same object. */
-const newObject = (uid: string) =>
-  `${uid}/library-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}.sqlite.gz`;
+/** Words in the native app's errors, and the message each one means (first match wins). */
+const MESSAGES: [string, MessageKey][] = [
+  ['sync-outdated', 'sync.err.outdated'],
+  ['sync-sign-in', 'sync.err.signIn'],
+  ['s3-endpoint', 's3.err.endpoint'],
+  ['s3-bucket', 's3.err.bucket'],
+  ['s3-keys', 's3.err.keys'],
+  ['s3-auth', 's3.err.keys'],
+  ['sync-network', 'sync.err.network'],
+  ['sync-server-off', 'sync.err.serverOff'],
+  ['too-large', 'sync.err.tooLarge'],
+  ['sync-busy', 'sync.err.busy']
+];
 
-function fail(error: unknown): never {
+/** What the native app's error says went wrong, as a message to show. */
+export function syncFailure(error: unknown): SyncFailure {
   console.error(error);
-  if (error instanceof SyncFailure) throw error;
-  const e = error as { status?: number; statusCode?: string | number; code?: string; message?: string; name?: string } | null;
-  const status = Number(e?.statusCode ?? e?.status ?? 0);
-  const text = String(e?.message ?? error);
-  if (text.includes('sync-outdated')) throw new SyncFailure('sync.err.outdated', error);
-  if (status === 413 || /maximum allowed size|too large/i.test(text)) throw new SyncFailure('sync.err.tooLarge', error);
-  if (status === 401 || status === 403 || e?.code === '42501' || /jwt|not signed in/i.test(text)) throw new SyncFailure('sync.err.signIn', error);
-  if (error instanceof TypeError || /failed to fetch|network/i.test(text)) throw new SyncFailure('sync.err.network', error);
-  throw new SyncFailure('sync.err.generic', error);
+  if (error instanceof SyncFailure) return error;
+  const text = String((error as { message?: string } | null)?.message ?? error);
+  return new SyncFailure(MESSAGES.find(([word]) => text.includes(word))?.[1] ?? 'sync.err.generic', error);
 }
 
+/** The signed-in account, for the BenNovel server; null when signed out. */
+async function account() {
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
+  if (!token) return null;
+  return {
+    url: `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/sync`,
+    apiKey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+    token
+  };
+}
+
+/** Where a sync is (src-tauri/src/library/remote.rs `Step`); byte counts may have total 0 (unknown). */
+export type SyncStep =
+  | { step: 'download' | 'upload'; done: number; total: number }
+  | { step: 'merge' | 'pack' };
+
 /**
- * Syncs the library file of `user` (its key, the email) with account `uid`.
+ * Syncs the library of `user` (its key), telling `onStep` how far it has come.
  * Returns the time of the sync (epoch ms).
  */
-export async function syncLibrary(user: string, uid: string): Promise<number> {
+export async function syncLibrary(user: string, onStep?: (step: SyncStep) => void): Promise<number> {
   try {
-    for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
-      const { data: server, error } = await supabase.from('user_sync').select('version, object').maybeSingle();
-      if (error) fail(error);
-      const version = server?.version ?? 0;
-
-      // Take in what other devices synced since this one last did.
-      const local = await getSyncStatus(user);
-      if (server && version !== local.lastVersion) {
-        const { data: file, error: downloadError } = await supabase.storage.from(BUCKET).download(server.object);
-        if (downloadError) fail(downloadError);
-        await invoke('sync_merge', new Uint8Array(await file.arrayBuffer()), { headers: { 'x-user': encodeURIComponent(user) } });
-        await invoke('sync_mark', { user, version });
-      }
-
-      const bytes = await invoke<ArrayBuffer>('sync_export', { user });
-      const object = newObject(uid);
-      const { error: uploadError } = await supabase.storage
-        .from(BUCKET)
-        .upload(object, new Blob([bytes], { type: 'application/gzip' }), { contentType: 'application/gzip' });
-      if (uploadError) fail(uploadError);
-
-      const { data: committed, error: commitError } = await supabase.rpc('commit_sync', {
-        expected: version, new_object: object, new_size: bytes.byteLength
-      });
-      if (commitError) {
-        await supabase.storage.from(BUCKET).remove([object]);
-        fail(commitError);
-      }
-      if (committed == null) {
-        // Another device synced first: drop this upload and merge theirs.
-        await supabase.storage.from(BUCKET).remove([object]);
-        continue;
-      }
-      await invoke('sync_mark', { user, version: committed });
-      // The folder keeps only the current file.
-      if (server) await supabase.storage.from(BUCKET).remove([server.object]);
-      return Date.now();
-    }
+    const onProgress = new Channel<SyncStep>(onStep);
+    return await invoke<number>('library_sync', { user, account: await account(), onProgress });
   } catch (e) {
-    fail(e);
+    throw syncFailure(e);
   }
-  throw new SyncFailure('sync.err.busy');
 }

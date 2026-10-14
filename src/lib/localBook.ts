@@ -159,10 +159,19 @@ export async function importLocalFolder(user: string, onProgress?: ImportProgres
   return withProgress(onProgress, () => invoke<LibraryBook>('library_import_folder', { user, paths }));
 }
 
-export async function openLibraryBook(user: string, novelId: number): Promise<{ book: LocalBook; place: LibraryPlace }> {
+/**
+ * Opens a library book in the reader: where it was left, or at chapter `at` (0-based),
+ * from its top unless that is the chapter it was left in.
+ */
+export async function openLibraryBook(user: string, novelId: number, at?: number): Promise<{ book: LocalBook; place: LibraryPlace }> {
   const r = await invoke<{ book: LocalBook; novelId: number; lang: string; index: number; progress: number }>('library_open', { user, novelId });
-  return { book: r.book, place: { user, novelId, lang: r.lang, index: r.index, progress: r.progress } };
+  const index = at != null && at >= 0 && at < r.book.sections.length ? at : r.index;
+  return { book: r.book, place: { user, novelId, lang: r.lang, index, progress: index === r.index ? r.progress : 0 } };
 }
+
+/** A library book with its chapter list, for its details page. */
+export const getLibraryDetail = (user: string, novelId: number) =>
+  lastSave.catch(() => undefined).then(() => invoke<{ book: LibraryBook; sections: LocalSectionMeta[] }>('library_detail', { user, novelId }));
 
 export function saveLibraryProgress(user: string, novelId: number, index: number, progress: number) {
   const p = invoke<void>('library_save_progress', { user, novelId, index, progress });
