@@ -3,6 +3,7 @@ import { useT } from '../i18n';
 import type { AiMark } from '../lib/ai';
 import type { LocalSectionMeta } from '../lib/localBook';
 import { SearchIcon } from './Icons';
+import { Modal } from './Modal';
 
 /** "Chương 12" for a numbered section, else "Phần 3 / 40" (or the pages of a PDF part). */
 export function useSectionName() {
@@ -49,7 +50,7 @@ export function ChapterSheet({ sections, current, marks, onPick, onClose }: {
   }, [sections, q]);
 
   return (
-    <div className="dialog-backdrop dialog-backdrop--sheet" onClick={onClose}>
+    <Modal onClose={onClose}>
       <div className="dialog dialog--sheet" role="dialog" aria-modal="true" aria-label={t('book.toc')} onClick={e => e.stopPropagation()}
         style={{ maxHeight: '82vh', gap: 12 }}>
         <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12 }}>
@@ -80,7 +81,7 @@ export function ChapterSheet({ sections, current, marks, onPick, onClose }: {
           {rows.length === 0 && <p className="muted" style={{ margin: '8px 6px', fontSize: 14 }}>{t('book.tocNone')}</p>}
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }
 

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Modal } from './Modal';
 import { Spinner } from './ui';
 import { useT } from '../i18n';
 import { useApp } from '../store/AppStore';
@@ -29,7 +30,7 @@ export function EditBookDialog({ book, onSave, onClose }: {
     }
   };
   return (
-    <div className="dialog-backdrop dialog-backdrop--sheet" style={{ position: 'fixed' }} onClick={onClose}>
+    <Modal onClose={onClose}>
       <form className="dialog dialog--sheet" role="dialog" aria-modal="true" aria-label={t('library.editTitle')} onClick={e => e.stopPropagation()} onSubmit={submit}>
         <div className="dialog-title" style={{ fontSize: 22 }}>{t('library.editTitle')}</div>
         <div className="field">
@@ -51,6 +52,6 @@ export function EditBookDialog({ book, onSave, onClose }: {
           </button>
         </div>
       </form>
-    </div>
+    </Modal>
   );
 }

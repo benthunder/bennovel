@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { GlobeIcon, LanguagesIcon, LogOutIcon, RefreshIcon, SparklesIcon } from '../components/Icons';
+import { Modal } from '../components/Modal';
 import { NovelCover } from '../components/NovelCover';
 import { UiLangDialog, uiLangLabel } from '../components/UiLangDialog';
 import { CoverGrid, Segmented, Spinner } from '../components/ui';
@@ -119,15 +119,6 @@ export function ProfileScreen() {
 }
 
 const MB = 1024 * 1024;
-
-/**
- * Sheets go into the app frame, not the scrolling screen: inside the screen they sit at
- * the top of its content and open half off-screen once the page is scrolled down.
- */
-const inApp = (sheet: React.ReactElement) => {
-  const host = document.querySelector('.app');
-  return host ? createPortal(sheet, host) : sheet;
-};
 
 /** What a running sync is doing, e.g. "Uploading… 40% · 12 / 30 MB". */
 function stepText(t: ReturnType<typeof useI18n>['t'], step: SyncStep | null): string {
@@ -254,10 +245,10 @@ function S3Dialog({ onClose }: { onClose: () => void }) {
     </div>
   );
 
-  return inApp(
-    <div className="dialog-backdrop dialog-backdrop--sheet" onClick={busy ? undefined : onClose}>
+  return (
+    <Modal onClose={busy ? undefined : onClose}>
       <form className="dialog dialog--sheet" role="dialog" aria-modal="true" aria-label={t('s3.title')} onClick={e => e.stopPropagation()}
-        onSubmit={e => { e.preventDefault(); void apply(form); }} style={{ maxHeight: '90dvh', overflowY: 'auto' }}>
+        onSubmit={e => { e.preventDefault(); void apply(form); }}>
         <div className="dialog-title" style={{ fontSize: 22 }}>{t('s3.title')}</div>
         <div className="dialog-body" style={{ marginTop: -6 }}>{t('s3.body')}</div>
         {field('endpoint', t('s3.endpoint'), { placeholder: 'https://minio.example.com:9000', inputMode: 'url', required: true })}
@@ -280,7 +271,7 @@ function S3Dialog({ onClose }: { onClose: () => void }) {
           </button>
         </div>
       </form>
-    </div>
+    </Modal>
   );
 }
 
@@ -339,10 +330,10 @@ function LlmDialog({ saved, onClose, onSaved }: { saved: LlmSettings | null; onC
     </div>
   );
 
-  return inApp(
-    <div className="dialog-backdrop dialog-backdrop--sheet" onClick={busy ? undefined : onClose}>
+  return (
+    <Modal onClose={busy ? undefined : onClose}>
       <form className="dialog dialog--sheet" role="dialog" aria-modal="true" aria-label={t('ai.title')} onClick={e => e.stopPropagation()}
-        onSubmit={e => { e.preventDefault(); void apply(form); }} style={{ maxHeight: '90dvh', overflowY: 'auto' }}>
+        onSubmit={e => { e.preventDefault(); void apply(form); }}>
         <div className="dialog-title" style={{ fontSize: 22 }}>{t('ai.title')}</div>
         <div className="dialog-body" style={{ marginTop: -6 }}>{t('ai.body')}</div>
         <div>
@@ -372,7 +363,7 @@ function LlmDialog({ saved, onClose, onSaved }: { saved: LlmSettings | null; onC
           </button>
         </div>
       </form>
-    </div>
+    </Modal>
   );
 }
 
