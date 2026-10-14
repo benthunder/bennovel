@@ -678,6 +678,55 @@ pub async fn offline_numbers<R: Runtime>(
     blocking(move || Ok(super::offline::numbers(&db::open(&path)?, novel_id)?)).await
 }
 
+/// The next chapter with scanned pages to read with OCR, if any (`ocr.rs`).
+#[tauri::command]
+pub async fn library_ocr_next<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+) -> Result<Option<super::ocr::OcrTask>, BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || {
+        let conn = db::open(&path)?;
+        super::ocr::next(&conn, &path, |id| open_original(&app, &path, id))
+    })
+    .await
+}
+
+/// Page `page` of a library book's kept original, drawn for OCR, as JPEG bytes.
+#[tauri::command]
+pub async fn library_ocr_page<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+    page: u32,
+) -> Result<tauri::ipc::Response, BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || {
+        // Opened for each page, so the file is never held open (deleting the book
+        // removes it, which Windows refuses for an open file).
+        let mut source = open_original(&app, &path, novel_id)
+            .ok_or_else(|| BookError::NoImage(format!("page {page}")))?;
+        let img = source.render_page(page, super::ocr::OCR_WIDTH)?;
+        Ok(tauri::ipc::Response::new(img.bytes))
+    })
+    .await
+}
+
+/// Stores the text of chapter `index` read with OCR (`pages`: each page's text).
+#[tauri::command]
+pub async fn library_ocr_save<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+    index: usize,
+    chapters: usize,
+    pages: Vec<String>,
+) -> Result<(), BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || super::ocr::save(&mut db::open(&path)?, novel_id, index, chapters, &pages))
+        .await
+}
+
 /// The reader's replace rules for a novel ("online": Supabase id; "book": library id)
 /// in one language; null when none were ever saved on this device.
 #[tauri::command]

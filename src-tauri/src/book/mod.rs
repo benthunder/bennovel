@@ -17,7 +17,7 @@ mod markdown;
 mod mobi;
 mod pdf;
 mod rtf;
-mod text;
+pub(crate) mod text;
 mod txt;
 mod window;
 mod xmldoc;
@@ -121,6 +121,12 @@ pub trait BookSource: Send {
     /// Page `page` (1-based) drawn `width` pixels wide.
     fn render_page(&mut self, page: u32, _width: u32) -> Result<image::Image, BookError> {
         Err(BookError::NoImage(format!("page {page}")))
+    }
+
+    /// The text layer of page `page` (1-based), empty when the page has none (a scan).
+    /// `None` for books not laid out as pages.
+    fn page_text(&mut self, _page: u32) -> Result<Option<String>, BookError> {
+        Ok(None)
     }
 }
 

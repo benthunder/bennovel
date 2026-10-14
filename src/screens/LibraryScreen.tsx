@@ -14,6 +14,7 @@ import {
   canOpenLocalBooks, deleteLibraryBook, importLocalBook, importLocalFolder, canPickFolder, libraryUser, listLibrary, localCover, pickLocalBook, updateLibraryBook,
   type LibraryBook
 } from '../lib/localBook';
+import { runOcr, useOcrStatus } from '../lib/ocr';
 
 export function LibraryScreen() {
   const t = useT();
@@ -71,6 +72,7 @@ function DeviceBooks({ onOpenFile }: { onOpenFile: () => void }) {
   const [books, setBooks] = useState<LibraryBook[] | null>(null);
   const [importing, setImporting] = useState<{ done: number; total: number } | null>(null);
   const [editing, setEditing] = useState<LibraryBook | null>(null);
+  const ocr = useOcrStatus();
 
   // Listed again after a sync, which can add or remove books.
   const reload = useCallback(() => {
@@ -90,6 +92,7 @@ function DeviceBooks({ onOpenFile }: { onOpenFile: () => void }) {
       if (book) {
         app.showToast(t('library.imported', { title: book.title }));
         reload();
+        runOcr(user);
       }
     } catch (e) {
       fail('library.importFailed', e);
@@ -128,6 +131,12 @@ function DeviceBooks({ onOpenFile }: { onOpenFile: () => void }) {
           <Spinner size={14} />
           <span>{importing.total ? t('library.importing', { done: importing.done, total: importing.total }) : t('book.loading')}</span>
           <div className="import-progress__bar"><div style={{ width: `${importing.total ? Math.round((importing.done / importing.total) * 100) : 0}%` }} /></div>
+        </div>
+      ) : ocr ? (
+        <div className="import-progress" role="status" style={{ marginBottom: 14 }}>
+          <Spinner size={14} />
+          <span>{t('library.ocr', { title: ocr.title, done: ocr.done, total: ocr.total })}</span>
+          <div className="import-progress__bar"><div style={{ width: `${Math.round((ocr.done / Math.max(1, ocr.total)) * 100)}%` }} /></div>
         </div>
       ) : (
         <p className="muted import-hint" style={{ marginBottom: 14 }}>{t(canPickFolder() ? 'library.importHint' : 'library.importHintMobile')}</p>

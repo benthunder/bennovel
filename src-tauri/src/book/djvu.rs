@@ -86,6 +86,19 @@ impl BookSource for DjvuBook {
         let pix = djvu_rs::djvu_render::render_pixmap(page, &opts).map_err(err)?;
         image::encode_jpeg(pix.width, pix.height, &pix.data)
     }
+
+    fn page_text(&mut self, page: u32) -> Result<Option<String>, BookError> {
+        if page == 0 || page as usize > self.pages {
+            return Err(BookError::NoImage(format!("page {page}")));
+        }
+        let page = self.doc.page(page as usize - 1).map_err(err)?;
+        Ok(Some(
+            page.text_layer()
+                .map_err(err)?
+                .map(|l| l.text)
+                .unwrap_or_default(),
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -111,6 +124,10 @@ mod tests {
                 "Trang 12 dòng một.",
                 "Kết thúc trang 12."
             ]
+        );
+        assert_eq!(
+            book.page_text(12).unwrap().unwrap().lines().next(),
+            Some("Trang 12 dòng một.")
         );
         let page = book.render_page(12, 400).unwrap();
         assert_eq!(image::mime_of(&page.bytes), "image/jpeg");

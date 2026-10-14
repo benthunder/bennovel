@@ -6,6 +6,7 @@
 pub mod commands;
 pub mod db;
 pub mod folder;
+pub mod ocr;
 pub mod offline;
 pub mod reading;
 pub mod remote;
