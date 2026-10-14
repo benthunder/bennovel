@@ -3,6 +3,7 @@ import { getContentLangs } from '../data/repository';
 import type { ContentLang } from '../data/types';
 import { useT } from '../i18n';
 import { useApp, type LangDialog as Dialog } from '../store/AppStore';
+import { Modal } from './Modal';
 import { Checkbox } from './ui';
 
 type Pick = ContentLang | 'ask';
@@ -46,7 +47,7 @@ export function LangDialog({ dialog }: { dialog: Dialog }) {
   const title = dialog.mode === 'settings' ? t('lang.titleSettings') : dialog.mode === 'reader' ? t('lang.titleReader') : t('lang.titleChapter');
 
   return (
-    <div className="dialog-backdrop dialog-backdrop--sheet" onClick={close}>
+    <Modal onClose={close}>
       <div className="dialog dialog--sheet" role="dialog" aria-modal="true" aria-label={title} onClick={e => e.stopPropagation()}>
         <div className="dialog-title" style={{ fontSize: 22 }}>{title}</div>
         <div className="dialog-body" style={{ marginTop: -6 }}>{dialog.mode === 'settings' ? t('lang.bodySettings') : t('lang.bodyChapter')}</div>
@@ -69,6 +70,6 @@ export function LangDialog({ dialog }: { dialog: Dialog }) {
           </button>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }

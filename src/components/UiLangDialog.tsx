@@ -1,8 +1,8 @@
 import { useState } from 'react';
-import { createPortal } from 'react-dom';
 import type { UiLang } from '../data/types';
 import { useI18n } from '../i18n';
 import { useApp } from '../store/AppStore';
+import { Modal } from './Modal';
 
 // The interface ships in English and Vietnamese only.
 const UI_LANGS: { code: UiLang; native: string; name: string }[] = [
@@ -17,7 +17,6 @@ export function UiLangDialog({ onClose }: { onClose: () => void }) {
   const { t, uiLang, setUiLang } = useI18n();
   const app = useApp();
   const [pick, setPick] = useState<UiLang>(uiLang);
-  const host = document.querySelector('.app');
 
   const confirm = () => {
     setUiLang(pick);
@@ -26,8 +25,8 @@ export function UiLangDialog({ onClose }: { onClose: () => void }) {
     if (pick !== uiLang) app.showToast(pick === 'vi' ? 'Đã đổi ngôn ngữ ứng dụng' : 'App language changed');
   };
 
-  const sheet = (
-    <div className="dialog-backdrop dialog-backdrop--sheet" onClick={onClose}>
+  return (
+    <Modal onClose={onClose}>
       <div className="dialog dialog--sheet" role="dialog" aria-modal="true" aria-label={t('uiLang.title')} onClick={e => e.stopPropagation()}>
         <div className="dialog-title" style={{ fontSize: 22 }}>{t('uiLang.title')}</div>
         <div className="dialog-body" style={{ marginTop: -6 }}>{t('uiLang.body')}</div>
@@ -48,8 +47,6 @@ export function UiLangDialog({ onClose }: { onClose: () => void }) {
           <button className="btn btn-primary" style={{ height: 44, padding: '0 22px' }} onClick={confirm}>{t('common.save')}</button>
         </div>
       </div>
-    </div>
+    </Modal>
   );
-
-  return host ? createPortal(sheet, host) : sheet;
 }
