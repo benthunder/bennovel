@@ -293,6 +293,14 @@ export type Database = {
         Returns: TranslationJob
         SetofOptions: { from: "*"; to: "translation_jobs"; isOneToOne: true; isSetofReturn: false }
       }
+      request_novel_translation: {
+        Args: { p_apply_glossary?: boolean; p_from_number?: number; p_novel_id: number; p_style?: TranslationStyle; p_target_lang: string }
+        Returns: number
+      }
+      novel_translation_progress: {
+        Args: { p_novel_id: number }
+        Returns: { lang: string; total: number; translated: number; queued: number; running: number; failed: number }[]
+      }
     }
     Enums: {
       novel_status: "ongoing" | "completed"

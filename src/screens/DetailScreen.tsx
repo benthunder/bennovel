@@ -1,8 +1,9 @@
 import { useState } from 'react';
-import { CheckIcon, ChevronLeftIcon, ChevronRightIcon, DownloadIcon, HeartIcon, LanguagesIcon, PlayIcon, RefreshIcon, XIcon } from '../components/Icons';
+import { CheckIcon, ChevronLeftIcon, ChevronRightIcon, DownloadIcon, HeartIcon, LanguagesIcon, PlayIcon, RefreshIcon, SparklesIcon, XIcon } from '../components/Icons';
+import { TranslateFields, defaultTranslation, type Translation } from '../components/ReaderTools';
 import { NovelCover } from '../components/NovelCover';
 import { ShelfItem, Spinner, formatReads } from '../components/ui';
-import { getChapterList, getContentLangs, getNovel, sameAuthor, sameCategory } from '../data/repository';
+import { getChapterList, getContentLangs, getGlossary, getNovel, getTranslationProgress, requestNovelTranslation, sameAuthor, sameCategory, type TranslationProgress } from '../data/repository';
 import { useAsync } from '../lib/useAsync';
 import type { Novel } from '../data/types';
 import { useI18n } from '../i18n';
@@ -80,11 +81,13 @@ export function DetailScreen({ id }: { id: number }) {
           </div>
           {lay.wide && startBtn}
           {lay.wide && <DownloadBox id={id} />}
+          {lay.wide && <TranslateBox id={id} />}
         </div>
 
         <div style={{ padding: lay.wide ? 0 : '20px 20px 0', display: 'flex', flexDirection: 'column', gap: lay.wide ? 22 : 20, minWidth: 0 }}>
           {lay.isPhone && startBtn}
           {lay.isPhone && <DownloadBox id={id} />}
+          {lay.isPhone && <TranslateBox id={id} />}
 
           <div>
             <h5 className="section-title" style={{ marginBottom: 6 }}>{t('detail.synopsis')}</h5>
@@ -181,6 +184,87 @@ function DownloadBox({ id }: { id: number }) {
       <button className="btn btn-ghost" style={{ fontSize: 13, gap: 6 }} onClick={() => downloads.remove(id)}>
         <XIcon size={14} />{t('download.remove')}
       </button>
+    </div>
+  );
+}
+
+/** AI translation of the whole novel: languages in progress, and a button to queue one. */
+function TranslateBox({ id }: { id: number }) {
+  const { t } = useI18n();
+  const app = useApp();
+  const online = useCatalog().status !== 'offline';
+  const [reloads, setReloads] = useState(0);
+  const progressQ = useAsync(() => (online ? getTranslationProgress(id) : Promise.resolve([])), [id, online, reloads]);
+  // Keep the last numbers on screen while they reload.
+  const [progress, setProgress] = useState<TranslationProgress[]>([]);
+  if (progressQ.status === 'ready' && progressQ.data !== progress) setProgress(progressQ.data);
+  const [open, setOpen] = useState(false);
+  const [tr, setTr] = useState<Translation | null>(null);
+  const [busy, setBusy] = useState(false);
+  const glossaryQ = useAsync(async () => (open ? Object.keys(await getGlossary(id)).length : 0), [id, open]);
+  if (!online) return null;
+
+  const langs = getContentLangs().filter(l => progress.some(p => p.lang === l.code));
+  const langName = (c: string) => getContentLangs().find(l => l.code === c)?.native ?? c;
+  const choice = tr ?? (() => {
+    const d = defaultTranslation(app.contentLang);
+    const pick = [app.contentLang, d.lang].find(c => c && langs.some(l => l.code === c)) ?? langs[0]?.code;
+    return pick ? { ...d, lang: pick } : d;
+  })();
+  const active = progress.filter(p => p.queued + p.running + p.failed > 0);
+
+  const openPanel = () => {
+    if (!app.user) {
+      app.showToast(t('tr.needLogin'));
+      app.push({ s: 'login' });
+      return;
+    }
+    setOpen(true);
+  };
+  const start = async () => {
+    setBusy(true);
+    try {
+      const n = await requestNovelTranslation(id, choice.lang, choice.style, choice.dict);
+      app.showToast(n ? t('tr.novelQueued', { n, lang: langName(choice.lang) }) : t('tr.novelNothing', { lang: langName(choice.lang) }));
+      setOpen(false);
+      setReloads(r => r + 1);
+    } catch {
+      app.showToast(t('tr.requestFailed'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
+      {active.map(p => (
+        <div key={p.lang} className="import-progress" role="status">
+          {p.queued + p.running > 0 ? <Spinner size={14} /> : <SparklesIcon size={14} />}
+          <span>
+            {t('tr.progress', { lang: langName(p.lang), done: p.translated, total: p.total })}
+            {p.queued + p.running > 0 && ` · ${t('tr.waiting', { n: p.queued + p.running })}`}
+            {p.failed > 0 && ` · ${t('tr.failedCount', { n: p.failed })}`}
+          </span>
+          <div className="import-progress__bar"><div style={{ width: `${p.total ? Math.round((p.translated / p.total) * 100) : 0}%` }} /></div>
+        </div>
+      ))}
+      {!open && (
+        <button className="btn btn-secondary btn-block" style={{ gap: 8 }} disabled={!langs.length && !!app.user} onClick={openPanel}>
+          <SparklesIcon size={16} />{t('tr.novel')}
+        </button>
+      )}
+      {open && (
+        <div role="group" aria-label={t('tr.novel')} style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: 14, borderRadius: 26, background: 'var(--color-surface)', border: '2px solid var(--color-neutral-200)' }}>
+          <div className="display" style={{ fontSize: 17, display: 'flex', alignItems: 'center', gap: 8 }}><SparklesIcon size={16} />{t('tr.novel')}</div>
+          <TranslateFields value={choice} onChange={setTr} langs={langs} glossaryCount={glossaryQ.status === 'ready' ? glossaryQ.data : 0} />
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn btn-ghost" style={{ flex: 1 }} disabled={busy} onClick={() => setOpen(false)}>{t('common.cancel')}</button>
+            <button className="btn btn-primary" style={{ flex: 2, gap: 8 }} disabled={busy} onClick={start}>
+              {busy && <Spinner size={14} />}{t('tr.novelStart')}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
