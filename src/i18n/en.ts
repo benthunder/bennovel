@@ -56,6 +56,7 @@ export const en = {
   'auth.backToLogin': 'Back to log in',
   'auth.confirmSent': 'Almost done: open the link we sent to {email}, then log in here.',
   'auth.working': 'Please wait…',
+  'auth.googleConnecting': 'Signing in with Google…',
   'auth.googleWaiting': 'Finish signing in with Google in your browser. BenNovel opens again when you are done.',
   'auth.err.code': 'This code is wrong or has expired',
   'auth.err.codeFormat': 'Enter the code from the email',

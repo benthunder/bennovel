@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { BookOpenIcon } from '../components/Icons';
 import { NovelCover } from '../components/NovelCover';
-import { Segmented } from '../components/ui';
+import { Segmented, Spinner } from '../components/ui';
 import { getPopular } from '../data/repository';
 import { useLayout } from '../lib/useLayout';
 import { useI18n } from '../i18n';
@@ -37,6 +37,8 @@ export function LoginScreen({ recovery = false }: { recovery?: boolean }) {
   /** The reset email went out, so its code is asked for. */
   const [resetSent, setResetSent] = useState(false);
   const [busy, setBusy] = useState(false);
+  /** Google sign-in started and not back yet: the web page is leaving, the app waits for its link. */
+  const [googleWait, setGoogleWait] = useState(false);
 
   const go = (m: Mode) => { setMode(m); setErrors({}); setFailure(null); setNotice(null); setResetSent(false); };
   const welcome = (u: User) => t('auth.welcome', { name: u.name.split(' ')[0] });
@@ -91,18 +93,20 @@ export function LoginScreen({ recovery = false }: { recovery?: boolean }) {
 
   /** Google sign-in finishes in the browser; the app hears back through a link (see AppStore). */
   const google = async () => {
-    setBusy(true);
+    setGoogleWait(true);
     setFailure(null);
     setNotice(null);
     try {
+      // Stays waiting: this screen goes away once the sign-in lands.
       await signInWithGoogle();
       if (canOpenLocalBooks()) setNotice(t('auth.googleWaiting'));
     } catch (err) {
+      setGoogleWait(false);
       setFailure(err instanceof AuthFailure ? err.key : 'auth.err.generic');
-    } finally {
-      setBusy(false);
     }
   };
+  /** The reader closed the browser or wants another way in. */
+  const cancelGoogle = () => { setGoogleWait(false); setNotice(null); };
 
   const field = (key: Field, label: string, props: React.InputHTMLAttributes<HTMLInputElement>) => (
     <div className="field">
@@ -151,11 +155,16 @@ export function LoginScreen({ recovery = false }: { recovery?: boolean }) {
 
       {(mode === 'login' || mode === 'register') && (
         <>
-          <button type="button" className="btn btn-secondary" disabled={busy} onClick={google}
+          <button type="button" className="btn btn-secondary" disabled={busy || googleWait} aria-busy={googleWait} onClick={google}
             style={{ height: 50, gap: 10, marginTop: 4, background: 'var(--color-neutral-100)', fontSize: 15 }}>
-            <span style={{ width: 24, height: 24, flex: 'none', borderRadius: '50%', background: 'var(--color-accent-200)', color: 'var(--color-accent-800)', display: 'grid', placeItems: 'center', fontFamily: 'var(--font-body)', fontWeight: 800, fontSize: 13 }}>G</span>
-            {t('auth.continueWith', { p: 'Google' })}
+            {googleWait
+              ? <Spinner size={20} />
+              : <span style={{ width: 24, height: 24, flex: 'none', borderRadius: '50%', background: 'var(--color-accent-200)', color: 'var(--color-accent-800)', display: 'grid', placeItems: 'center', fontFamily: 'var(--font-body)', fontWeight: 800, fontSize: 13 }}>G</span>}
+            {t(googleWait ? 'auth.googleConnecting' : 'auth.continueWith', { p: 'Google' })}
           </button>
+          {googleWait && notice && (
+            <button type="button" className="btn btn-ghost" style={{ alignSelf: 'center', fontSize: 13, marginTop: -6 }} onClick={cancelGoogle}>{t('common.cancel')}</button>
+          )}
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, fontSize: 12, color: 'var(--color-neutral-700)' }}>
             <span style={{ flex: 1, height: 2, borderRadius: 2, background: 'var(--color-neutral-300)' }} />
             {t('auth.orEmail')}
@@ -183,7 +192,7 @@ export function LoginScreen({ recovery = false }: { recovery?: boolean }) {
 
       {failure && <div role="alert" style={{ fontSize: 13, color: 'var(--color-accent-700)', margin: '-4px 14px 0' }}>{t(failure)}</div>}
 
-      <button type="submit" className="btn btn-primary" style={{ height: 50, fontSize: 16 }} disabled={busy}>
+      <button type="submit" className="btn btn-primary" style={{ height: 50, fontSize: 16 }} disabled={busy || googleWait}>
         {busy ? t('auth.working') : t(SUBMIT[mode === 'forgot' && resetSent ? 'code' : mode])}
       </button>
       {mode === 'login' && <button type="button" className="btn btn-ghost" style={{ alignSelf: 'center', fontSize: 13 }} onClick={() => go('forgot')}>{t('auth.forgot')}</button>}

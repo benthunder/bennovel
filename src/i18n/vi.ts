@@ -58,6 +58,7 @@ export const vi: Record<MessageKey, string> = {
   'auth.backToLogin': 'Quay lại đăng nhập',
   'auth.confirmSent': 'Sắp xong: mở link xác nhận đã gửi tới {email}, rồi đăng nhập tại đây.',
   'auth.working': 'Đang xử lý…',
+  'auth.googleConnecting': 'Đang đăng nhập bằng Google…',
   'auth.googleWaiting': 'Hoàn tất đăng nhập Google trong trình duyệt. Xong là BenNovel tự mở lại.',
   'auth.err.code': 'Mã không đúng hoặc đã hết hạn',
   'auth.err.codeFormat': 'Nhập mã trong email',
