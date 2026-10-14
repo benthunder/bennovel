@@ -1,11 +1,11 @@
 import { useState } from 'react';
 import { DICTIONARY, DICT_SUGGEST, TRANSLATE_STYLES } from '../data/mock';
 import { getContentLangs } from '../data/repository';
-import { CONTENT_LANGS, type ContentLang, type DictEntry, type GlossaryTerm, type ReplaceRule, type TranslateStyle } from '../data/types';
+import { CONTENT_LANGS, type ContentLang, type ContentLangInfo, type DictEntry, type GlossaryTerm, type ReplaceRule, type TranslateStyle } from '../data/types';
 import { useI18n } from '../i18n';
 import { DEFAULT_READER_PREFS, READER_THEMES, useApp, type ReaderPrefs } from '../store/AppStore';
 import { BookIcon, SparklesIcon, XIcon } from './Icons';
-import { Checkbox, Segmented } from './ui';
+import { Checkbox, Segmented, Spinner } from './ui';
 import { useLayout } from '../lib/useLayout';
 
 export type ToolsTab = 'reading' | 'replace' | 'ai';
@@ -17,7 +17,7 @@ const FONT_MIN = 14, FONT_MAX = 26;
  * Reading settings and the (simulated) AI dictionary / translator.
  * Phone: bottom sheet over the chapter. Tablet and desktop: a side panel the chapter makes room for.
  */
-export function ReaderTools({ glossary, lang, rules, onRulesChange, onClose, onTranslate, initialTab = 'reading' }: {
+export function ReaderTools({ glossary, lang, rules, onRulesChange, onClose, onTranslate, onTranslateFrom, initialTab = 'reading' }: {
   glossary: Record<string, GlossaryTerm>;
   /** Language of the text on screen; replace rules are kept per language. */
   lang: ContentLang;
@@ -25,6 +25,8 @@ export function ReaderTools({ glossary, lang, rules, onRulesChange, onClose, onT
   onRulesChange: (rules: ReplaceRule[]) => void;
   onClose: () => void;
   onTranslate: (t: Translation) => void;
+  /** Queue AI translation from this chapter to the last one; no button when left out. */
+  onTranslateFrom?: (t: Translation) => Promise<void>;
   initialTab?: ToolsTab;
 }) {
   const { t } = useI18n();
@@ -49,7 +51,7 @@ export function ReaderTools({ glossary, lang, rules, onRulesChange, onClose, onT
         <div className="nx-scroll" style={{ overflowY: 'auto', padding: '0 20px calc(env(safe-area-inset-bottom) + 30px)', display: 'flex', flexDirection: 'column', gap: 18 }}>
           {tab === 'reading' && <ReadingTab />}
           {tab === 'replace' && <ReplaceTab lang={lang} rules={rules} onChange={onRulesChange} />}
-          {tab === 'ai' && <AiTab glossary={glossary} currentLang={lang} onTranslate={onTranslate} />}
+          {tab === 'ai' && <AiTab glossary={glossary} currentLang={lang} onTranslate={onTranslate} onTranslateFrom={onTranslateFrom} />}
         </div>
       </div>
     </div>
@@ -158,13 +160,17 @@ function ReplaceTab({ lang, rules, onChange }: { lang: ContentLang; rules: Repla
 const panel: React.CSSProperties = { borderRadius: 30, background: 'var(--color-surface)', padding: 16, display: 'flex', flexDirection: 'column', gap: 12 };
 const panelIcon = (bg: string, fg: string): React.CSSProperties => ({ width: 34, height: 34, borderRadius: '50%', background: bg, color: fg, display: 'grid', placeItems: 'center' });
 
-function AiTab({ glossary: terms, currentLang, onTranslate }: { glossary: Record<string, GlossaryTerm>; currentLang: ContentLang; onTranslate: (t: Translation) => void }) {
+function AiTab({ glossary: terms, currentLang, onTranslate, onTranslateFrom }: {
+  glossary: Record<string, GlossaryTerm>;
+  currentLang: ContentLang;
+  onTranslate: (t: Translation) => void;
+  onTranslateFrom?: (t: Translation) => Promise<void>;
+}) {
   const { t } = useI18n();
   const [word, setWord] = useState('');
   const [result, setResult] = useState<(DictEntry & { word: string }) | null>(null);
-  const [trLang, setTrLang] = useState<ContentLang>(currentLang === 'vi' ? 'en' : 'vi');
-  const [style, setStyle] = useState<TranslateStyle>('Natural');
-  const [applyDict, setApplyDict] = useState(true);
+  const [tr, setTr] = useState<Translation>(() => defaultTranslation(currentLang));
+  const [queuing, setQueuing] = useState(false);
   const glossary = Object.entries(terms);
 
   // Simulated lookup until the dictionary API exists.
@@ -215,28 +221,53 @@ function AiTab({ glossary: terms, currentLang, onTranslate }: { glossary: Record
           <span style={panelIcon('var(--color-accent-300)', 'var(--color-accent-900)')}><SparklesIcon size={17} /></span>
           <div className="display" style={{ fontSize: 18 }}>{t('tr.title')}</div>
         </div>
-        <div>
-          <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>{t('tr.to')}</div>
-          <Segmented value={trLang} onChange={setTrLang} style={{ background: 'var(--color-bg)' }} options={getContentLangs().map(l => ({ label: l.native, value: l.code }))} />
-        </div>
-        <div>
-          <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>{t('tr.style')}</div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-            {TRANSLATE_STYLES.map(s => (
-              <button key={s} className={`chip chip--outline${style === s ? ' chip--active' : ''}`} style={{ height: 38, background: style === s ? undefined : 'var(--color-surface)' }}
-                aria-pressed={style === s} onClick={() => setStyle(s)}>{t(`tr.style.${s}`)}</button>
-            ))}
-          </div>
-          <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>{t(`tr.desc.${style}`)}</div>
-        </div>
-        <Checkbox checked={applyDict} onChange={() => setApplyDict(a => !a)} style={{ padding: '10px 12px', borderRadius: 20, background: 'var(--color-bg)' }}>
-          <span style={{ flex: 1 }}>
-            <span style={{ display: 'block', fontSize: 13, fontWeight: 700 }}>{t('tr.applyDict')}</span>
-            <span className="muted" style={{ fontSize: 11 }}>{t('tr.applyDictSub', { n: glossary.length })}</span>
-          </span>
-        </Checkbox>
-        <button className="btn btn-primary" style={{ height: 48, fontSize: 15 }} onClick={() => onTranslate({ lang: trLang, style, dict: applyDict })}>{t('tr.run')}</button>
+        <TranslateFields value={tr} onChange={setTr} glossaryCount={glossary.length} />
+        <button className="btn btn-primary" style={{ height: 48, fontSize: 15 }} onClick={() => onTranslate(tr)}>{t('tr.run')}</button>
+        {onTranslateFrom && (
+          <button className="btn btn-secondary" style={{ height: 48, fontSize: 15, gap: 8 }} disabled={queuing}
+            onClick={() => { setQueuing(true); onTranslateFrom(tr).finally(() => setQueuing(false)); }}>
+            {queuing && <Spinner size={14} />}{t('tr.runFrom')}
+          </button>
+        )}
       </div>
     </div>
+  );
+}
+
+/** First choice of target language: Vietnamese, or English when reading Vietnamese. */
+export const defaultTranslation = (current: ContentLang | null): Translation =>
+  ({ lang: current === 'vi' ? 'en' : 'vi', style: 'Natural', dict: true });
+
+/** Target language, style and glossary switch for an AI translation. */
+export function TranslateFields({ value, onChange, glossaryCount, langs = getContentLangs() }: {
+  value: Translation;
+  onChange: (t: Translation) => void;
+  glossaryCount: number;
+  langs?: ContentLangInfo[];
+}) {
+  const { t } = useI18n();
+  return (
+    <>
+      <div>
+        <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>{t('tr.to')}</div>
+        <Segmented value={value.lang} onChange={lang => onChange({ ...value, lang })} style={{ background: 'var(--color-bg)' }} options={langs.map(l => ({ label: l.native, value: l.code }))} />
+      </div>
+      <div>
+        <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>{t('tr.style')}</div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+          {TRANSLATE_STYLES.map(s => (
+            <button key={s} className={`chip chip--outline${value.style === s ? ' chip--active' : ''}`} style={{ height: 38, background: value.style === s ? undefined : 'var(--color-surface)' }}
+              aria-pressed={value.style === s} onClick={() => onChange({ ...value, style: s })}>{t(`tr.style.${s}`)}</button>
+          ))}
+        </div>
+        <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>{t(`tr.desc.${value.style}`)}</div>
+      </div>
+      <Checkbox checked={value.dict} onChange={() => onChange({ ...value, dict: !value.dict })} style={{ padding: '10px 12px', borderRadius: 20, background: 'var(--color-bg)' }}>
+        <span style={{ flex: 1 }}>
+          <span style={{ display: 'block', fontSize: 13, fontWeight: 700 }}>{t('tr.applyDict')}</span>
+          <span className="muted" style={{ fontSize: 11 }}>{t('tr.applyDictSub', { n: glossaryCount })}</span>
+        </span>
+      </Checkbox>
+    </>
   );
 }

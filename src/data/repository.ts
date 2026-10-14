@@ -8,7 +8,7 @@ import { supabase } from '../lib/supabase';
 import { load, save } from '../lib/storage';
 import { findDownload, offlineChapter, offlineChapters, offlineGlossary } from '../lib/offline';
 import type {
-  Category, ChapterInfo, ChapterText, CollectionKey, ContentLang, ContentLangInfo, GlossaryTerm, Novel, NovelStatus, ReplaceRule, UiLang
+  Category, ChapterInfo, ChapterText, CollectionKey, ContentLang, ContentLangInfo, GlossaryTerm, Novel, NovelStatus, ReplaceRule, TranslateStyle, UiLang
 } from './types';
 import { CONTENT_LANGS } from './types';
 
@@ -309,3 +309,26 @@ export const saveBookRules = (user: string, novelId: number, lang: ContentLang, 
 /** Applies each rule to `text` in order, replacing every occurrence (case-sensitive, plain text). */
 export const applyReplaceRules = (text: string, rules: ReplaceRule[]) =>
   rules.reduce((s, r) => (r.find ? s.split(r.find).join(r.replace) : s), text);
+
+/** AI translation of one language for a novel, in chapters. */
+export interface TranslationProgress { lang: ContentLang; total: number; translated: number; queued: number; running: number; failed: number }
+
+/**
+ * Queues AI translation of every released chapter from `fromChapter` on that has no text
+ * in `lang` yet. Resolves to how many chapters wait on a job afterwards (0: nothing to do).
+ * Needs a signed-in reader.
+ */
+export async function requestNovelTranslation(novelId: number, lang: ContentLang, style: TranslateStyle, applyGlossary: boolean, fromChapter = 1): Promise<number> {
+  const { data, error } = await supabase.rpc('request_novel_translation', {
+    p_novel_id: novelId, p_target_lang: lang, p_from_number: fromChapter,
+    p_style: style.toLowerCase() as Lowercase<TranslateStyle>, p_apply_glossary: applyGlossary
+  });
+  if (error) throw new Error(`Requesting translation failed: ${error.message}`);
+  return data ?? 0;
+}
+
+/** Per language other than the original: chapters translated and waiting. */
+export async function getTranslationProgress(novelId: number): Promise<TranslationProgress[]> {
+  const rows = must(await supabase.rpc('novel_translation_progress', { p_novel_id: novelId }), 'translation progress');
+  return rows.map(r => ({ ...r, lang: r.lang as ContentLang }));
+}

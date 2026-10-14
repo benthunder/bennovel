@@ -3,7 +3,7 @@ import { ChevronLeftIcon, SlidersIcon, SparklesIcon } from '../components/Icons'
 import { ReaderChrome, ReaderStatusBar, useImmersive } from '../components/ReaderChrome';
 import { ReaderTools, type Translation } from '../components/ReaderTools';
 import { Spinner } from '../components/ui';
-import { applyReplaceRules, getChapterText, getContentLangs, getGlossary, getNovel, getReplaceRules, saveReplaceRules } from '../data/repository';
+import { applyReplaceRules, getChapterText, getContentLangs, getGlossary, getNovel, getReplaceRules, requestNovelTranslation, saveReplaceRules } from '../data/repository';
 import { libraryUser } from '../lib/localBook';
 import { useAsync } from '../lib/useAsync';
 import type { ContentLang, ReplaceRule } from '../data/types';
@@ -59,6 +59,21 @@ export function ReaderScreen({ id, ch, lang }: { id: number; ch: number; lang: C
       setTimeout(() => setTrStep(2), TR_STEP_MS * 2),
       setTimeout(() => { setTrStep(null); setTranslated(tr); scrollRef.current?.scrollTo({ top: 0 }); }, TR_STEP_MS * 3)
     );
+  };
+
+  // Real AI translation: queue this chapter and every later one that is not in `tr.lang` yet.
+  const translateFrom = async (tr: Translation) => {
+    if (!app.user) {
+      app.showToast(t('tr.needLogin'));
+      app.push({ s: 'login' });
+      return;
+    }
+    try {
+      const n = await requestNovelTranslation(id, tr.lang, tr.style, tr.dict, ch);
+      app.showToast(n ? t('tr.queuedFrom', { n, ch, lang: langName(tr.lang) }) : t('tr.nothingFrom', { lang: langName(tr.lang) }));
+    } catch {
+      app.showToast(t('tr.requestFailed'));
+    }
   };
 
   const paragraphs = (chapter?.paragraphs ?? []).map(para => para.split(/\[\[([\w-]+)\]\]/).map((seg, i) => {
@@ -150,7 +165,7 @@ export function ReaderScreen({ id, ch, lang }: { id: number; ch: number; lang: C
         )}
       </div>
 
-      {toolsOpen && <ReaderTools glossary={glossary} lang={dispLang} rules={rules} onRulesChange={changeRules} onClose={() => setToolsOpen(false)} onTranslate={runTranslate} />}
+      {toolsOpen && <ReaderTools glossary={glossary} lang={dispLang} rules={rules} onRulesChange={changeRules} onClose={() => setToolsOpen(false)} onTranslate={runTranslate} onTranslateFrom={translateFrom} />}
     </div>
   );
 }
