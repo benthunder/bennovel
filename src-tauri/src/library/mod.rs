@@ -6,14 +6,17 @@
 pub mod commands;
 pub mod db;
 pub mod folder;
+pub mod llm;
 pub mod ocr;
 pub mod offline;
+pub mod queue;
 pub mod reading;
 pub mod remote;
 pub mod rules;
 pub mod s3;
 pub mod server;
 pub mod sync;
+pub mod translate;
 
 use crate::book::image::{self, Image};
 use crate::book::{BookError, BookFormat, BookSource, Section, SectionMeta};
@@ -81,7 +84,7 @@ pub fn detect_lang(sample: &str) -> &'static str {
 
 /// Words for `word_count`: whitespace-separated words, with each Han/kana/Hangul
 /// character counted as one (those scripts don't put spaces between words).
-fn word_count(text: &str) -> i64 {
+pub(super) fn word_count(text: &str) -> i64 {
     let mut n = 0i64;
     for word in text.split_whitespace() {
         let cjk = word

@@ -37,9 +37,11 @@ pub fn export_to(conn: &Connection, tmp: &Path, out: &Path) -> Result<u64, SyncE
     let _ = std::fs::remove_file(tmp);
     conn.execute("vacuum into ?1", [tmp.to_string_lossy()])?;
     let result = (|| {
-        // Downloaded online novels stay on this device.
+        // Downloaded online novels stay on this device, and so does the LLM.
         let copy = Connection::open(tmp)?;
         super::offline::strip(&copy)?;
+        // The LLM settings (with their API key) and the AI queue never leave the device.
+        super::translate::strip(&copy)?;
         copy.execute("vacuum", [])?;
         drop(copy);
         let file = std::io::BufWriter::new(std::fs::File::create(out)?);

@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react';
-import { GlobeIcon, LanguagesIcon, LogOutIcon, RefreshIcon } from '../components/Icons';
+import { GlobeIcon, LanguagesIcon, LogOutIcon, RefreshIcon, SparklesIcon } from '../components/Icons';
 import { NovelCover } from '../components/NovelCover';
 import { UiLangDialog, uiLangLabel } from '../components/UiLangDialog';
 import { CoverGrid, Segmented } from '../components/ui';
 import { findNovel, getContentLangs, getNovels } from '../data/repository';
 import { relativeTime, useI18n } from '../i18n';
 import type { MessageKey } from '../i18n/en';
+import { AiFailure, LLM_PROVIDERS, aiErrorDetail, getLlmSettings, setLlmConfig, type LlmConfig, type LlmSettings } from '../lib/ai';
 import { s3Host, setS3Config, type S3Config } from '../lib/s3';
+import { useAsync } from '../lib/useAsync';
 import { SyncFailure, type SyncStep } from '../lib/sync';
 import { useApp } from '../store/AppStore';
 import { useLayout } from '../lib/useLayout';
@@ -19,6 +21,10 @@ export function ProfileScreen() {
   const [tab, setTab] = useState<'history' | 'favs'>('history');
   const [uiLangOpen, setUiLangOpen] = useState(false);
   const user = app.user;
+  const [llmOpen, setLlmOpen] = useState(false);
+  const [llmRev, setLlmRev] = useState(0);
+  const llmQ = useAsync(() => (canOpenLocalBooks() ? getLlmSettings(libraryUser(user)) : Promise.resolve(null)), [user?.email, llmRev]);
+  const llm = llmQ.status === 'ready' ? llmQ.data : null;
   const initials = user ? user.name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase() : 'G';
   const langLabel = getContentLangs().find(l => l.code === app.contentLang)?.native ?? t('lang.askEach');
   const rows = useHistoryRows();
@@ -90,6 +96,13 @@ export function ProfileScreen() {
             <span style={{ flex: 1, fontSize: 14, fontWeight: 600 }}>{t('uiLang.label')}</span>
             <span className="muted" style={{ fontSize: 13 }}>{uiLangLabel(uiLang)} ›</span>
           </button>
+          {canOpenLocalBooks() && (
+            <button className="menu-row" onClick={() => setLlmOpen(true)}>
+              <SparklesIcon style={{ color: 'var(--color-accent-2-700)' }} />
+              <span style={{ flex: 1, fontSize: 14, fontWeight: 600 }}>{t('ai.settings')}</span>
+              <span className="muted" style={{ fontSize: 13, maxWidth: '45%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{llm ? llm.model : t('ai.notSet')} ›</span>
+            </button>
+          )}
           {user && (
             <button className="menu-row menu-row--danger" onClick={() => { app.logout(); app.showToast(t('auth.loggedOut')); }}>
               <LogOutIcon />
@@ -99,6 +112,7 @@ export function ProfileScreen() {
         </div>
       </div>
       {uiLangOpen && <UiLangDialog onClose={() => setUiLangOpen(false)} />}
+      {llmOpen && <LlmDialog saved={llm} onClose={() => setLlmOpen(false)} onSaved={() => setLlmRev(n => n + 1)} />}
     </div>
   );
 }
@@ -214,6 +228,98 @@ function S3Dialog({ onClose }: { onClose: () => void }) {
           <button type="button" className="btn btn-secondary" style={{ height: 44, padding: '0 18px' }} disabled={busy} onClick={onClose}>{t('common.cancel')}</button>
           <button type="submit" className="btn btn-primary" style={{ height: 44, padding: '0 22px' }} disabled={busy}>
             {busy ? t('s3.checking') : t('common.save')}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+/**
+ * The user's own LLM for AI translation of books on this device: a provider (or any
+ * OpenAI-compatible base URL), the model name and the key. Saved only once the API
+ * answered; kept on this device, never synced.
+ */
+function LlmDialog({ saved, onClose, onSaved }: { saved: LlmSettings | null; onClose: () => void; onSaved: () => void }) {
+  const { t } = useI18n();
+  const app = useApp();
+  const user = libraryUser(app.user);
+  const [form, setForm] = useState<LlmConfig>(() => ({
+    provider: saved?.provider ?? 'openai',
+    baseUrl: saved?.baseUrl ?? LLM_PROVIDERS[0].baseUrl,
+    model: saved?.model ?? LLM_PROVIDERS[0].model,
+    apiKey: ''
+  }));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const custom = form.provider === 'custom';
+  // The key stays if the provider is the same; another provider needs its own.
+  const keepsKey = !!saved?.hasKey && saved.provider === form.provider && saved.baseUrl === form.baseUrl;
+
+  const pick = (id: string) => {
+    const p = LLM_PROVIDERS.find(x => x.id === id)!;
+    setForm(f => ({
+      ...f, provider: id,
+      baseUrl: id === 'custom' ? (f.provider === 'custom' ? f.baseUrl : '') : p.baseUrl,
+      model: id === saved?.provider ? saved.model : p.model
+    }));
+  };
+
+  const apply = async (config: LlmConfig | null) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await setLlmConfig(user, config);
+      app.showToast(t(config ? 'ai.saved' : 'ai.removed'));
+      onSaved();
+      onClose();
+    } catch (e) {
+      const f = e instanceof AiFailure ? e : null;
+      const detail = f && f.key !== 'ai.err.network' ? aiErrorDetail(f.message) : '';
+      setError(`${t(f?.key ?? 'ai.err.generic')}${detail ? ` (${detail})` : ''}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const input = (key: keyof LlmConfig, label: string, props: React.InputHTMLAttributes<HTMLInputElement> = {}) => (
+    <div className="field">
+      <label htmlFor={`llm-${key}`}>{label}</label>
+      <input id={`llm-${key}`} className="input" style={{ height: 40 }} value={form[key]} autoCapitalize="off" autoCorrect="off" spellCheck={false}
+        onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))} {...props} />
+    </div>
+  );
+
+  return (
+    <div className="dialog-backdrop dialog-backdrop--sheet" onClick={busy ? undefined : onClose}>
+      <form className="dialog dialog--sheet" role="dialog" aria-modal="true" aria-label={t('ai.title')} onClick={e => e.stopPropagation()}
+        onSubmit={e => { e.preventDefault(); void apply(form); }} style={{ maxHeight: '90dvh', overflowY: 'auto' }}>
+        <div className="dialog-title" style={{ fontSize: 22 }}>{t('ai.title')}</div>
+        <div className="dialog-body" style={{ marginTop: -6 }}>{t('ai.body')}</div>
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>{t('ai.provider')}</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
+            {LLM_PROVIDERS.map(p => (
+              <button key={p.id} type="button" className={`chip chip--outline${form.provider === p.id ? ' chip--active' : ''}`} style={{ height: 36 }}
+                aria-pressed={form.provider === p.id} onClick={() => pick(p.id)}>{p.id === 'custom' ? t('ai.custom') : p.name}</button>
+            ))}
+          </div>
+        </div>
+        {custom
+          ? input('baseUrl', t('ai.baseUrl'), { placeholder: 'http://localhost:11434/v1', inputMode: 'url', required: true })
+          : <div className="muted" style={{ fontSize: 12, overflowWrap: 'anywhere' }}>{t('ai.baseUrl')}: {form.baseUrl}</div>}
+        {custom && <div className="muted" style={{ fontSize: 11, marginTop: -8 }}>{t('ai.baseUrlHint')}</div>}
+        {input('model', t('ai.model'), { required: true, placeholder: LLM_PROVIDERS.find(p => p.id === form.provider)?.model || 'llama3.1' })}
+        {input('apiKey', t('ai.apiKey'), {
+          type: 'password', autoComplete: 'new-password', required: !custom && !keepsKey,
+          placeholder: keepsKey ? t('ai.keyKept') : custom ? t('ai.keyOptional') : undefined
+        })}
+        {error && <div role="alert" style={{ fontSize: 13, color: 'var(--color-accent-700)' }}>{error}</div>}
+        <div className="dialog-actions">
+          {saved && <button type="button" className="btn btn-ghost" style={{ marginRight: 'auto' }} disabled={busy} onClick={() => void apply(null)}>{t('ai.remove')}</button>}
+          <button type="button" className="btn btn-secondary" style={{ height: 44, padding: '0 18px' }} disabled={busy} onClick={onClose}>{t('common.cancel')}</button>
+          <button type="submit" className="btn btn-primary" style={{ height: 44, padding: '0 22px' }} disabled={busy}>
+            {busy ? t('ai.checking') : t('common.save')}
           </button>
         </div>
       </form>

@@ -867,3 +867,212 @@ pub async fn library_sync<R: Runtime>(
     })
     .await
 }
+
+/* ---------- AI translation with the user's own LLM (llm.rs, translate.rs, queue.rs) ---------- */
+
+use super::llm::{self, AiError};
+use super::queue::{self, Queue};
+use super::translate;
+
+impl From<BookError> for AiError {
+    fn from(e: BookError) -> Self {
+        AiError::Other(e.to_string())
+    }
+}
+
+async fn ai_blocking<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, AiError> + Send + 'static,
+) -> Result<T, AiError> {
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(|e| AiError::Other(e.to_string()))?
+}
+
+/// The LLM set for this library, without its key.
+#[tauri::command]
+pub async fn llm_config_get<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+) -> Result<Option<llm::Settings>, AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || Ok(llm::settings(&db::open(&path)?)?)).await
+}
+
+/// Saves the LLM after checking it answers (an empty key keeps the saved one); None
+/// forgets it. Kept in the library file, never synced.
+#[tauri::command]
+pub async fn llm_config_set<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    config: Option<llm::Config>,
+) -> Result<(), AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || {
+        let conn = db::open(&path)?;
+        let config = match config {
+            None => None,
+            Some(c) => {
+                let c = llm::with_saved_key(&conn, c)?;
+                if c.base_url.is_empty() || c.model.trim().is_empty() {
+                    return Err(AiError::Other("base URL and model are needed".into()));
+                }
+                llm::check(&c)?;
+                Some(c)
+            }
+        };
+        Ok(llm::save(&conn, config.as_ref())?)
+    })
+    .await
+}
+
+fn llm_for(conn: &rusqlite::Connection) -> Result<llm::OpenAi, AiError> {
+    Ok(llm::OpenAi::new(llm::load(conn)?.ok_or(AiError::NotSet)?))
+}
+
+fn chapter_id(conn: &rusqlite::Connection, novel_id: i64, index: usize) -> Result<i64, AiError> {
+    translate::chapter_at(conn, novel_id, index)?
+        .ok_or_else(|| AiError::Other(format!("chapter {index} does not exist")))
+}
+
+/// Translates (or, in the book's own language, rewrites) one chapter now and returns
+/// it; a chapter done before comes back as it is unless `again`.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn ai_translate_chapter<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+    index: usize,
+    lang: String,
+    style: String,
+    glossary: bool,
+    again: bool,
+) -> Result<translate::Translated, AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || {
+        let conn = db::open(&path)?;
+        let chapter_id = chapter_id(&conn, novel_id, index)?;
+        if !again {
+            if let Some(t) = translate::get(&conn, chapter_id, &lang, &style)? {
+                return Ok(t);
+            }
+        }
+        let model = llm_for(&conn)?;
+        translate::run(
+            &conn,
+            &model,
+            translate::Request { novel_id, chapter_id, lang, style, glossary },
+        )
+    })
+    .await
+}
+
+/// The AI text of a chapter, if it was made.
+#[tauri::command]
+pub async fn ai_chapter<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+    index: usize,
+    lang: String,
+    style: String,
+) -> Result<Option<translate::Translated>, AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || {
+        let conn = db::open(&path)?;
+        let chapter_id = chapter_id(&conn, novel_id, index)?;
+        Ok(translate::get(&conn, chapter_id, &lang, &style)?)
+    })
+    .await
+}
+
+/// The AI versions of a book (language, style, chapters done).
+#[tauri::command]
+pub async fn ai_versions<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+) -> Result<Vec<translate::Version>, AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || Ok(translate::versions(&db::open(&path)?, novel_id)?)).await
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Queued {
+    queued: usize,
+    mode: translate::Mode,
+}
+
+/// Queues the chapters from `from_index` on for the background translation and says
+/// whether they will be translated or rewritten (the book's language is asked first).
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn ai_translate_book<R: Runtime>(
+    app: AppHandle<R>,
+    queue: State<'_, Queue>,
+    user: String,
+    novel_id: i64,
+    from_index: usize,
+    lang: String,
+    style: String,
+    glossary: bool,
+    ui_lang: Option<String>,
+) -> Result<Queued, AiError> {
+    let path = db_path(&app, &user)?;
+    let db_file = path.clone();
+    let target = lang.clone();
+    let (queued, source) = ai_blocking(move || {
+        let conn = db::open(&db_file)?;
+        if !translate::LANGS.contains(&lang.as_str()) || !translate::STYLES.contains(&style.as_str()) {
+            return Err(AiError::Other(format!("unsupported {lang} / {style}")));
+        }
+        let model = llm_for(&conn)?;
+        let source = translate::detect(&conn, &model, novel_id)?;
+        let queued = queue::enqueue(&conn, novel_id, from_index, &lang, &style, glossary)?;
+        Ok((queued, source))
+    })
+    .await?;
+    if queued > 0 {
+        queue.kick(path, user, ui_lang);
+    }
+    let mode = if source == target { translate::Mode::Rewrite } else { translate::Mode::Translate };
+    Ok(Queued { queued, mode })
+}
+
+/// A book's background translations: per language and style, chapters done and waiting.
+#[tauri::command]
+pub async fn ai_progress<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+) -> Result<Vec<queue::Progress>, AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || Ok(queue::progress(&db::open(&path)?, novel_id)?)).await
+}
+
+/// Stops a book's background translation (chapters done so far stay).
+#[tauri::command]
+pub async fn ai_cancel<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+) -> Result<usize, AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || Ok(queue::cancel(&db::open(&path)?, novel_id)?)).await
+}
+
+/// Carries on a queue left waiting: after the app starts, a new LLM key, a connection back.
+#[tauri::command]
+pub async fn ai_resume<R: Runtime>(
+    app: AppHandle<R>,
+    queue: State<'_, Queue>,
+    user: String,
+    ui_lang: Option<String>,
+) -> Result<(), AiError> {
+    let path = db_path(&app, &user)?;
+    let db_file = path.clone();
+    ai_blocking(move || Ok(queue::recover(&db::open(&db_file)?)?)).await?;
+    queue.kick(path, user, ui_lang);
+    Ok(())
+}

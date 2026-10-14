@@ -229,6 +229,41 @@ create table rule_lists (
   primary key (scope, key, lang)
 );
 "#,
+    r#"
+-- Local only, never synced (see llm.rs): the user's own LLM, any OpenAI-compatible
+-- chat API, for AI translation on this device. One row.
+create table llm_config (
+  id         integer primary key check (id = 1),
+  provider   text not null,
+  base_url   text not null,
+  api_key    text not null,
+  model      text not null,
+  updated_at integer not null
+);
+
+-- Local only (see translate.rs): the language the LLM found in an imported book,
+-- so it is asked once per book.
+create table ai_books (
+  novel_id    integer primary key references novels (id) on delete cascade,
+  source_lang text not null
+);
+
+-- Local only (see queue.rs): chapters waiting for AI translation, one row per
+-- chapter, target language and style. A finished chapter is marked by its
+-- chapter_translations row (source 'ai'), which is never used as input again.
+create table ai_jobs (
+  id         integer primary key,
+  novel_id   integer not null references novels (id) on delete cascade,
+  chapter_id integer not null references chapters (id) on delete cascade,
+  lang       text not null,
+  style      text not null,
+  glossary   integer not null default 1,
+  status     text not null default 'queued' check (status in ('queued', 'running', 'done', 'failed')),
+  error      text,
+  created_at integer not null,
+  unique (chapter_id, lang, style)
+);
+"#,
 ];
 
 /// Epoch milliseconds now.
