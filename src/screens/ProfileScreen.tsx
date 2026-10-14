@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { GlobeIcon, LanguagesIcon, LogOutIcon, RefreshIcon, SparklesIcon } from '../components/Icons';
 import { NovelCover } from '../components/NovelCover';
 import { UiLangDialog, uiLangLabel } from '../components/UiLangDialog';
@@ -118,6 +119,15 @@ export function ProfileScreen() {
 }
 
 const MB = 1024 * 1024;
+
+/**
+ * Sheets go into the app frame, not the scrolling screen: inside the screen they sit at
+ * the top of its content and open half off-screen once the page is scrolled down.
+ */
+const inApp = (sheet: React.ReactElement) => {
+  const host = document.querySelector('.app');
+  return host ? createPortal(sheet, host) : sheet;
+};
 
 /** What a running sync is doing, e.g. "Uploading… 40% · 12 / 30 MB". */
 function stepText(t: ReturnType<typeof useI18n>['t'], step: SyncStep | null): string {
@@ -244,7 +254,7 @@ function S3Dialog({ onClose }: { onClose: () => void }) {
     </div>
   );
 
-  return (
+  return inApp(
     <div className="dialog-backdrop dialog-backdrop--sheet" onClick={busy ? undefined : onClose}>
       <form className="dialog dialog--sheet" role="dialog" aria-modal="true" aria-label={t('s3.title')} onClick={e => e.stopPropagation()}
         onSubmit={e => { e.preventDefault(); void apply(form); }} style={{ maxHeight: '90dvh', overflowY: 'auto' }}>
@@ -329,7 +339,7 @@ function LlmDialog({ saved, onClose, onSaved }: { saved: LlmSettings | null; onC
     </div>
   );
 
-  return (
+  return inApp(
     <div className="dialog-backdrop dialog-backdrop--sheet" onClick={busy ? undefined : onClose}>
       <form className="dialog dialog--sheet" role="dialog" aria-modal="true" aria-label={t('ai.title')} onClick={e => e.stopPropagation()}
         onSubmit={e => { e.preventDefault(); void apply(form); }} style={{ maxHeight: '90dvh', overflowY: 'auto' }}>

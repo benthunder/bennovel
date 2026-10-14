@@ -241,6 +241,9 @@ function AiTab({ glossary: terms, currentLang, onTranslate, onTranslateFrom, lan
   );
 }
 
+/** AI translation only goes into Vietnamese or English. */
+export const TRANSLATE_TO: readonly string[] = ['vi', 'en'];
+
 /** First choice of target language: Vietnamese, or English when reading Vietnamese. */
 export const defaultTranslation = (current: ContentLang | null): Translation =>
   ({ lang: current === 'vi' ? 'en' : 'vi', style: 'Natural', dict: true });
@@ -257,7 +260,7 @@ export function TranslateFields({ value, onChange, glossaryCount, langs = getCon
     <>
       <div>
         <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>{t('tr.to')}</div>
-        <Segmented value={value.lang} onChange={lang => onChange({ ...value, lang })} style={{ background: 'var(--color-bg)' }} options={langs.map(l => ({ label: l.native, value: l.code }))} />
+        <Segmented value={value.lang} onChange={lang => onChange({ ...value, lang })} style={{ background: 'var(--color-bg)' }} options={langs.filter(l => TRANSLATE_TO.includes(l.code)).map(l => ({ label: l.native, value: l.code }))} />
       </div>
       <div>
         <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>{t('tr.style')}</div>
