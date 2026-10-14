@@ -80,6 +80,20 @@ test('the LLM is set up in Profile and kept on the device', async ({ page }) => 
   await expect(page.getByRole('button', { name: /AI translation \(your LLM\)/ })).toContainText('qwen2.5:7b');
 });
 
+test('the LLM sheet opens fully in view when Profile is scrolled down', async ({ page }) => {
+  await nativeApp(page);
+  await page.setViewportSize({ width: 412, height: 560 });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Profile' }).filter({ visible: true }).first().click();
+  const row = page.getByRole('button', { name: /AI translation \(your LLM\)/ });
+  await row.scrollIntoViewIfNeeded();
+  await page.locator('.screen').filter({ has: row }).evaluate(el => { el.scrollTop = el.scrollHeight; });
+  await row.click();
+  const sheet = page.getByRole('dialog', { name: /AI translation/ });
+  await expect(sheet).toBeInViewport({ ratio: 1 });
+  await expect(page.getByRole('button', { name: 'Save' })).toBeInViewport();
+});
+
 test('translating one chapter shows a loader, then the translation', async ({ page }) => {
   await nativeApp(page);
   await page.goto('/');
