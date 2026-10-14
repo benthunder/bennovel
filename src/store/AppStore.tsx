@@ -3,7 +3,8 @@ import { load, save } from '../lib/storage';
 import type { Category, CollectionKey, ContentLang, HistoryEntry, User } from '../data/types';
 import { findNovel, rememberNovels, type ListSource } from '../data/repository';
 import { useCatalog } from '../data/useCatalog';
-import { useT } from '../i18n';
+import { useI18n, useT } from '../i18n';
+import { aiErrorKey, resumeAiQueue, type AiProgress } from '../lib/ai';
 import { canOpenLocalBooks, libraryUser, type LibraryPlace, type LocalBook } from '../lib/localBook';
 import { runOcr } from '../lib/ocr';
 import { loadReading, saveReading } from '../lib/readingStore';
@@ -229,6 +230,45 @@ function useDownloads(user: string, showToast: (msg: string) => void, tr: Return
   return { enabled: canDownload(), user, list, byId, progress, start, chapterBusy, startChapter, remove };
 }
 
+/**
+ * The background AI translation of library books (lib/ai.ts): picks up a queue left
+ * by the last run, tells when a book is done or the queue paused, and returns a
+ * counter bumped on every change so screens reload their progress.
+ */
+function useAiQueue(user: string, showToast: (msg: string) => void) {
+  const { t, uiLang } = useI18n();
+  const [rev, setRev] = useState(0);
+  const tRef = useRef(t);
+  tRef.current = t;
+  useEffect(() => {
+    if (!canOpenLocalBooks()) return;
+    resumeAiQueue(user, uiLang).catch(console.error);
+  }, [user, uiLang]);
+  useEffect(() => {
+    if (!canOpenLocalBooks()) return;
+    let gone = false;
+    const stops: (() => void)[] = [];
+    void import('@tauri-apps/api/event').then(async ({ listen }) => {
+      const mine = (p: { user: string }) => p.user === user;
+      const all = await Promise.all([
+        listen<AiProgress & { user: string }>('ai-progress', e => { if (mine(e.payload)) setRev(n => n + 1); }),
+        listen<AiProgress & { user: string; title: string }>('ai-done', e => {
+          if (mine(e.payload)) showToast(tRef.current('ai.done', { title: e.payload.title, n: e.payload.done }));
+        }),
+        listen<{ user: string; error: string }>('ai-paused', e => {
+          if (!mine(e.payload)) return;
+          setRev(n => n + 1);
+          showToast(tRef.current('ai.paused', { reason: tRef.current(aiErrorKey(e.payload.error)) }));
+        })
+      ]);
+      if (gone) all.forEach(stop => stop());
+      else stops.push(...all);
+    });
+    return () => { gone = true; stops.forEach(stop => stop()); };
+  }, [user, showToast]);
+  return rev;
+}
+
 function useAppState() {
   const catalog = useCatalog();
   const tr = useT();
@@ -416,6 +456,10 @@ function useAppState() {
     }
   }, [canSync, syncing, libKey, showToast, tr, reloadReading]);
 
+  const aiRev = useAiQueue(libKey, showToast);
+  /** Lists everything again after the library file changed (a backup brought back). */
+  const reloadLibrary = useCallback(() => { reloadReading(); setLibraryRev(n => n + 1); }, [reloadReading]);
+
   const markLocalRead = useCallback((e: Omit<LocalLast, 'at'>) => setLocalLast({ ...e, at: Date.now() }), [setLocalLast]);
   const forgetLocal = useCallback((novelId: number) => setLocalLast(l => (l?.novelId === novelId ? null : l)), [setLocalLast]);
 
@@ -429,7 +473,7 @@ function useAppState() {
     push, back, switchTab, openDetail, openCategory, openAuthor, openCollection,
     openChapter, goReader, setReaderLang, setContentLang, setLangDialog, setReaderPrefs,
     signedIn, skipLogin, logout, toggleFav, showToast, markLocalRead, forgetLocal,
-    canSync, syncing, syncStep, syncedAt, libraryRev, syncNow, s3, refreshS3, downloads
+    canSync, syncing, syncStep, syncedAt, libraryRev, syncNow, s3, refreshS3, downloads, aiRev, reloadLibrary
   };
 }
 

@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { ChapterSheet, useSectionName } from '../components/ChapterSheet';
-import { ChevronLeftIcon, DownloadIcon, ListIcon, SlidersIcon } from '../components/Icons';
+import { ChevronLeftIcon, DownloadIcon, ListIcon, SlidersIcon, SparklesIcon } from '../components/Icons';
 import { ReaderChrome, ReaderStatusBar, useImmersive } from '../components/ReaderChrome';
-import { ReaderTools, type ToolsTab } from '../components/ReaderTools';
+import { ReaderTools, type ToolsTab, type Translation } from '../components/ReaderTools';
 import { Spinner } from '../components/ui';
 import { applyReplaceRules, getBookRules, saveBookRules } from '../data/repository';
 import { CONTENT_LANGS, type ContentLang, type ReplaceRule } from '../data/types';
-import { useT } from '../i18n';
+import { useI18n } from '../i18n';
+import { AI_LANGS, AiFailure, aiErrorDetail, aiTranslateBook, aiTranslateChapter, getAiChapter, type AiChoice, type AiLang } from '../lib/ai';
 import {
   bookImageUrl, closeLocalBook, getLocalSection, imageKey, importBookPath, libraryUser, openLibraryBook, saveLibraryProgress,
   type LibraryPlace, type LocalBook, type LocalSectionMeta
@@ -32,8 +33,11 @@ const MAX_PARTS = 6;
  * A file opened without saving (`path` set) can be imported from here; the reader then
  * switches to the library copy at the same place.
  */
+/** Where a library book's AI version to read is remembered. */
+export const aiViewKey = (user: string, novelId: number) => `aiView.${user}:${novelId}`;
+
 export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?: LibraryPlace; path?: string }) {
-  const t = useT();
+  const { t, uiLang } = useI18n();
   const app = useApp();
   const lay = useLayout();
   const p = app.readerPrefs;
@@ -75,6 +79,58 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
     else store(rulesKey, next.length ? next : null);
   };
   const fix = (text: string) => applyReplaceRules(text, rules);
+
+  // AI version on screen instead of the original (library books), kept per book.
+  const viewKey = place ? aiViewKey(place.user, place.novelId) : null;
+  const [ai, setAiState] = useState<AiChoice | null>(() => (viewKey ? load<AiChoice | null>(viewKey, null) : null));
+  const setAi = (v: AiChoice | null) => {
+    setAiState(v);
+    if (viewKey) store(viewKey, v);
+  };
+  const [aiBusy, setAiBusy] = useState<'translate' | 'rewrite' | null>(null);
+  const aiLangName = (l: string) => AI_LANGS.find(x => x.code === l)?.native ?? l;
+  const aiFail = (e: unknown) => {
+    console.error(e);
+    if (e instanceof AiFailure) {
+      const detail = e.key === 'ai.err.http' || e.key === 'ai.err.generic' ? ` ${aiErrorDetail(e.message)}` : '';
+      app.showToast(t(e.key) + detail);
+    } else app.showToast(`${t('ai.err.generic')} ${String(e)}`);
+  };
+  const asChoice = (tr: Translation): AiChoice | null =>
+    AI_LANGS.some(l => l.code === tr.lang) ? { lang: tr.lang as AiLang, style: tr.style, dict: tr.dict } : null;
+
+  /** One chapter now: a loader over the text, then the AI version in its place. */
+  const translateChapter = async (tr: Translation, at = index) => {
+    const c = asChoice(tr);
+    if (!c) return;
+    if (!place) { app.showToast(t('ai.needsImport')); return; }
+    if (lay.isPhone) setTools(null);
+    setAiBusy(c.lang === lang ? 'rewrite' : 'translate');
+    try {
+      await aiTranslateChapter(place.user, place.novelId, at, c);
+      setAi(c);
+      jump(at);
+    } catch (e) {
+      aiFail(e);
+    } finally {
+      setAiBusy(null);
+    }
+  };
+
+  /** This chapter and the ones after it, in the background queue. */
+  const translateFrom = async (tr: Translation) => {
+    const c = asChoice(tr);
+    if (!c) return;
+    if (!place) { app.showToast(t('ai.needsImport')); return; }
+    try {
+      const r = await aiTranslateBook(place.user, place.novelId, index, c, uiLang);
+      const vars = { n: r.queued, lang: aiLangName(c.lang), style: t(`tr.style.${c.style}`) };
+      app.showToast(t(r.queued === 0 ? 'ai.nothing' : r.mode === 'rewrite' ? 'ai.queuedRewrite' : 'ai.queued', vars));
+      if (r.queued > 0) setAi(c);
+    } catch (e) {
+      aiFail(e);
+    }
+  };
   const total = book.sections.length;
   const meta = book.sections[index];
   // Leaving the reader frees the file and every cached section.
@@ -261,9 +317,22 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
       <div ref={scrollRef} className="nx-scroll" onScroll={onScroll} onClick={immersive.onTap}
         style={{ position: 'relative', flex: 1, overflowY: 'auto', overflowAnchor: 'none', padding: `${chromeH + lay.readerPadTop}px ${MARGIN_PX[p.margin]}px 40px`, fontFamily: theme.font }}>
         <div ref={contentRef} style={{ maxWidth: lay.readerMax, margin: '0 auto' }}>
+          {ai && (
+            <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: '12px 14px', borderRadius: 22, background: night ? 'var(--color-neutral-800)' : 'var(--color-accent-100)', marginBottom: 18, fontSize: 12, lineHeight: 1.45 }}>
+              <SparklesIcon size={16} style={{ flex: 'none', marginTop: 1 }} />
+              <div style={{ flex: 1 }}>
+                {t(ai.lang === lang ? 'ai.bannerRewrite' : 'ai.bannerTranslate', { lang: aiLangName(ai.lang), style: t(`tr.style.${ai.style}`) })}
+              </div>
+              <button onClick={() => { setAi(null); jump(index); }} style={{ border: 'none', background: 'none', font: 'inherit', fontSize: 12, fontWeight: 700, textDecoration: 'underline', cursor: 'pointer', color: 'inherit', padding: 0 }}>
+                {t('reader.original')}
+              </button>
+            </div>
+          )}
           {Array.from({ length: span[1] - span[0] + 1 }, (_, k) => span[0] + k).map(i => (
             <BookPart key={`${gen}-${i}`} bookId={book.id} index={i} meta={book.sections[i]} name={sectionName(book.sections[i], i, total)}
-              fix={fix} st={partStyle} color={theme.fg} onReady={onPartReady} />
+              fix={fix} st={partStyle} color={theme.fg} onReady={onPartReady}
+              ai={ai && place ? { user: place.user, novelId: place.novelId, lang: ai.lang, style: ai.style } : null}
+              onTranslate={ai ? () => void translateChapter({ lang: ai.lang, style: ai.style, dict: ai.dict }, i) : undefined} />
           ))}
           {span[1] < total - 1 && (
             <div role="status" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, padding: '24px 0', opacity: .6 }}><Spinner size={16} /></div>
@@ -271,13 +340,26 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
         </div>
       </div>
       <ReaderStatusBar theme={theme} />
+
+      {aiBusy && (
+        <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', background: 'color-mix(in srgb, var(--color-neutral-900) 35%, transparent)', zIndex: 30 }}>
+          <div role="status" style={{ background: 'var(--color-surface)', color: 'var(--color-text)', borderRadius: 30, padding: '22px 26px', display: 'flex', alignItems: 'center', gap: 14, boxShadow: 'var(--shadow-lg)', margin: 20 }}>
+            <Spinner size={24} width={3} />
+            <div>
+              <div className="display" style={{ fontSize: 17 }}>{t(aiBusy === 'rewrite' ? 'ai.rewriting' : 'reader.translating')}</div>
+              <div className="muted" style={{ fontSize: 12 }}>{t('ai.working')}</div>
+            </div>
+          </div>
+        </div>
+      )}
       </div>
 
       {toc && <ChapterSheet sections={book.sections} current={index} onPick={jump} onClose={() => setToc(false)} />}
 
       {tools && (
         <ReaderTools key={tools} initialTab={tools} glossary={NO_GLOSSARY} lang={lang} rules={rules} onRulesChange={changeRules}
-          onClose={() => setTools(null)} onTranslate={() => app.showToast(t('book.translateSoon'))} />
+          onClose={() => setTools(null)} onTranslate={tr => void translateChapter(tr)}
+          onTranslateFrom={place ? translateFrom : undefined} aiLangs={[...AI_LANGS]} aiHint={t('ai.hint')} />
       )}
     </div>
   );
@@ -300,15 +382,24 @@ type PartStyle = {
  * One part of the book in the long scroll: its heading, then its text. Marked `data-ready` once its content is in, so the reader knows the
  * height is real before adding the next part.
  */
-function BookPart({ bookId, index, meta, name, fix, st, color, onReady }: {
+function BookPart({ bookId, index, meta, name, fix, st, color, onReady, ai, onTranslate }: {
   bookId: number; index: number; meta: LocalSectionMeta | undefined; name: string;
   fix: (s: string) => string; st: PartStyle; color: string;
   onReady: (index: number) => void;
+  /** Show this AI version of the chapter (the original when it has none yet). */
+  ai: { user: string; novelId: number; lang: AiLang; style: AiChoice['style'] } | null;
+  /** Translates this chapter, offered when its AI version is missing. */
+  onTranslate?: () => void;
 }) {
-  const t = useT();
+  const { t } = useI18n();
+  const aiKey = ai ? `${ai.lang}.${ai.style}` : '';
+  const q = useAsync(async () => {
+    const own = ai ? await getAiChapter(ai.user, ai.novelId, index, ai.lang, ai.style) : null;
+    if (own) return { paragraphs: own.paragraphs, title: own.title || null, missing: false };
+    return { ...(await getLocalSection(bookId, index)), title: null, missing: !!ai };
+  }, [bookId, index, aiKey]);
   // "Chương 12" above the chapter's own title; a chapter without one shows "Chương 12" once.
-  const heading = meta?.label ?? name;
-  const q = useAsync(() => getLocalSection(bookId, index), [bookId, index]);
+  const heading = (q.status === 'ready' && q.data.title) || (meta?.label ?? name);
   const ready = q.status !== 'loading';
   useEffect(() => { if (ready) onReady(index); }, [ready]);
 
@@ -322,6 +413,16 @@ function BookPart({ bookId, index, meta, name, fix, st, color, onReady }: {
         <div role="status" style={{ display: 'flex', alignItems: 'center', gap: 10, opacity: .75 }}><Spinner size={16} />{t('book.loading')}</div>
       )}
       {q.status === 'failed' && <p role="alert">{String(q.error)}</p>}
+      {q.status === 'ready' && q.data.missing && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', fontSize: 12, opacity: .8, marginBottom: 14 }}>
+          <span style={{ flex: 1, minWidth: 160 }}>{t('ai.missing')}</span>
+          {onTranslate && (
+            <button onClick={onTranslate} style={{ border: 'none', background: 'none', font: 'inherit', fontSize: 12, fontWeight: 700, textDecoration: 'underline', cursor: 'pointer', color: 'inherit', padding: 0 }}>
+              {t('ai.translateHere')}
+            </button>
+          )}
+        </div>
+      )}
       {q.status === 'ready' && q.data.paragraphs.length === 0 && <p style={{ opacity: .7 }}>{t('book.empty')}</p>}
       {q.status === 'ready' && q.data.paragraphs.map((para, i) => {
         // The chapter's own "Chương 629." line repeats the heading shown above.

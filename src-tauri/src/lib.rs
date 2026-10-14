@@ -31,9 +31,13 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_folder_picker::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(book::commands::Books::default())
         .manage(opened::OpenedFiles::from_args())
         .setup(|_app| {
+            use tauri::Manager;
+            // AI translation runs in the background, one chapter at a time.
+            _app.manage(library::queue::Queue::start(_app.handle().clone()));
             // Linux (and Windows dev builds) register the bennovel:// sign-in links at run time.
             #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
             {
@@ -75,6 +79,8 @@ pub fn run() {
             library::commands::s3_config_get,
             library::commands::s3_config_set,
             library::commands::library_sync,
+            library::commands::library_backup,
+            library::commands::library_restore,
             library::commands::offline_start,
             library::commands::offline_add,
             library::commands::offline_set_glossary,
@@ -86,6 +92,15 @@ pub fn run() {
             library::commands::offline_delete,
             library::commands::offline_ensure,
             library::commands::offline_numbers,
+            library::commands::llm_config_get,
+            library::commands::llm_config_set,
+            library::commands::ai_translate_chapter,
+            library::commands::ai_chapter,
+            library::commands::ai_versions,
+            library::commands::ai_translate_book,
+            library::commands::ai_progress,
+            library::commands::ai_cancel,
+            library::commands::ai_resume,
             opened::take_opened_files,
         ])
         .build(tauri::generate_context!())

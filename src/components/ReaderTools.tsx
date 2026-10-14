@@ -17,7 +17,7 @@ const FONT_MIN = 14, FONT_MAX = 26;
  * Reading settings and the (simulated) AI dictionary / translator.
  * Phone: bottom sheet over the chapter. Tablet and desktop: a side panel the chapter makes room for.
  */
-export function ReaderTools({ glossary, lang, rules, onRulesChange, onClose, onTranslate, onTranslateFrom, initialTab = 'reading' }: {
+export function ReaderTools({ glossary, lang, rules, onRulesChange, onClose, onTranslate, onTranslateFrom, aiLangs, aiHint, initialTab = 'reading' }: {
   glossary: Record<string, GlossaryTerm>;
   /** Language of the text on screen; replace rules are kept per language. */
   lang: ContentLang;
@@ -27,6 +27,10 @@ export function ReaderTools({ glossary, lang, rules, onRulesChange, onClose, onT
   onTranslate: (t: Translation) => void;
   /** Queue AI translation from this chapter to the last one; no button when left out. */
   onTranslateFrom?: (t: Translation) => Promise<void>;
+  /** Target languages offered (default: every reading language). */
+  aiLangs?: ContentLangInfo[];
+  /** A line under the translator's title. */
+  aiHint?: string;
   initialTab?: ToolsTab;
 }) {
   const { t } = useI18n();
@@ -51,7 +55,7 @@ export function ReaderTools({ glossary, lang, rules, onRulesChange, onClose, onT
         <div className="nx-scroll" style={{ overflowY: 'auto', padding: '0 20px calc(env(safe-area-inset-bottom) + 30px)', display: 'flex', flexDirection: 'column', gap: 18 }}>
           {tab === 'reading' && <ReadingTab />}
           {tab === 'replace' && <ReplaceTab lang={lang} rules={rules} onChange={onRulesChange} />}
-          {tab === 'ai' && <AiTab glossary={glossary} currentLang={lang} onTranslate={onTranslate} onTranslateFrom={onTranslateFrom} />}
+          {tab === 'ai' && <AiTab glossary={glossary} currentLang={lang} onTranslate={onTranslate} onTranslateFrom={onTranslateFrom} langs={aiLangs} hint={aiHint} />}
         </div>
       </div>
     </div>
@@ -160,11 +164,13 @@ function ReplaceTab({ lang, rules, onChange }: { lang: ContentLang; rules: Repla
 const panel: React.CSSProperties = { borderRadius: 30, background: 'var(--color-surface)', padding: 16, display: 'flex', flexDirection: 'column', gap: 12 };
 const panelIcon = (bg: string, fg: string): React.CSSProperties => ({ width: 34, height: 34, borderRadius: '50%', background: bg, color: fg, display: 'grid', placeItems: 'center' });
 
-function AiTab({ glossary: terms, currentLang, onTranslate, onTranslateFrom }: {
+function AiTab({ glossary: terms, currentLang, onTranslate, onTranslateFrom, langs, hint }: {
   glossary: Record<string, GlossaryTerm>;
   currentLang: ContentLang;
   onTranslate: (t: Translation) => void;
   onTranslateFrom?: (t: Translation) => Promise<void>;
+  langs?: ContentLangInfo[];
+  hint?: string;
 }) {
   const { t } = useI18n();
   const [word, setWord] = useState('');
@@ -221,7 +227,8 @@ function AiTab({ glossary: terms, currentLang, onTranslate, onTranslateFrom }: {
           <span style={panelIcon('var(--color-accent-300)', 'var(--color-accent-900)')}><SparklesIcon size={17} /></span>
           <div className="display" style={{ fontSize: 18 }}>{t('tr.title')}</div>
         </div>
-        <TranslateFields value={tr} onChange={setTr} glossaryCount={glossary.length} />
+        {hint && <div className="muted" style={{ fontSize: 12, marginTop: -4 }}>{hint}</div>}
+        <TranslateFields value={tr} onChange={setTr} glossaryCount={glossary.length} langs={langs} />
         <button className="btn btn-primary" style={{ height: 48, fontSize: 15 }} onClick={() => onTranslate(tr)}>{t('tr.run')}</button>
         {onTranslateFrom && (
           <button className="btn btn-secondary" style={{ height: 48, fontSize: 15, gap: 8 }} disabled={queuing}

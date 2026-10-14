@@ -1,7 +1,7 @@
 {
   "name": "bennovel",
   "private": true,
-  "version": "0.9.4",
+  "version": "0.10.0",
   "type": "module",
   "scripts": {
     "predev": "node scripts/copy-tesseract.mjs",
@@ -19,6 +19,7 @@
     "@tauri-apps/api": "^2.12.1",
     "@tauri-apps/plugin-deep-link": "^2.6.1",
     "@tauri-apps/plugin-dialog": "^2.8.1",
+    "@tauri-apps/plugin-notification": "^2.6.0",
     "@tauri-apps/plugin-opener": "^2.7.1",
     "@tesseract.js-data/vie": "^1.0.0",
     "react": "^19.2.0",

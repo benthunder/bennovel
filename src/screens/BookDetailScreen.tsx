@@ -2,10 +2,17 @@ import { useState } from 'react';
 import { ask } from '@tauri-apps/plugin-dialog';
 import { ChapterSheet, useSectionName } from '../components/ChapterSheet';
 import { EditBookDialog } from '../components/EditBookDialog';
-import { ChevronLeftIcon, ChevronRightIcon, PencilIcon, PlayIcon, XIcon } from '../components/Icons';
+import { ChevronLeftIcon, ChevronRightIcon, PencilIcon, PlayIcon, SparklesIcon, XIcon } from '../components/Icons';
 import { NovelCover } from '../components/NovelCover';
+import { TranslateFields, defaultTranslation, type Translation } from '../components/ReaderTools';
 import { Spinner } from '../components/ui';
-import { useT } from '../i18n';
+import { useI18n, useT } from '../i18n';
+import {
+  AI_LANGS, AiFailure, aiTranslateBook, cancelAiTranslation, getAiProgress, getAiVersions, getLlmSettings, styleOf,
+  type AiChoice, type AiLang, type AiProgress, type AiVersion
+} from '../lib/ai';
+import { save as store } from '../lib/storage';
+import { aiViewKey } from './LocalBookScreen';
 import { deleteLibraryBook, getLibraryDetail, libraryUser, localCover, openLibraryBook, updateLibraryBook } from '../lib/localBook';
 import { useAsync } from '../lib/useAsync';
 import { useLayout } from '../lib/useLayout';
@@ -112,10 +119,12 @@ export function BookDetailScreen({ novelId }: { novelId: number }) {
             <Stat value={b.format?.toUpperCase() ?? '—'} label={t('bookDetail.format')} />
           </div>
           {lay.wide && startBtn}
+          {lay.wide && <AiBox novelId={novelId} lang={b.lang} onRead={read} />}
         </div>
 
         <div style={{ padding: lay.wide ? 0 : '20px 20px 0', display: 'flex', flexDirection: 'column', gap: lay.wide ? 22 : 20, minWidth: 0 }}>
           {lay.isPhone && startBtn}
+          {!lay.wide && <AiBox novelId={novelId} lang={b.lang} onRead={read} />}
 
           <div>
             <h5 className="section-title" style={{ marginBottom: 6 }}>{t('detail.synopsis')}</h5>
@@ -172,6 +181,105 @@ function Stat({ value, label }: { value: React.ReactNode; label: string }) {
     <div style={{ flex: 1, minWidth: 0, background: 'var(--color-bg)', borderRadius: 20, padding: '10px 12px' }}>
       <div className="display" style={{ fontSize: 18, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div>
       <div className="muted" style={{ fontSize: 11 }}>{label}</div>
+    </div>
+  );
+}
+
+/**
+ * AI translation of the whole book with the user's own LLM: the chapters in the
+ * background queue, the AI versions made so far, and a button to queue more.
+ */
+function AiBox({ novelId, lang, onRead }: { novelId: number; lang: string; onRead: (at?: number) => void }) {
+  const { t, uiLang } = useI18n();
+  const app = useApp();
+  const user = libraryUser(app.user);
+  const llmQ = useAsync(() => getLlmSettings(user), [user]);
+  const progressQ = useAsync(() => getAiProgress(user, novelId), [user, novelId, app.aiRev]);
+  const versionsQ = useAsync(() => getAiVersions(user, novelId), [user, novelId, app.aiRev]);
+  // Keep the last numbers on screen while they reload.
+  const [progress, setProgress] = useState<AiProgress[]>([]);
+  if (progressQ.status === 'ready' && progressQ.data && progressQ.data !== progress) setProgress(progressQ.data);
+  const [open, setOpen] = useState(false);
+  const [tr, setTr] = useState<Translation | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const langName = (c: string) => AI_LANGS.find(l => l.code === c)?.native ?? c;
+  const choice = tr ?? defaultTranslation(lang === 'vi' ? 'vi' : 'en');
+  const active = progress.filter(p => p.queued + p.running + p.failed > 0);
+  const versions = (versionsQ.status === 'ready' && versionsQ.data) || [];
+  const hasLlm = llmQ.status === 'ready' && !!llmQ.data;
+
+  const start = async () => {
+    setBusy(true);
+    try {
+      const c: AiChoice = { lang: choice.lang as AiLang, style: choice.style, dict: choice.dict };
+      const r = await aiTranslateBook(user, novelId, 0, c, uiLang);
+      const vars = { n: r.queued, lang: langName(c.lang), style: t(`tr.style.${c.style}`) };
+      app.showToast(t(r.queued === 0 ? 'ai.nothing' : r.mode === 'rewrite' ? 'ai.queuedRewrite' : 'ai.queued', vars));
+      setOpen(false);
+      setProgress((await getAiProgress(user, novelId)) ?? []);
+    } catch (e) {
+      console.error(e);
+      app.showToast(t(e instanceof AiFailure ? e.key : 'ai.err.generic'));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const stop = async () => {
+    await cancelAiTranslation(user, novelId).catch(console.error);
+    app.showToast(t('ai.cancelled'));
+    setProgress((await getAiProgress(user, novelId).catch(() => null)) ?? []);
+  };
+  const readVersion = (v: AiVersion) => {
+    store(aiViewKey(user, novelId), { lang: v.lang, style: styleOf(v.style), dict: true } satisfies AiChoice);
+    onRead();
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
+      {active.map(p => (
+        <div key={`${p.lang}.${p.style}`} className="import-progress" role="status">
+          {p.queued + p.running > 0 ? <Spinner size={14} /> : <SparklesIcon size={14} />}
+          <span style={{ flex: 1 }}>
+            {t('ai.progress', { lang: langName(p.lang), style: t(`tr.style.${styleOf(p.style)}`), done: p.done, total: p.total })}
+            {p.queued + p.running > 0 && ` · ${t('tr.waiting', { n: p.queued + p.running })}`}
+            {p.failed > 0 && ` · ${t('tr.failedCount', { n: p.failed })}`}
+          </span>
+          {p.queued > 0 && <button className="btn btn-ghost" style={{ height: 30, padding: '0 10px', fontSize: 12 }} onClick={stop}>{t('ai.cancel')}</button>}
+          <div className="import-progress__bar"><div style={{ width: `${p.total ? Math.round((p.done / p.total) * 100) : 0}%` }} /></div>
+        </div>
+      ))}
+      {versions.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <div style={{ fontSize: 12, fontWeight: 700 }}>{t('ai.versions')}</div>
+          {versions.map(v => (
+            <div key={`${v.lang}.${v.style}`} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, padding: '6px 10px', borderRadius: 16, background: 'var(--color-bg)' }}>
+              <SparklesIcon size={14} />
+              <span style={{ flex: 1 }}>{t('ai.versionRow', { lang: langName(v.lang), style: t(`tr.style.${styleOf(v.style)}`), n: v.chapters })}</span>
+              <button className="btn btn-ghost" style={{ height: 30, padding: '0 10px', fontSize: 12 }} onClick={() => readVersion(v)}>{t('ai.read')}</button>
+            </div>
+          ))}
+        </div>
+      )}
+      {!open && (
+        <button className="btn btn-secondary btn-block" style={{ gap: 8 }} onClick={() => (hasLlm ? setOpen(true) : app.switchTab('profile'))}>
+          <SparklesIcon size={16} />{hasLlm ? t('tr.novel') : t('ai.setUp')}
+        </button>
+      )}
+      {!hasLlm && llmQ.status === 'ready' && <div className="muted" style={{ fontSize: 12 }}>{t('ai.err.notSet')}</div>}
+      {open && (
+        <div role="group" aria-label={t('tr.novel')} style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: 14, borderRadius: 26, background: 'var(--color-surface)', border: '2px solid var(--color-neutral-200)' }}>
+          <div className="display" style={{ fontSize: 17, display: 'flex', alignItems: 'center', gap: 8 }}><SparklesIcon size={16} />{t('tr.novel')}</div>
+          <div className="muted" style={{ fontSize: 12, marginTop: -4 }}>{t('ai.hint')}</div>
+          <TranslateFields value={choice} onChange={setTr} langs={[...AI_LANGS]} glossaryCount={0} />
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn btn-ghost" style={{ flex: 1 }} disabled={busy} onClick={() => setOpen(false)}>{t('common.cancel')}</button>
+            <button className="btn btn-primary" style={{ flex: 2, gap: 8 }} disabled={busy} onClick={start}>
+              {busy && <Spinner size={14} />}{t('tr.novelStart')}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
