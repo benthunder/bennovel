@@ -1,7 +1,7 @@
 use super::folder::{self, FolderBook, Opener};
 use super::{db, DbBook, LibraryBook};
 use crate::book::commands::{open_picked, pdfium_dirs, Books};
-use crate::book::{detect, open_source, BookError, BookFormat, BookInfo, BookSource, OpenCtx};
+use crate::book::{detect, open_source, BookError, BookFormat, BookInfo, BookSource, OpenCtx, SectionMeta};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
@@ -338,6 +338,35 @@ pub async fn library_open<R: Runtime>(
         index,
         progress,
     })
+}
+
+/// A library book with its chapter list, for its details page. Nothing stays open.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryDetail {
+    pub book: LibraryBook,
+    pub sections: Vec<SectionMeta>,
+}
+
+#[tauri::command]
+pub async fn library_detail<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+) -> Result<LibraryDetail, BookError> {
+    let path = db_path(&app, &user)?;
+    blocking(move || {
+        // The original gives PDF chapters their page ranges, as in the reader.
+        let original = open_original(&app, &path, novel_id);
+        let (_, source) = DbBook::open(&path, novel_id, original)?;
+        let book = super::get(&db::open(&path)?, novel_id)?
+            .ok_or_else(|| BookError::Parse("book not found".into()))?;
+        Ok(LibraryDetail {
+            book,
+            sections: source.sections(),
+        })
+    })
+    .await
 }
 
 #[tauri::command]
