@@ -986,6 +986,17 @@ pub async fn ai_chapter<R: Runtime>(
     .await
 }
 
+/// Which chapters have an AI version, and in which languages and styles.
+#[tauri::command]
+pub async fn ai_marks<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+) -> Result<Vec<translate::Mark>, AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || Ok(translate::marks(&db::open(&path)?, novel_id)?)).await
+}
+
 /// The AI versions of a book (language, style, chapters done).
 #[tauri::command]
 pub async fn ai_versions<R: Runtime>(

@@ -402,7 +402,7 @@ fn lang_name(code: &str) -> &str {
 
 fn style_rule(style: &str) -> &'static str {
     match style {
-        "literal" => "stay close to the original wording and sentence order",
+        "literal" => "stay close to the original meaning and wording, adding nothing, while still using correct sentence order",
         "literary" => "rich, vivid literary prose that keeps the mood of the story",
         "casual" => "simple, modern, easy everyday language",
         _ => "natural and fluent, as a native novelist would write it",
@@ -411,11 +411,23 @@ fn style_rule(style: &str) -> &'static str {
 
 const FORMAT_RULES: &str = "Keep every paragraph as its own paragraph, separated by a blank line, in the same order. Do not merge or drop paragraphs, do not add titles, notes, explanations or quotes around the text. Reply with only the resulting text.";
 
+/// How a sentence must be built in the target language. Novels from Chinese often come
+/// as word-for-word "convert" text that keeps the Chinese order (modifier before the
+/// noun, adverbs and places in front of the verb, "ta đối với hắn nói"), so every
+/// sentence is rebuilt, not just its words swapped.
+fn grammar_rules(lang: &str) -> &'static str {
+    match lang {
+        "vi" => "Write correct, natural Vietnamese sentences, never word-for-word. Rebuild every sentence in Vietnamese order: subject, then verb, then object (\"Hắn nói với nàng\", not \"Hắn đối với nàng nói\"); the noun comes before what describes it and the owner comes last (\"thanh kiếm sắc bén của hắn\", not \"hắn sắc bén kiếm\"); time and place usually open or close the sentence, not sit between subject and verb. Prefer pure Vietnamese words over clumsy Sino-Vietnamese ones when the meaning is the same, but keep cultivation terms, titles and names in Hán Việt. Use pronouns that fit who speaks to whom (ta, ngươi, hắn, nàng, huynh, muội, sư phụ…) and keep them consistent.",
+        _ => "Write correct, natural English sentences, never word-for-word. Rebuild every sentence in English order: subject, then verb, then object; put adjectives before nouns and time or place phrases at the start or end of the sentence; use the right tense (mostly past tense for narration), articles and pronouns (he, she, they), and split sentences that run on.",
+    }
+}
+
 fn translate_prompt(source: &str, target: &str, style: &str, terms: &[(String, String)]) -> String {
     let mut s = format!(
-        "You are a professional novel translator. Translate the user's text from {} into {}. Style: {}. Keep character names and terms consistent. {FORMAT_RULES}",
+        "You are a professional novel translator. Translate the user's text from {} into {}. Translate the meaning, then {} Style: {}. Keep character names and terms consistent. {FORMAT_RULES}",
         lang_name(source),
         lang_name(target),
+        grammar_rules(target),
         style_rule(style),
     );
     if !terms.is_empty() {
@@ -429,7 +441,8 @@ fn translate_prompt(source: &str, target: &str, style: &str, terms: &[(String, S
 
 fn rewrite_prompt(lang: &str, style: &str) -> String {
     format!(
-        "You are a professional {name} novel editor. The user's text is already in {name}; do not translate it into another language. Rewrite it in this style: {}. Make it grammatically correct and natural {name}: fix spelling, grammar, punctuation and awkward machine-translated phrasing, keep the meaning, events, dialogue and names. Do not summarize or shorten. {FORMAT_RULES}",
+        "You are a professional {name} novel editor. The user's text is already in {name} but may be a rough machine translation; do not translate it into another language. Rewrite it so it reads as if written in {name} from the start. {} Fix spelling, punctuation and wrong word choices. Style: {}. Keep the meaning, events, dialogue and names; do not summarize, shorten or add anything. {FORMAT_RULES}",
+        grammar_rules(lang),
         style_rule(style),
         name = lang_name(lang),
     )
@@ -595,6 +608,37 @@ pub fn versions(conn: &Connection, novel_id: i64) -> rusqlite::Result<Vec<Versio
     rows.collect()
 }
 
+/// One AI version of a chapter, for the marks in the reader and the chapter lists.
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Mark {
+    /// The chapter's place in reading order (0-based).
+    pub index: i64,
+    pub lang: String,
+    pub style: String,
+    pub model: Option<String>,
+}
+
+/// Every chapter's AI versions, newest first within a chapter.
+pub fn marks(conn: &Connection, novel_id: i64) -> rusqlite::Result<Vec<Mark>> {
+    let mut stmt = conn.prepare(
+        "with c as (select id, row_number() over (order by number) - 1 as idx
+                    from chapters where novel_id = ?1)
+         select c.idx, t.lang, t.style, t.model from chapter_translations t join c on c.id = t.chapter_id
+         where t.source = 'ai' and t.style is not null
+         order by c.idx, t.updated_at desc",
+    )?;
+    let rows = stmt.query_map([novel_id], |r| {
+        Ok(Mark {
+            index: r.get(0)?,
+            lang: r.get(1)?,
+            style: r.get(2)?,
+            model: r.get(3)?,
+        })
+    })?;
+    rows.collect()
+}
+
 /// Takes the LLM settings and the AI queue out of a copy about to be synced.
 pub fn strip(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch("delete from llm_config; delete from ai_jobs; delete from ai_books;")
@@ -702,6 +746,15 @@ pub(crate) mod tests {
         // The language is asked once per book.
         run(&conn, llm.clone(), req(11, "vi")).unwrap();
         assert_eq!(llm.count(), 6);
+        // Each chapter carries its own mark.
+        assert_eq!(
+            marks(&conn, 1)
+                .unwrap()
+                .iter()
+                .map(|m| (m.index, m.lang.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(0, "vi"), (1, "vi")]
+        );
         assert_eq!(
             versions(&conn, 1).unwrap(),
             vec![Version {
@@ -770,6 +823,40 @@ pub(crate) mod tests {
             other => panic!("{other:?}"),
         }
         assert!(get(&conn, 10, "vi", "natural").unwrap().is_none());
+    }
+
+    #[test]
+    fn translates_chapter_after_chapter_from_the_app_runtime() {
+        // As the app does it: each request on a blocking thread of the async runtime.
+        let (conn, _) = book("rt");
+        let db = conn.path().unwrap().to_string();
+        let llm = std::sync::Arc::new(Fake::new("en"));
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        for chapter in [10, 11, 10] {
+            let (db, llm) = (db.clone(), llm.clone());
+            let out = rt
+                .block_on(async move {
+                    tokio::task::spawn_blocking(move || {
+                        let conn = super::super::db::open(std::path::Path::new(&db)).unwrap();
+                        run(&conn, llm, req(chapter, "vi"))
+                    })
+                    .await
+                })
+                .unwrap()
+                .unwrap();
+            assert!(out.paragraphs[0].starts_with("[tr] "));
+        }
+        assert_eq!(marks(&conn, 1).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn prompts_ask_for_the_target_word_order() {
+        assert!(rewrite_prompt("vi", "natural").contains("subject, then verb, then object"));
+        assert!(translate_prompt("zh", "en", "literal", &[])
+            .contains("subject, then verb, then object"));
+        assert!(!rewrite_prompt("vi", "natural").contains("English order"));
     }
 
     #[test]

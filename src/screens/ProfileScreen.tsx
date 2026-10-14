@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { GlobeIcon, LanguagesIcon, LogOutIcon, RefreshIcon, SparklesIcon } from '../components/Icons';
+import { Modal } from '../components/Modal';
 import { NovelCover } from '../components/NovelCover';
 import { UiLangDialog, uiLangLabel } from '../components/UiLangDialog';
 import { CoverGrid, Segmented, Spinner } from '../components/ui';
@@ -245,9 +246,9 @@ function S3Dialog({ onClose }: { onClose: () => void }) {
   );
 
   return (
-    <div className="dialog-backdrop dialog-backdrop--sheet" onClick={busy ? undefined : onClose}>
+    <Modal onClose={busy ? undefined : onClose}>
       <form className="dialog dialog--sheet" role="dialog" aria-modal="true" aria-label={t('s3.title')} onClick={e => e.stopPropagation()}
-        onSubmit={e => { e.preventDefault(); void apply(form); }} style={{ maxHeight: '90dvh', overflowY: 'auto' }}>
+        onSubmit={e => { e.preventDefault(); void apply(form); }}>
         <div className="dialog-title" style={{ fontSize: 22 }}>{t('s3.title')}</div>
         <div className="dialog-body" style={{ marginTop: -6 }}>{t('s3.body')}</div>
         {field('endpoint', t('s3.endpoint'), { placeholder: 'https://minio.example.com:9000', inputMode: 'url', required: true })}
@@ -270,7 +271,7 @@ function S3Dialog({ onClose }: { onClose: () => void }) {
           </button>
         </div>
       </form>
-    </div>
+    </Modal>
   );
 }
 
@@ -330,9 +331,9 @@ function LlmDialog({ saved, onClose, onSaved }: { saved: LlmSettings | null; onC
   );
 
   return (
-    <div className="dialog-backdrop dialog-backdrop--sheet" onClick={busy ? undefined : onClose}>
+    <Modal onClose={busy ? undefined : onClose}>
       <form className="dialog dialog--sheet" role="dialog" aria-modal="true" aria-label={t('ai.title')} onClick={e => e.stopPropagation()}
-        onSubmit={e => { e.preventDefault(); void apply(form); }} style={{ maxHeight: '90dvh', overflowY: 'auto' }}>
+        onSubmit={e => { e.preventDefault(); void apply(form); }}>
         <div className="dialog-title" style={{ fontSize: 22 }}>{t('ai.title')}</div>
         <div className="dialog-body" style={{ marginTop: -6 }}>{t('ai.body')}</div>
         <div>
@@ -362,7 +363,7 @@ function LlmDialog({ saved, onClose, onSaved }: { saved: LlmSettings | null; onC
           </button>
         </div>
       </form>
-    </div>
+    </Modal>
   );
 }
 

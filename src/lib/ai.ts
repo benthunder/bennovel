@@ -65,6 +65,10 @@ export async function aiTranslateChapter(user: string, novelId: number, index: n
 export const getAiChapter = (user: string, novelId: number, index: number, lang: AiLang, style: TranslateStyle) =>
   invoke<AiChapter | null>('ai_chapter', { user, novelId, index, lang, style: styleArg(style) });
 
+/** One AI version of a chapter: `index` in reading order. A chapter can have several, newest first. */
+export interface AiMark { index: number; lang: AiLang; style: string; model: string | null }
+export const getAiMarks = (user: string, novelId: number) => invoke<AiMark[]>('ai_marks', { user, novelId });
+
 export const getAiVersions = (user: string, novelId: number) => invoke<AiVersion[]>('ai_versions', { user, novelId });
 
 /** Queues chapters `fromIndex`… for the background translation. */

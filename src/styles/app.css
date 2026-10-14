@@ -210,8 +210,17 @@ input[type='range'] { accent-color: var(--color-accent); width: 100%; }
 .sheet--side { max-height: 100%; height: 100%; border-radius: 0; animation: nxin .28s ease-out; }
 
 /* Language dialogs: bottom sheet on phone, centred card on tablet and desktop. */
-.dialog-backdrop--sheet { position: absolute; z-index: 60; place-items: end stretch; grid-template-columns: minmax(0, 1fr); padding: 10px; padding-bottom: calc(env(safe-area-inset-bottom) + 10px); color: var(--color-text); }
-.dialog--sheet { width: 100%; min-width: 0; border-radius: 36px; padding: 22px; animation: nxup .28s ease-out; }
+/* Rendered into .app (see Modal.tsx), so the backdrop always covers the whole window. The one
+   grid row is the window height minus padding; a sheet taller than that scrolls inside itself. */
+.dialog-backdrop--sheet {
+  position: absolute; inset: 0; z-index: 60; place-items: end stretch;
+  grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr);
+  padding: 10px; padding-top: var(--safe-top); padding-bottom: calc(env(safe-area-inset-bottom) + 10px); color: var(--color-text);
+}
+.dialog--sheet {
+  width: 100%; min-width: 0; max-height: 100%; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin;
+  border-radius: 36px; padding: 22px; animation: nxup .28s ease-out;
+}
 .app[data-device='tablet'] .dialog-backdrop--sheet, .app[data-device='desktop'] .dialog-backdrop--sheet { place-items: center; padding: 24px; }
 .app[data-device='tablet'] .dialog--sheet, .app[data-device='desktop'] .dialog--sheet { width: 440px; max-width: 100%; }
 
