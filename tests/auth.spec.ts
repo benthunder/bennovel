@@ -265,6 +265,8 @@ test('app: Google opens the browser and the link back signs in; the same email a
 
   await page.getByRole('button', { name: 'Continue with Google' }).click();
   await expect(page.getByRole('status').filter({ hasText: 'Finish signing in with Google' })).toBeVisible();
+  // The button keeps spinning until the link comes back.
+  await expect(page.getByRole('button', { name: 'Signing in with Google…' })).toBeDisabled();
   const opened = (await app.calls()).find(([cmd]) => cmd === 'plugin:opener|open_url')?.[1] ?? '';
   expect(opened).toContain('/auth/v1/authorize?provider=google');
   expect(new URL(opened).searchParams.get('redirect_to')).toBe('bennovel://auth/callback');
@@ -288,4 +290,18 @@ test('app: Google opens the browser and the link back signs in; the same email a
   const loads = (await app.calls()).filter(([cmd, user]) => cmd === 'reading_load' && user === EMAIL);
   expect(loads.length).toBeGreaterThanOrEqual(2);
   expect(auth.filter(c => c === 'POST /token')).toHaveLength(2);
+});
+
+test('app: waiting for Google can be cancelled', async ({ page }) => {
+  await fakeAuth(page);
+  await boot(page);
+  await nativeWithLinks(page);
+  await page.goto('/');
+
+  await page.getByRole('button', { name: 'Continue with Google' }).click();
+  await expect(page.getByRole('button', { name: 'Signing in with Google…' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Log in', exact: true }).last()).toBeDisabled();
+  await page.getByRole('button', { name: 'Cancel' }).click();
+  await expect(page.getByRole('button', { name: 'Continue with Google' })).toBeEnabled();
+  await expect(page.getByRole('status')).toHaveCount(0);
 });
