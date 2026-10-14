@@ -4,7 +4,7 @@ import { ChevronLeftIcon, DownloadIcon, ListIcon, SlidersIcon } from '../compone
 import { ReaderChrome, ReaderStatusBar, useImmersive } from '../components/ReaderChrome';
 import { ReaderTools, type ToolsTab } from '../components/ReaderTools';
 import { Segmented, Spinner } from '../components/ui';
-import { applyReplaceRules } from '../data/repository';
+import { applyReplaceRules, getBookRules, saveBookRules } from '../data/repository';
 import { CONTENT_LANGS, type ContentLang, type ReplaceRule } from '../data/types';
 import { useT } from '../i18n';
 import {
@@ -62,10 +62,18 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
   const known = CONTENT_LANGS.find(l => l === place?.lang);
   const lang: ContentLang = known ?? app.contentLang ?? 'vi';
   const rulesKey = `localRules.${place ? `${place.user}:${place.novelId}` : `file:${book.title ?? ''}`}.${lang}`;
-  const [rules, setRules] = useState<ReplaceRule[]>(() => load(rulesKey, []));
+  // Library books keep their list in the library file (synced); a file opened once, on the device.
+  const rulesQ = useAsync(
+    () => (place ? getBookRules(place.user, place.novelId, lang, rulesKey) : Promise.resolve(load<ReplaceRule[]>(rulesKey, []))),
+    [rulesKey]
+  );
+  // Edits made here win over what was loaded until the book or language changes.
+  const [edited, setEdited] = useState<{ key: string; rules: ReplaceRule[] } | null>(null);
+  const rules = edited?.key === rulesKey ? edited.rules : rulesQ.status === 'ready' ? rulesQ.data : [];
   const changeRules = (next: ReplaceRule[]) => {
-    setRules(next);
-    store(rulesKey, next.length ? next : null);
+    setEdited({ key: rulesKey, rules: next });
+    if (place) saveBookRules(place.user, place.novelId, lang, next).catch(() => app.showToast(t('replace.saveFailed')));
+    else store(rulesKey, next.length ? next : null);
   };
   const fix = (text: string) => applyReplaceRules(text, rules);
   // PDF/DjVu: the original pages as pictures, or the extracted text.

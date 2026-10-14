@@ -75,6 +75,9 @@ async function nativeApp(page: Page, downloaded: { novel: typeof NOVEL; chapters
       });
     }
     w.__downloads = dl;
+    // Replace rules in the library file, by "kind:id:lang".
+    const rules = new Map<string, unknown>();
+    w.__rules = rules;
     let next = 1;
     w.isTauri = true;
     w.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => undefined };
@@ -106,6 +109,8 @@ async function nativeApp(page: Page, downloaded: { novel: typeof NOVEL; chapters
             return r ? { title: r.title, content: r.content } : null;
           }
           case 'offline_glossary': return dl.get(a.novelId)?.glossary ?? [];
+          case 'replace_rules_get': return rules.get(`${a.kind}:${a.id}:${a.lang}`) ?? null;
+          case 'replace_rules_set': rules.set(`${a.kind}:${a.id}:${a.lang}`, a.rules); return null;
           default: return null;
         }
       }
@@ -163,5 +168,28 @@ test('a downloaded novel opens and reads without a connection', async ({ page })
   // No language saved: it opens in the original's.
   await expect(page.getByText('Words of chapter 2.')).toBeVisible();
   await expect(page.getByText('With Lin on it.')).toBeVisible();
-  expect(calls.filter(u => !u.includes('/replace_rules'))).toEqual([]);
+  expect(calls).toEqual([]);
+});
+
+test('replace rules are kept in the library file, so they sync with it', async ({ page }) => {
+  const calls = await goOffline(page);
+  await nativeApp(page, { novel: NOVEL, chapters: CHAPTERS });
+  await boot(page);
+  // A list kept on this device before moves into the library file.
+  await page.addInitScript(() => localStorage.setItem('bennovel.replaceRules.101.en', JSON.stringify([{ find: 'Words', replace: 'Lines' }])));
+  await page.goto('/');
+  await page.getByText('Saved Tale').filter({ visible: true }).first().click();
+  await page.getByText('The road 2').filter({ visible: true }).click();
+  await expect(page.getByText('Lines of chapter 2.')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Reading tools' }).click();
+  await page.getByText('Replace', { exact: true }).click();
+  await page.getByRole('textbox', { name: 'Find' }).fill('chapter');
+  await page.getByRole('textbox', { name: 'Replace with' }).fill('part');
+  await page.getByRole('button', { name: 'Add rule' }).click();
+  await expect(page.getByText('Lines of part 2.')).toBeVisible();
+
+  const stored = await page.evaluate(() => Object.fromEntries((window as unknown as { __rules: Map<string, unknown> }).__rules));
+  expect(stored).toEqual({ 'online:101:en': [{ find: 'Words', replace: 'Lines' }, { find: 'chapter', replace: 'part' }] });
+  expect(calls).toEqual([]);
 });

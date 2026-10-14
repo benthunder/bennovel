@@ -5,6 +5,9 @@ import { UiLangDialog, uiLangLabel } from '../components/UiLangDialog';
 import { CoverGrid, Segmented } from '../components/ui';
 import { findNovel, getContentLangs, getNovels } from '../data/repository';
 import { relativeTime, useI18n } from '../i18n';
+import type { MessageKey } from '../i18n/en';
+import { s3Host, setS3Config, type S3Config } from '../lib/s3';
+import { SyncFailure, type SyncStep } from '../lib/sync';
 import { useApp } from '../store/AppStore';
 import { useLayout } from '../lib/useLayout';
 import { canOpenLocalBooks, libraryUser, listLibrary, localCover, openLibraryBook, type LibraryBook } from '../lib/localBook';
@@ -44,7 +47,7 @@ export function ProfileScreen() {
               <button className="btn btn-primary" style={{ height: 44, padding: '0 22px' }} onClick={() => app.push({ s: 'login' })}>{t('profile.loginCta')}</button>
             </div>
           )}
-          {app.canSync && <SyncCard />}
+          {canOpenLocalBooks() && <SyncCard />}
         </div>
 
         <Segmented value={tab} onChange={setTab} style={{ gridArea: 'tabs' }} optStyle={{ padding: 10 }}
@@ -100,21 +103,120 @@ export function ProfileScreen() {
   );
 }
 
-/** The Sync button: brings this device's library and the account's copy together. */
+const MB = 1024 * 1024;
+
+/** What a running sync is doing, e.g. "Uploading… 40% · 12 / 30 MB". */
+function stepText(t: ReturnType<typeof useI18n>['t'], step: SyncStep | null): string {
+  if (!step) return t('sync.syncing');
+  if (!('done' in step)) return t(`sync.step.${step.step}`);
+  const mb = (n: number) => (n / MB).toFixed(n < 10 * MB ? 1 : 0);
+  const progress = step.total > 0
+    ? `${Math.floor((step.done / step.total) * 100)}% · ${mb(step.done)} / ${mb(step.total)} MB`
+    : step.done > 0 ? `${mb(step.done)} MB` : '';
+  return t(`sync.step.${step.step}`, { progress }).trim();
+}
+
+/**
+ * The Sync button: brings this device's library and its synced copy together, in the
+ * account's storage or the user's own S3 storage.
+ */
 function SyncCard() {
   const { t } = useI18n();
   const app = useApp();
-  const status = app.syncing ? t('sync.syncing') : app.syncedAt ? t('sync.last', { time: relativeTime(t, app.syncedAt) }) : t('sync.never');
+  const [editing, setEditing] = useState(false);
+  const status = app.syncing ? stepText(t, app.syncStep) : app.syncedAt ? t('sync.last', { time: relativeTime(t, app.syncedAt) }) : t('sync.never');
+  const where = app.s3 ? `${app.s3.bucket} · ${s3Host(app.s3)}` : t('s3.account');
   return (
-    <div style={{ marginTop: 12, borderRadius: 28, background: 'var(--color-surface)', padding: '12px 12px 12px 18px', display: 'flex', alignItems: 'center', gap: 12 }}>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 14, fontWeight: 700 }}>{status}</div>
-        <div className="muted" style={{ fontSize: 12 }}>{t('sync.hint')}</div>
+    <div style={{ marginTop: 12, borderRadius: 28, background: 'var(--color-surface)', padding: '12px 12px 10px 18px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+      {app.canSync ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 14, fontWeight: 700 }}>{status}</div>
+            <div className="muted" style={{ fontSize: 12 }}>{t('sync.hint')}</div>
+          </div>
+          <button className="btn btn-primary" style={{ height: 40, padding: '0 16px', gap: 8, flex: 'none' }} disabled={app.syncing} onClick={app.syncNow}>
+            <RefreshIcon size={16} style={app.syncing ? { animation: 'nxspin 1s linear infinite' } : undefined} />
+            {t('sync.button')}
+          </button>
+        </div>
+      ) : (
+        <div className="muted" style={{ fontSize: 12 }}>{t('s3.guestHint')}</div>
+      )}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        {app.canSync && <span className="muted" style={{ flex: 1, minWidth: 0, fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t('s3.via', { where })}</span>}
+        <button className="btn btn-ghost" style={{ fontSize: 12, padding: '0 6px', marginLeft: 'auto' }} disabled={app.syncing} onClick={() => setEditing(true)}>
+          {app.s3 ? t('s3.change') : t('s3.setUp')}
+        </button>
       </div>
-      <button className="btn btn-primary" style={{ height: 40, padding: '0 16px', gap: 8, flex: 'none' }} disabled={app.syncing} onClick={app.syncNow}>
-        <RefreshIcon size={16} style={app.syncing ? { animation: 'nxspin 1s linear infinite' } : undefined} />
-        {t('sync.button')}
-      </button>
+      {editing && <S3Dialog onClose={() => setEditing(false)} />}
+    </div>
+  );
+}
+
+type S3Field = keyof S3Config;
+
+/** Settings of the user's own S3 storage; saved only once the server accepts them. */
+function S3Dialog({ onClose }: { onClose: () => void }) {
+  const { t } = useI18n();
+  const app = useApp();
+  const user = libraryUser(app.user);
+  const saved = app.s3;
+  const [form, setForm] = useState<S3Config>({
+    endpoint: saved?.endpoint ?? '', region: saved?.region ?? '', bucket: saved?.bucket ?? '',
+    folder: saved?.folder ?? 'bennovel', accessKey: saved?.accessKey ?? '', secretKey: ''
+  });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<MessageKey | null>(null);
+
+  const apply = async (config: S3Config | null) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await setS3Config(user, config);
+      await app.refreshS3();
+      app.showToast(t(config ? 's3.saved' : 's3.removed'));
+      onClose();
+    } catch (e) {
+      setError(e instanceof SyncFailure ? e.key : 'sync.err.generic');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const field = (key: S3Field, label: string, props: React.InputHTMLAttributes<HTMLInputElement> = {}) => (
+    <div className="field">
+      <label htmlFor={`s3-${key}`}>{label}</label>
+      <input id={`s3-${key}`} className="input" style={{ height: 40 }} value={form[key]} autoCapitalize="off" autoCorrect="off" spellCheck={false}
+        onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))} {...props} />
+    </div>
+  );
+
+  return (
+    <div className="dialog-backdrop dialog-backdrop--sheet" onClick={busy ? undefined : onClose}>
+      <form className="dialog dialog--sheet" role="dialog" aria-modal="true" aria-label={t('s3.title')} onClick={e => e.stopPropagation()}
+        onSubmit={e => { e.preventDefault(); void apply(form); }} style={{ maxHeight: '90dvh', overflowY: 'auto' }}>
+        <div className="dialog-title" style={{ fontSize: 22 }}>{t('s3.title')}</div>
+        <div className="dialog-body" style={{ marginTop: -6 }}>{t('s3.body')}</div>
+        {field('endpoint', t('s3.endpoint'), { placeholder: 'https://minio.example.com:9000', inputMode: 'url', required: true })}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          {field('bucket', t('s3.bucket'), { required: true })}
+          {field('region', t('s3.region'), { placeholder: 'us-east-1' })}
+        </div>
+        {field('folder', t('s3.folder'))}
+        {field('accessKey', t('s3.accessKey'), { required: true, autoComplete: 'off' })}
+        {field('secretKey', t('s3.secretKey'), {
+          type: 'password', autoComplete: 'new-password', required: !saved?.hasSecret,
+          placeholder: saved?.hasSecret ? t('s3.secretKept') : undefined
+        })}
+        {error && <div role="alert" style={{ fontSize: 13, color: 'var(--color-accent-700)' }}>{t(error)}</div>}
+        <div className="dialog-actions">
+          {saved && <button type="button" className="btn btn-ghost" style={{ marginRight: 'auto' }} disabled={busy} onClick={() => void apply(null)}>{t('s3.remove')}</button>}
+          <button type="button" className="btn btn-secondary" style={{ height: 44, padding: '0 18px' }} disabled={busy} onClick={onClose}>{t('common.cancel')}</button>
+          <button type="submit" className="btn btn-primary" style={{ height: 44, padding: '0 22px' }} disabled={busy}>
+            {busy ? t('s3.checking') : t('common.save')}
+          </button>
+        </div>
+      </form>
     </div>
   );
 }

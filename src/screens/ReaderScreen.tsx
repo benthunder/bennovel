@@ -4,6 +4,7 @@ import { ReaderChrome, ReaderStatusBar, useImmersive } from '../components/Reade
 import { ReaderTools, type Translation } from '../components/ReaderTools';
 import { Spinner } from '../components/ui';
 import { applyReplaceRules, getChapterText, getContentLangs, getGlossary, getNovel, getReplaceRules, saveReplaceRules } from '../data/repository';
+import { libraryUser } from '../lib/localBook';
 import { useAsync } from '../lib/useAsync';
 import type { ContentLang, ReplaceRule } from '../data/types';
 import { useI18n } from '../i18n';
@@ -39,13 +40,13 @@ export function ReaderScreen({ id, ch, lang }: { id: number; ch: number; lang: C
   const glossary = glossaryQ.status === 'ready' ? glossaryQ.data : {};
   const textQ = useAsync(() => getChapterText(id, ch, dispLang), [id, ch, dispLang]);
   const chapter = textQ.status === 'ready' ? textQ.data : null;
-  const rulesQ = useAsync(() => getReplaceRules(id, dispLang), [id, dispLang]);
+  const rulesQ = useAsync(() => getReplaceRules(libraryUser(app.user), id, dispLang), [libraryUser(app.user), id, dispLang]);
   // Edits made here win over what was loaded until the language changes.
   const [edited, setEdited] = useState<{ lang: ContentLang; rules: ReplaceRule[] } | null>(null);
   const rules = edited?.lang === dispLang ? edited.rules : rulesQ.status === 'ready' ? rulesQ.data : [];
   const changeRules = (next: ReplaceRule[]) => {
     setEdited({ lang: dispLang, rules: next });
-    saveReplaceRules(id, dispLang, next).catch(() => app.showToast(t('replace.saveFailed')));
+    saveReplaceRules(libraryUser(app.user), id, dispLang, next).catch(() => app.showToast(t('replace.saveFailed')));
   };
   const langName = (c: ContentLang) => getContentLangs().find(l => l.code === c)?.native ?? c;
 

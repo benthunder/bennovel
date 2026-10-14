@@ -1,11 +1,11 @@
-//! Sync between devices through one file per user in Supabase Storage. The app (JS)
-//! does the network part; here the library file is exported as a gzipped snapshot and
-//! a downloaded snapshot is merged into it row by row, so changes made on two devices
-//! both survive:
+//! Sync between devices through one file per user (remote.rs does the network part).
+//! Here the library file is exported as a gzipped snapshot, and a downloaded snapshot
+//! is merged into it row by row, so changes made on two devices both survive:
 //! - favourites: the later of "added" and "removed" wins (a tie keeps it);
 //! - history and progress: the most recent read wins; a removal newer than the read wins;
 //! - imported books: matched by `book_key`; a book missing here is copied whole
-//!   (chapters, pictures…), newer details (title, author) win, a deleted book stays deleted.
+//!   (chapters, pictures…), newer details (title, author) win, a deleted book stays deleted;
+//! - replace rules: per novel and language, the list changed last wins.
 
 use super::db;
 use flate2::{read::GzDecoder, write::GzEncoder, Compression};
@@ -24,26 +24,16 @@ pub enum SyncError {
     Outdated,
 }
 
-const LAST_VERSION: &str = "last_version";
-const SYNCED_AT: &str = "synced_at";
+pub(super) const SYNCED_AT: &str = "synced_at";
 
-/// The server version this file was last synced with, and when (epoch ms).
-pub fn status(conn: &Connection) -> rusqlite::Result<(i64, Option<i64>)> {
-    let version = db::get_state(conn, LAST_VERSION)?
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
-    let at = db::get_state(conn, SYNCED_AT)?.and_then(|v| v.parse().ok());
-    Ok((version, at))
+/// When this file was last synced (epoch ms).
+pub fn synced_at(conn: &Connection) -> rusqlite::Result<Option<i64>> {
+    Ok(db::get_state(conn, SYNCED_AT)?.and_then(|v| v.parse().ok()))
 }
 
-pub fn mark_synced(conn: &Connection, version: i64) -> rusqlite::Result<()> {
-    db::set_state(conn, LAST_VERSION, &version.to_string())?;
-    db::set_state(conn, SYNCED_AT, &db::now_ms().to_string())
-}
-
-/// A consistent copy of the library file (the live one is in WAL mode), gzipped.
-/// `tmp` is a scratch path that must not exist.
-pub fn export(conn: &Connection, tmp: &Path) -> Result<Vec<u8>, SyncError> {
+/// A consistent copy of the library file (the live one is in WAL mode), gzipped into
+/// `out`; returns its size. `tmp` is a scratch path that must not exist.
+pub fn export_to(conn: &Connection, tmp: &Path, out: &Path) -> Result<u64, SyncError> {
     let _ = std::fs::remove_file(tmp);
     conn.execute("vacuum into ?1", [tmp.to_string_lossy()])?;
     let result = (|| {
@@ -52,24 +42,47 @@ pub fn export(conn: &Connection, tmp: &Path) -> Result<Vec<u8>, SyncError> {
         super::offline::strip(&copy)?;
         copy.execute("vacuum", [])?;
         drop(copy);
-        let mut enc = GzEncoder::new(Vec::new(), Compression::default());
+        let file = std::io::BufWriter::new(std::fs::File::create(out)?);
+        let mut enc = GzEncoder::new(file, Compression::default());
         std::io::copy(&mut std::fs::File::open(tmp)?, &mut enc)?;
-        Ok::<_, SyncError>(enc.finish()?)
+        enc.finish()?
+            .into_inner()
+            .map_err(|e| e.into_error())?
+            .sync_all()?;
+        Ok::<_, SyncError>(std::fs::metadata(out)?.len())
     })();
     let _ = std::fs::remove_file(tmp);
+    result
+}
+
+/// `export_to`, in memory.
+#[cfg(test)]
+pub fn export(conn: &Connection, tmp: &Path) -> Result<Vec<u8>, SyncError> {
+    let out = tmp.with_extension("gz");
+    let result = export_to(conn, tmp, &out).and_then(|_| Ok(std::fs::read(&out)?));
+    let _ = std::fs::remove_file(&out);
     result
 }
 
 /// Merges a downloaded snapshot (gzipped, from `export` on any device) into `conn`.
 /// `tmp` is a scratch path for the unpacked file. Returns the ids of local books
 /// removed because they were deleted elsewhere (their kept originals can go).
+#[cfg(test)]
 pub fn merge(conn: &mut Connection, snapshot: &[u8], tmp: &Path) -> Result<Vec<i64>, SyncError> {
+    merge_from(conn, snapshot, tmp)
+}
+
+/// `merge`, reading the snapshot from `snapshot` as it goes (a downloaded file).
+pub fn merge_from(
+    conn: &mut Connection,
+    snapshot: impl Read,
+    tmp: &Path,
+) -> Result<Vec<i64>, SyncError> {
     let _ = std::fs::remove_file(tmp);
     let result = (|| {
-        let mut file = std::fs::File::create(tmp)?;
-        let mut raw = Vec::new();
-        GzDecoder::new(snapshot).read_to_end(&mut raw)?;
-        file.write_all(&raw)?;
+        let mut file = std::io::BufWriter::new(std::fs::File::create(tmp)?);
+        std::io::copy(&mut GzDecoder::new(snapshot), &mut file)?;
+        file.flush()?;
         drop(file);
         // Brings a file from an older app up to this schema.
         let remote = db::open(tmp)?;
@@ -132,6 +145,13 @@ fn merge_attached(tx: &Transaction) -> Result<Vec<i64>, SyncError> {
         delete from main.online_novels
           where id not in (select novel_id from main.online_favorites)
             and id not in (select novel_id from main.online_history);
+
+        insert into main.rule_lists (scope, key, lang, rules, updated_at)
+          select scope, key, lang, rules, updated_at from r.rule_lists where true
+          on conflict (scope, key, lang) do update set rules = excluded.rules, updated_at = excluded.updated_at
+          where excluded.updated_at > rule_lists.updated_at;
+        delete from main.rule_lists where scope = 'book' and key in (
+          select key from main.tombstones where kind = 'book');
         ",
     )?;
 
@@ -414,6 +434,55 @@ mod tests {
         };
         assert!(!reading::save(&mut b, &refused).unwrap());
         assert_eq!(state(&b).favs, vec![7]);
+    }
+
+    #[test]
+    fn replace_rules_follow_the_novel_and_the_latest_edit_wins() {
+        use super::super::rules::{self, Kind, Rule};
+        let r = |f: &str| {
+            vec![Rule {
+                find: f.into(),
+                replace: "x".into(),
+            }]
+        };
+        let (mut a, pa) = device("rules-a");
+        let (mut b, pb) = device("rules-b");
+        let book =
+            super::super::import(&mut a, BookFormat::Txt, &mut Book, "thu.txt", |_, _| {}).unwrap();
+        rules::set(&a, Kind::Online, 9, "vi", &r("a1")).unwrap();
+        rules::set(&a, Kind::Book, book, "vi", &r("book")).unwrap();
+        send(&a, &pa, &mut b, &pb);
+        // The book has another id on B; its rules came along by book_key.
+        let b_book = super::super::list(&b).unwrap()[0].novel_id;
+        assert_eq!(
+            rules::get(&b, Kind::Book, b_book, "vi").unwrap(),
+            Some(r("book"))
+        );
+        assert_eq!(
+            rules::get(&b, Kind::Online, 9, "vi").unwrap(),
+            Some(r("a1"))
+        );
+
+        // A edits, then B empties the list later: B's empty list wins on both.
+        rules::set(&a, Kind::Online, 9, "vi", &r("a2")).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        rules::set(&b, Kind::Online, 9, "vi", &[]).unwrap();
+        send(&a, &pa, &mut b, &pb);
+        send(&b, &pb, &mut a, &pa);
+        assert_eq!(rules::get(&a, Kind::Online, 9, "vi").unwrap(), Some(vec![]));
+        assert_eq!(rules::get(&b, Kind::Online, 9, "vi").unwrap(), Some(vec![]));
+
+        // Deleting the book drops its rules on the other device too.
+        super::super::delete(&a, book).unwrap();
+        send(&a, &pa, &mut b, &pb);
+        let left: i64 = b
+            .query_row(
+                "select count(*) from rule_lists where scope = 'book'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(left, 0);
     }
 
     #[test]
