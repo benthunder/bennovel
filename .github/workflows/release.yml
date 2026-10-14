@@ -96,7 +96,15 @@ jobs:
       - name: Install NDK
         run: |
           SDKMANAGER="$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager | sort -V | tail -1)"
-          (yes || true) | "$SDKMANAGER" --install "ndk;${NDK_VERSION}" > /dev/null
+          # The download sometimes arrives broken ("unknown archive"): try again.
+          for attempt in 1 2 3; do
+            (yes || true) | "$SDKMANAGER" --install "ndk;${NDK_VERSION}" > /dev/null \
+              && [ -f "$ANDROID_HOME/ndk/${NDK_VERSION}/source.properties" ] && break
+            [ "$attempt" = 3 ] && exit 1
+            echo "NDK install failed (attempt $attempt), retrying"
+            rm -rf "$ANDROID_HOME/ndk/${NDK_VERSION}" ~/.android/cache
+            sleep 10
+          done
           echo "NDK_HOME=$ANDROID_HOME/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
 
       - uses: dtolnay/rust-toolchain@stable
