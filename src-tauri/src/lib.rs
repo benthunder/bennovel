@@ -95,6 +95,7 @@ pub fn run() {
             library::commands::llm_config_get,
             library::commands::llm_config_set,
             library::commands::ai_translate_chapter,
+            library::commands::ai_marks,
             library::commands::ai_chapter,
             library::commands::ai_versions,
             library::commands::ai_translate_book,

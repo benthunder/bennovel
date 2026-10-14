@@ -21,7 +21,8 @@ async function nativeApp(page: Page, { llm = true } = {}) {
     const calls: { cmd: string; args: Record<string, unknown> }[] = [];
     w.__calls = calls;
     let settings: unknown = llm ? { provider: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', hasKey: true } : null;
-    const done = new Set<number>();
+    // Chapter index → how many times it was translated.
+    const done = new Map<number, number>();
     let next = 1;
     w.isTauri = true;
     w.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => undefined };
@@ -43,12 +44,19 @@ async function nativeApp(page: Page, { llm = true } = {}) {
             settings = c && { provider: c.provider, baseUrl: c.baseUrl, model: c.model, hasKey: false };
             return null;
           }
-          case 'ai_translate_chapter':
+          case 'ai_translate_chapter': {
             await new Promise(r => setTimeout(r, 300));
-            done.add(Number(args.index));
-            return { title: 'Phần một', paragraphs: ['Lời của phần 1.'], mode: 'translate', model: 'gpt-4o-mini' };
-          case 'ai_chapter':
-            return done.has(Number(args.index)) ? { title: 'Phần một', paragraphs: ['Lời của phần 1.'], mode: 'translate', model: 'gpt-4o-mini' } : null;
+            const i = Number(args.index);
+            done.set(i, (done.get(i) ?? 0) + 1);
+            return { title: 'Phần một', paragraphs: [`Lời của phần ${i + 1} (${done.get(i)}).`], mode: 'translate', model: 'gpt-4o-mini' };
+          }
+          case 'ai_chapter': {
+            const i = Number(args.index);
+            return done.has(i) && args.lang === 'vi' && args.style === 'natural'
+              ? { title: 'Phần một', paragraphs: [`Lời của phần ${i + 1} (${done.get(i)}).`], mode: 'translate', model: 'gpt-4o-mini' } : null;
+          }
+          case 'ai_marks':
+            return [...done.keys()].map(index => ({ index, lang: 'vi', style: 'natural', model: 'gpt-4o-mini' }));
           case 'ai_translate_book': return { queued: 2, mode: 'translate' };
           case 'ai_progress': return [];
           case 'ai_versions': return [];
@@ -94,22 +102,41 @@ test('the LLM sheet opens fully in view when Profile is scrolled down', async ({
   await expect(page.getByRole('button', { name: 'Save' })).toBeInViewport();
 });
 
-test('translating one chapter shows a loader, then the translation', async ({ page }) => {
+test('each chapter is marked, translated again and switched to its original', async ({ page }) => {
   await nativeApp(page);
   await page.goto('/');
   await page.getByText('Device Diary').filter({ visible: true }).first().click();
   await page.getByRole('button', { name: /Continue/ }).filter({ visible: true }).first().click();
-  await expect(page.getByText('Words of section 1.', { exact: true })).toBeVisible();
+  const first = page.locator('[data-part="0"]');
+  await expect(first.getByText('Words of section 1.', { exact: true })).toBeVisible();
+  await expect(first.getByText('Original · no AI version yet')).toBeVisible();
+  // Only Vietnamese and English to translate into.
   await page.getByRole('button', { name: 'EN', exact: true }).click();
-  await page.getByRole('button', { name: 'Translate this chapter' }).click();
+  await expect(page.getByRole('radio', { name: 'Tiếng Việt' })).toHaveCount(1);
+  await expect(page.getByRole('radio', { name: 'English' })).toHaveCount(1);
+  await expect(page.getByRole('radio', { name: /中文|한국어/ })).toHaveCount(0);
+  await page.locator('button.btn-primary', { hasText: 'Translate this chapter' }).click();
   await expect(page.getByText('Translating chapter…')).toBeVisible();
-  await expect(page.getByText('Lời của phần 1.')).toBeVisible();
-  await expect(page.getByText(/AI translation into Tiếng Việt · Natural style/)).toBeVisible();
+  await expect(first.getByText('Lời của phần 1 (1).')).toBeVisible();
+  await expect(first.getByText('AI · Tiếng Việt · Natural')).toBeVisible();
   const tr = (await calls(page)).find(c => c.cmd === 'ai_translate_chapter');
-  expect(tr?.args).toMatchObject({ novelId: 1, index: 0, lang: 'vi', style: 'natural', glossary: true });
-  // Back to the original.
-  await page.getByRole('button', { name: 'Original' }).click();
-  await expect(page.getByText('Words of section 1.', { exact: true })).toBeVisible();
+  expect(tr?.args).toMatchObject({ novelId: 1, index: 0, lang: 'vi', style: 'natural', glossary: true, again: true });
+  // The second chapter has no AI version: it says so on its own.
+  await expect(page.locator('[data-part="1"]').getByText('Original · no AI version yet')).toBeVisible();
+  // Translating the same chapter again makes a new version.
+  await first.getByRole('button', { name: 'Translate again' }).click();
+  await expect(first.getByText('Lời của phần 1 (2).')).toBeVisible();
+  // The original of this chapter, then back to its AI version.
+  await first.getByRole('button', { name: 'Show original' }).click();
+  await expect(first.getByText('Words of section 1.', { exact: true })).toBeVisible();
+  await expect(first.getByText('Original', { exact: true })).toBeVisible();
+  await first.getByRole('button', { name: 'Show AI version' }).click();
+  await expect(first.getByText('Lời của phần 1 (2).')).toBeVisible();
+  // The chapter list marks the translated chapter only.
+  await page.getByRole('button', { name: 'Choose a chapter' }).click();
+  const sheet = page.getByRole('dialog');
+  await expect(sheet.locator('[data-ai-tag]')).toHaveCount(1);
+  await expect(sheet.getByRole('button').filter({ has: page.locator('[data-ai-tag]') })).toContainText('Part one');
 });
 
 test('the whole book goes to the background queue from its page', async ({ page }) => {

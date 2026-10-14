@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { ask } from '@tauri-apps/plugin-dialog';
-import { ChapterSheet, useSectionName } from '../components/ChapterSheet';
+import { AiTag, ChapterSheet, useSectionName } from '../components/ChapterSheet';
 import { EditBookDialog } from '../components/EditBookDialog';
 import { ChevronLeftIcon, ChevronRightIcon, PencilIcon, PlayIcon, SparklesIcon, XIcon } from '../components/Icons';
 import { NovelCover } from '../components/NovelCover';
@@ -8,8 +8,8 @@ import { TranslateFields, defaultTranslation, type Translation } from '../compon
 import { Spinner } from '../components/ui';
 import { useI18n, useT } from '../i18n';
 import {
-  AI_LANGS, AiFailure, aiTranslateBook, cancelAiTranslation, getAiProgress, getAiVersions, getLlmSettings, styleOf,
-  type AiChoice, type AiLang, type AiProgress, type AiVersion
+  AI_LANGS, AiFailure, aiTranslateBook, cancelAiTranslation, getAiMarks, getAiProgress, getAiVersions, getLlmSettings, styleOf,
+  type AiChoice, type AiLang, type AiMark, type AiProgress, type AiVersion
 } from '../lib/ai';
 import { save as store } from '../lib/storage';
 import { aiViewKey } from './LocalBookScreen';
@@ -31,6 +31,13 @@ export function BookDetailScreen({ novelId }: { novelId: number }) {
   // Loaded again after saving the details.
   const [rev, setRev] = useState(0);
   const q = useAsync(() => getLibraryDetail(user, novelId), [user, novelId, rev, app.libraryRev]);
+  // Which chapters have an AI version, marked in the chapter list.
+  const marksQ = useAsync(async () => {
+    const m = new Map<number, AiMark[]>();
+    for (const mark of (await getAiMarks(user, novelId)) ?? []) m.set(mark.index, [...(m.get(mark.index) ?? []), mark]);
+    return m;
+  }, [user, novelId, app.aiRev]);
+  const marks = marksQ.status === 'ready' ? marksQ.data : undefined;
   const [editing, setEditing] = useState(false);
   const [toc, setToc] = useState(false);
   const [opening, setOpening] = useState(false);
@@ -149,6 +156,7 @@ export function BookDetailScreen({ novelId }: { novelId: number }) {
                         {done ? t(i === last ? 'detail.lastRead' : 'detail.read') : s.label ? name : s.pages ? t('book.pages', { from: s.pages[0], to: s.pages[1] }) : ''}
                       </span>
                     </span>
+                    <AiTag marks={marks?.get(i)} />
                     <ChevronRightIcon size={16} style={{ flex: 'none', color: 'var(--color-neutral-500)' }} />
                   </button>
                 );
@@ -163,7 +171,7 @@ export function BookDetailScreen({ novelId }: { novelId: number }) {
         </div>
       </div>
 
-      {toc && <ChapterSheet sections={sections} current={last ?? 0} onPick={i => read(i)} onClose={() => setToc(false)} />}
+      {toc && <ChapterSheet sections={sections} current={last ?? 0} marks={marks} onPick={i => read(i)} onClose={() => setToc(false)} />}
       {editing && (
         <EditBookDialog book={b} onClose={() => setEditing(false)} onSave={async details => {
           await updateLibraryBook(user, novelId, details);

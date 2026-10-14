@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useT } from '../i18n';
+import type { AiMark } from '../lib/ai';
 import type { LocalSectionMeta } from '../lib/localBook';
 import { SearchIcon } from './Icons';
 
@@ -15,9 +16,11 @@ export function useSectionName() {
 }
 
 /** The book's chapters as a sheet: the current one is marked and scrolled into view. */
-export function ChapterSheet({ sections, current, onPick, onClose }: {
+export function ChapterSheet({ sections, current, marks, onPick, onClose }: {
   sections: LocalSectionMeta[];
   current: number;
+  /** AI versions per chapter, shown as a mark on each chapter that has one. */
+  marks?: ReadonlyMap<number, AiMark[]>;
   onPick: (index: number) => void;
   onClose: () => void;
 }) {
@@ -70,6 +73,7 @@ export function ChapterSheet({ sections, current, onPick, onClose }: {
                 }}>
                 <span style={{ flex: '0 0 auto', fontWeight: 700, fontSize: 14, color: on ? 'var(--color-accent-700)' : undefined }}>{r.name}</span>
                 {r.label && <span className="muted" style={{ flex: 1, minWidth: 0, fontSize: 14, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.label}</span>}
+                <AiTag marks={marks?.get(r.i)} />
               </button>
             );
           })}
@@ -77,5 +81,17 @@ export function ChapterSheet({ sections, current, onPick, onClose }: {
         </div>
       </div>
     </div>
+  );
+}
+
+/** "AI VI · EN" on a chapter that has AI versions. */
+export function AiTag({ marks }: { marks: AiMark[] | undefined }) {
+  const t = useT();
+  if (!marks?.length) return null;
+  const langs = [...new Set(marks.map(m => m.lang.toUpperCase()))].join(' · ');
+  return (
+    <span data-ai-tag style={{ flex: 'none', marginLeft: 'auto', alignSelf: 'center', padding: '2px 8px', borderRadius: 999, fontSize: 11, fontWeight: 700, background: 'var(--color-accent-100)', color: 'var(--color-accent-700)', whiteSpace: 'nowrap' }}>
+      {t('ai.tocMark', { langs })}
+    </span>
   );
 }

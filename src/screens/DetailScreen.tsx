@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { CheckIcon, ChevronLeftIcon, ChevronRightIcon, DownloadIcon, HeartIcon, LanguagesIcon, PlayIcon, RefreshIcon, SparklesIcon, XIcon } from '../components/Icons';
-import { TranslateFields, defaultTranslation, type Translation } from '../components/ReaderTools';
+import { TRANSLATE_TO, TranslateFields, defaultTranslation, type Translation } from '../components/ReaderTools';
 import { NovelCover } from '../components/NovelCover';
 import { ShelfItem, Spinner, formatReads } from '../components/ui';
 import { getChapterList, getContentLangs, getGlossary, getNovel, getTranslationProgress, requestNovelTranslation, sameAuthor, sameCategory, type TranslationProgress } from '../data/repository';
@@ -204,7 +204,7 @@ function TranslateBox({ id }: { id: number }) {
   const glossaryQ = useAsync(async () => (open ? Object.keys(await getGlossary(id)).length : 0), [id, open]);
   if (!online) return null;
 
-  const langs = getContentLangs().filter(l => progress.some(p => p.lang === l.code));
+  const langs = getContentLangs().filter(l => TRANSLATE_TO.includes(l.code) && progress.some(p => p.lang === l.code));
   const langName = (c: string) => getContentLangs().find(l => l.code === c)?.native ?? c;
   const choice = tr ?? (() => {
     const d = defaultTranslation(app.contentLang);
