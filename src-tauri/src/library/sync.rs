@@ -1,6 +1,6 @@
-//! Sync between devices through one file per user (remote.rs does the network part).
-//! Here the library file is exported as a gzipped snapshot, and a downloaded snapshot
-//! is merged into it row by row, so changes made on two devices both survive:
+//! Backups of the library: the library file is exported as a gzipped snapshot, and a
+//! backup brought back is merged into it row by row, so nothing made since is lost
+//! (the file goes where the user picks). The merge rules:
 //! - favourites: the later of "added" and "removed" wins (a tie keeps it);
 //! - history and progress: the most recent read wins; a removal newer than the read wins;
 //! - imported books: matched by `book_key`; a book missing here is copied whole
@@ -24,36 +24,56 @@ pub enum SyncError {
     Outdated,
 }
 
-pub(super) const SYNCED_AT: &str = "synced_at";
-
-/// When this file was last synced (epoch ms).
-pub fn synced_at(conn: &Connection) -> rusqlite::Result<Option<i64>> {
-    Ok(db::get_state(conn, SYNCED_AT)?.and_then(|v| v.parse().ok()))
-}
+/// Where a backup keeps the app's own settings (language, reader settings…), as JSON.
+const APP_SETTINGS: &str = "app_settings";
 
 /// A consistent copy of the library file (the live one is in WAL mode), gzipped into
 /// `out`; returns its size. `tmp` is a scratch path that must not exist.
+#[cfg(test)]
 pub fn export_to(conn: &Connection, tmp: &Path, out: &Path) -> Result<u64, SyncError> {
-    snapshot(conn, tmp, out, false)
+    snapshot(conn, tmp, out, None)
 }
 
-/// A backup: like the synced copy, with the downloaded online novels kept too. The
-/// LLM settings and the AI queue are still left out.
-pub fn backup_to(conn: &Connection, tmp: &Path, out: &Path) -> Result<u64, SyncError> {
-    snapshot(conn, tmp, out, true)
+/// A backup: everything in the library (books, history, favourites, replace rules,
+/// glossaries, downloaded novels) with the LLM settings, API key included, and the
+/// app's `settings` (JSON). Only the AI queue is left out.
+pub fn backup_to(
+    conn: &Connection,
+    tmp: &Path,
+    out: &Path,
+    settings: Option<&str>,
+) -> Result<u64, SyncError> {
+    snapshot(conn, tmp, out, Some(settings))
 }
 
-fn snapshot(conn: &Connection, tmp: &Path, out: &Path, downloads: bool) -> Result<u64, SyncError> {
+/// `backup`: `Some` (with the app's settings, if any) for a backup, `None` for a synced copy.
+fn snapshot(
+    conn: &Connection,
+    tmp: &Path,
+    out: &Path,
+    backup: Option<Option<&str>>,
+) -> Result<u64, SyncError> {
     let _ = std::fs::remove_file(tmp);
     conn.execute("vacuum into ?1", [tmp.to_string_lossy()])?;
     let result = (|| {
         let copy = Connection::open(tmp)?;
-        // Downloaded online novels stay on this device (a backup keeps them).
-        if !downloads {
-            super::offline::strip(&copy)?;
+        match backup {
+            Some(settings) => {
+                // The queue's jobs and the languages found point at this library's ids.
+                copy.execute_batch("delete from ai_jobs; delete from ai_books;")?;
+                copy.execute("delete from sync_state where key = ?1", [APP_SETTINGS])?;
+                if let Some(settings) = settings {
+                    db::set_state(&copy, APP_SETTINGS, settings)?;
+                }
+            }
+            None => {
+                // Downloaded novels, the LLM settings (with their API key) and the AI
+                // queue stay on this device.
+                super::offline::strip(&copy)?;
+                super::translate::strip(&copy)?;
+            }
         }
-        // The LLM settings (with their API key) and the AI queue never leave the device.
-        super::translate::strip(&copy)?;
+        // Vectors and the wiki's per-book state point at this library's ids.
         super::wiki::strip(&copy)?;
         copy.execute("vacuum", [])?;
         drop(copy);
@@ -88,30 +108,44 @@ pub fn merge(conn: &mut Connection, snapshot: &[u8], tmp: &Path) -> Result<Vec<i
 }
 
 /// `merge`, reading the snapshot from `snapshot` as it goes (a downloaded file).
+#[cfg(test)]
 pub fn merge_from(
     conn: &mut Connection,
     snapshot: impl Read,
     tmp: &Path,
 ) -> Result<Vec<i64>, SyncError> {
-    merge_with(conn, snapshot, tmp, false)
+    merge_with(conn, snapshot, tmp, None)
+}
+
+/// What a restore brought back besides the library.
+#[derive(Debug, Default)]
+pub struct Restored {
+    /// Ids of local books removed because the backup knows them as deleted.
+    pub gone: Vec<i64>,
+    /// The app's settings kept in the backup (JSON), for the app to apply.
+    pub settings: Option<String>,
 }
 
 /// Brings a backup (`backup_to`) back: merged like a sync, except that what the backup
 /// holds comes back even if it was removed here since. A book deleted here returns
 /// as a new book, so the deletion other devices know of doesn't remove it again.
+/// The backup's LLM settings replace these when they are newer (or there are none).
 pub fn restore_from(
     conn: &mut Connection,
     snapshot: impl Read,
     tmp: &Path,
-) -> Result<Vec<i64>, SyncError> {
-    merge_with(conn, snapshot, tmp, true)
+) -> Result<Restored, SyncError> {
+    let mut settings = None;
+    let gone = merge_with(conn, snapshot, tmp, Some(&mut settings))?;
+    Ok(Restored { gone, settings })
 }
 
 fn merge_with(
     conn: &mut Connection,
     snapshot: impl Read,
     tmp: &Path,
-    restore: bool,
+    // A restore, with where to put the backup's app settings.
+    restore: Option<&mut Option<String>>,
 ) -> Result<Vec<i64>, SyncError> {
     let _ = std::fs::remove_file(tmp);
     let result = (|| {
@@ -130,12 +164,25 @@ fn merge_with(
         conn.execute("attach database ?1 as r", [tmp.to_string_lossy()])?;
         let merged = (|| {
             let tx = conn.transaction()?;
-            if restore {
+            if let Some(settings) = restore {
                 tx.execute_batch(
                     "delete from r.tombstones;
                      update r.novels set book_key = lower(hex(randomblob(16))) where book_key in (
-                       select key from main.tombstones where kind = 'book');",
+                       select key from main.tombstones where kind = 'book');
+                     insert into main.llm_config (id, provider, base_url, api_key, model, updated_at)
+                       select id, provider, base_url, api_key, model, updated_at from r.llm_config where true
+                       on conflict (id) do update set provider = excluded.provider,
+                         base_url = excluded.base_url, api_key = excluded.api_key,
+                         model = excluded.model, updated_at = excluded.updated_at
+                       where excluded.updated_at > llm_config.updated_at;",
                 )?;
+                *settings = tx
+                    .query_row(
+                        "select value from r.sync_state where key = ?1",
+                        [APP_SETTINGS],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
             }
             let gone = merge_attached(&tx)?;
             super::reading::bump_rev(&tx)?;
@@ -665,14 +712,7 @@ mod tests {
         send(&a, &pa, &mut b, &pb);
 
         let backup = pa.with_extension("bak.gz");
-        backup_to(&a, &pa.with_extension("bak"), &backup).unwrap();
-        // The key never goes into a backup.
-        let raw = {
-            let mut s = Vec::new();
-            GzDecoder::new(std::fs::File::open(&backup).unwrap()).read_to_end(&mut s).unwrap();
-            s
-        };
-        assert!(!raw.windows(9).any(|w| w == b"sk-secret"));
+        backup_to(&a, &pa.with_extension("bak"), &backup, Some(r#"{"uiLang":"vi"}"#)).unwrap();
 
         // Deleted, and the deletion synced: a plain sync doesn't bring it back…
         super::super::delete(&a, id).unwrap();
@@ -680,8 +720,11 @@ mod tests {
         send(&a, &pa, &mut b, &pb);
         assert!(super::super::list(&b).unwrap().is_empty());
         // …the backup does, translation and download included.
-        restore_from(&mut a, std::fs::File::open(&backup).unwrap(), &pa.with_extension("in")).unwrap();
+        let restored =
+            restore_from(&mut a, std::fs::File::open(&backup).unwrap(), &pa.with_extension("in")).unwrap();
         assert_eq!(super::super::list(&a).unwrap().len(), 1);
+        // The app's settings come back to be applied.
+        assert_eq!(restored.settings.as_deref(), Some(r#"{"uiLang":"vi"}"#));
         assert_eq!(ai_texts(&a), vec!["Bản dịch 2"]);
         assert_eq!(super::super::offline::list(&a).unwrap().len(), 1);
         // And it stays when synced with the device that saw the deletion.
@@ -689,6 +732,35 @@ mod tests {
         assert_eq!(super::super::list(&a).unwrap().len(), 1);
         send(&a, &pa, &mut b, &pb);
         assert_eq!(super::super::list(&b).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_backup_carries_the_llm_settings_and_app_settings_to_a_new_device() {
+        let (a, pa) = device("llm-a");
+        let (mut c, _) = device("llm-c");
+        let config = super::super::llm::Config {
+            provider: "openai".into(),
+            base_url: "https://api.openai.com/v1".into(),
+            api_key: "sk-secret".into(),
+            model: "m".into(),
+            embed_model: String::new(),
+        };
+        super::super::llm::save(&a, Some(&config)).unwrap();
+        let backup = pa.with_extension("llm.gz");
+        backup_to(&a, &pa.with_extension("llm"), &backup, Some("{}")).unwrap();
+
+        let restored =
+            restore_from(&mut c, std::fs::File::open(&backup).unwrap(), &pa.with_extension("llm-in")).unwrap();
+        assert_eq!(restored.settings.as_deref(), Some("{}"));
+        let key: String = c
+            .query_row("select api_key from llm_config", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(key, "sk-secret");
+        // A synced copy still never carries the key.
+        let bytes = export(&a, &pa.with_extension("out")).unwrap();
+        let mut raw = Vec::new();
+        GzDecoder::new(&bytes[..]).read_to_end(&mut raw).unwrap();
+        assert!(!raw.windows(9).any(|w| w == b"sk-secret"));
     }
 
     #[test]

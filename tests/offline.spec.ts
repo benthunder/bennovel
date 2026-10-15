@@ -2,13 +2,11 @@ import { expect, test, type Page } from '@playwright/test';
 
 // These tests never reach Supabase, so they also run where it is blocked.
 
-/** Skips onboarding with an English interface; `signedIn` stores a signed-in reader. */
-async function boot(page: Page, { signedIn = false } = {}) {
-  await page.addInitScript(signedIn => {
-    localStorage.setItem('bennovel.onboarded', 'true');
+/** English interface. */
+async function boot(page: Page) {
+  await page.addInitScript(() => {
     localStorage.setItem('bennovel.uiLang', JSON.stringify('en'));
-    if (signedIn) localStorage.setItem('bennovel.user', JSON.stringify({ id: 'u-lina', name: 'Lina Hart', email: 'lina@example.com', provider: 'email' }));
-  }, signedIn);
+  });
 }
 
 /** The device reports no connection; returns the Supabase requests the app still made. */
@@ -73,10 +71,9 @@ test('without a connection the app skips online content', async ({ page }) => {
   // The app opens on the library.
   await expect(page.getByRole('heading', { name: 'Favourites' })).toBeVisible();
   await expect(page.getByText('You are offline').filter({ visible: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Home' }).filter({ visible: true }).first().click();
-  await expect(page.getByText('You are offline').filter({ visible: true })).toBeVisible();
-  await page.getByRole('button', { name: /^Categor(y|ies)$/ }).filter({ visible: true }).first().click();
-  await expect(page.getByText('You are offline').filter({ visible: true })).toBeVisible();
+  // This version has no Home or Category page.
+  await expect(page.getByRole('button', { name: 'Home' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /^Categor(y|ies)$/ })).toHaveCount(0);
   expect(calls).toEqual([]);
 });
 
@@ -97,21 +94,15 @@ test('a book opened from the system goes straight to the reader, even offline', 
   expect(calls).toEqual([]);
 });
 
-test('guests use Profile offline and can log in from it', async ({ page }) => {
+test('Profile works without an account or a connection', async ({ page }) => {
   await goOffline(page);
   await boot(page);
   await page.goto('/');
   await page.getByRole('button', { name: 'Profile' }).filter({ visible: true }).first().click();
-  // No sign-in wall: settings work without an account or a connection.
-  await expect(page.getByText('Reading as a guest')).toBeVisible();
   await expect(page.getByRole('button', { name: /Default reading language/ })).toBeVisible();
-
-  await page.getByRole('button', { name: 'Log in or register' }).click();
-  await page.getByRole('textbox', { name: 'Email' }).fill('lina.hart@example.com');
-  await page.getByLabel('Password').fill('secret123');
-  await page.locator('form').getByRole('button', { name: 'Log in', exact: true }).click();
-  // Signing in needs the server.
-  await expect(page.getByRole('alert')).toHaveText('Can’t reach the server. Check your connection.');
+  // No sign-in anywhere in this version.
+  await expect(page.getByRole('button', { name: /Log in/ })).toHaveCount(0);
+  await expect(page.getByRole('textbox', { name: 'Email' })).toHaveCount(0);
 });
 
 test('favourites and history from the SQLite store show offline', async ({ page }) => {
@@ -197,13 +188,4 @@ test('the web build keeps snapshots for offline too', async ({ page }) => {
   }, SAVED);
   await page.goto('/');
   await expect(page.getByText('Saved Tale').filter({ visible: true }).first()).toBeVisible();
-});
-
-test('signed-in readers see their profile', async ({ page }) => {
-  await goOffline(page);
-  await boot(page, { signedIn: true });
-  await page.goto('/');
-  await page.getByRole('button', { name: 'Profile' }).filter({ visible: true }).first().click();
-  await expect(page.getByText('Lina Hart', { exact: true })).toBeVisible();
-  await expect(page.getByRole('textbox', { name: 'Email' })).toHaveCount(0);
 });
