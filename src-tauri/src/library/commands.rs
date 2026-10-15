@@ -452,32 +452,6 @@ pub async fn reading_save<R: Runtime>(
     blocking(move || Ok(super::reading::save(&mut db::open(&path)?, &state)?)).await
 }
 
-/// Hands the guest's library (imported books, favourites, history) to an account the
-/// first time it signs in on this device: the guest file becomes the account's file.
-/// Does nothing when the account already has a library here or the guest has none.
-#[tauri::command]
-pub async fn library_claim_guest<R: Runtime>(
-    app: AppHandle<R>,
-    user: String,
-) -> Result<bool, BookError> {
-    let guest = db_path(&app, "")?;
-    let own = db_path(&app, &user)?;
-    blocking(move || claim_guest(&guest, &own)).await
-}
-
-fn claim_guest(guest: &Path, own: &Path) -> Result<bool, BookError> {
-    if guest == own || own.exists() || !guest.exists() {
-        return Ok(false);
-    }
-    // Fold the write-ahead log into the file so it moves as one piece.
-    db::open(guest)?.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
-    std::fs::rename(guest, own)?;
-    for ext in ["sqlite3-wal", "sqlite3-shm"] {
-        let _ = std::fs::remove_file(guest.with_extension(ext));
-    }
-    Ok(true)
-}
-
 impl From<super::sync::SyncError> for BookError {
     fn from(e: super::sync::SyncError) -> Self {
         match e {
@@ -487,27 +461,6 @@ impl From<super::sync::SyncError> for BookError {
             super::sync::SyncError::Outdated => BookError::Parse("sync-outdated".into()),
         }
     }
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SyncStatus {
-    /// Epoch ms of the last sync.
-    pub synced_at: Option<i64>,
-}
-
-#[tauri::command]
-pub async fn sync_status<R: Runtime>(
-    app: AppHandle<R>,
-    user: String,
-) -> Result<SyncStatus, BookError> {
-    let path = db_path(&app, &user)?;
-    blocking(move || {
-        Ok(SyncStatus {
-            synced_at: super::sync::synced_at(&db::open(&path)?)?,
-        })
-    })
-    .await
 }
 
 /* ---------- Online novels downloaded to read offline (offline.rs) ---------- */
@@ -763,25 +716,21 @@ pub async fn replace_rules_set<R: Runtime>(
     .await
 }
 
-impl From<super::remote::RemoteError> for BookError {
-    fn from(e: super::remote::RemoteError) -> Self {
-        use super::remote::RemoteError as E;
+impl From<super::s3::S3Error> for BookError {
+    fn from(e: super::s3::S3Error) -> Self {
+        use super::s3::S3Error as E;
         // The app looks for these words to say what went wrong.
         let key = match e {
-            E::Sync(e) => return e.into(),
-            E::Db(e) => return BookError::Db(e),
             E::Io(e) => return BookError::Io(e),
             E::Config(key) => key.to_string(),
-            E::Busy => "sync-busy".into(),
-            E::SignIn => "sync-sign-in".into(),
-            E::Network(msg) => format!("sync-network {msg}"),
+            E::Network(msg) => format!("s3-network {msg}"),
             E::Status {
                 status: 401 | 403,
                 code,
             } => format!("s3-auth {code}"),
             E::Status { code, .. } if code == "NoSuchBucket" => "s3-bucket".into(),
-            E::Status { status: 413, code } => format!("s3-too-large {code}"),
-            E::Status { code, .. } if code == "EntityTooLarge" => "s3-too-large".into(),
+            E::Status { status: 413, code } => format!("too-large {code}"),
+            E::Status { code, .. } if code == "EntityTooLarge" => "too-large".into(),
             E::Status { status, code } => format!("s3-error {status} {code}"),
         };
         BookError::Parse(key)
@@ -800,7 +749,7 @@ pub struct S3Settings {
     pub has_secret: bool,
 }
 
-/// The library's own S3 storage to sync with, if one is set.
+/// The library's own S3 storage for backups, if one is set.
 #[tauri::command]
 pub async fn s3_config_get<R: Runtime>(
     app: AppHandle<R>,
@@ -817,8 +766,8 @@ pub async fn s3_config_get<R: Runtime>(
     }))
 }
 
-/// Sets the S3 storage to sync with, after checking it can be reached with these keys;
-/// an empty secret key keeps the saved one. `None` goes back to the account's storage.
+/// Sets the S3 storage for backups, after checking it can be reached with these keys;
+/// an empty secret key keeps the saved one. `None` forgets it.
 #[tauri::command]
 pub async fn s3_config_set<R: Runtime>(
     app: AppHandle<R>,
@@ -838,32 +787,6 @@ pub async fn s3_config_set<R: Runtime>(
         let config = config.normalized()?;
         super::s3::check(&config)?;
         Ok(super::s3::save_config(&path, Some(&config))?)
-    })
-    .await
-}
-
-/// Syncs the library with its own S3 storage when one is set, else with the BenNovel
-/// server for the signed-in `account`, telling `on_progress` each step. Returns when
-/// (epoch ms).
-#[tauri::command]
-pub async fn library_sync<R: Runtime>(
-    app: AppHandle<R>,
-    user: String,
-    account: Option<super::remote::Account>,
-    on_progress: tauri::ipc::Channel<super::remote::Step>,
-) -> Result<i64, BookError> {
-    let path = db_path(&app, &user)?;
-    blocking(move || {
-        let remote = super::remote::open(&path, account)?;
-        let progress = |step| {
-            let _ = on_progress.send(step);
-        };
-        for id in super::remote::sync(&path, remote.as_ref(), &progress)? {
-            if let Some(file) = super::original_file(&path, id) {
-                let _ = std::fs::remove_file(file);
-            }
-        }
-        Ok(db::now_ms())
     })
     .await
 }
@@ -1139,6 +1062,73 @@ pub async fn library_restore<R: Runtime>(
             }
         }
         Ok(())
+    })
+    .await
+}
+
+/* ---------- Backups in the user's own S3 storage (s3.rs) ---------- */
+
+fn s3_config(library: &Path) -> Result<super::s3::Config, BookError> {
+    super::s3::load_config(&super::s3::config_path(library))
+        .ok_or_else(|| BookError::Parse("s3-not-set".into()))
+}
+
+/// The backup kept in the library's S3 storage, `None` when there is none yet.
+#[tauri::command]
+pub async fn s3_backup_info<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+) -> Result<Option<super::s3::Backup>, BookError> {
+    let db_file = db_path(&app, &user)?;
+    blocking(move || Ok(super::s3::info(&s3_config(&db_file)?)?)).await
+}
+
+/// Backs the library up to its S3 storage (the same file as `library_backup`),
+/// replacing the backup there. Returns the new backup.
+#[tauri::command]
+pub async fn s3_backup<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+) -> Result<Option<super::s3::Backup>, BookError> {
+    let db_file = db_path(&app, &user)?;
+    blocking(move || {
+        let config = s3_config(&db_file)?;
+        let gz = db_file.with_extension("s3-backup.gz");
+        let result = (|| -> Result<(), BookError> {
+            super::sync::backup_to(&db::open(&db_file)?, &db_file.with_extension("s3-backup"), &gz)?;
+            super::s3::upload(&config, &gz)?;
+            Ok(())
+        })();
+        let _ = std::fs::remove_file(&gz);
+        result?;
+        Ok(super::s3::info(&config)?)
+    })
+    .await
+}
+
+/// Brings back the backup kept in the library's S3 storage, merged into the library
+/// like `library_restore`.
+#[tauri::command]
+pub async fn s3_restore<R: Runtime>(app: AppHandle<R>, user: String) -> Result<(), BookError> {
+    let db_file = db_path(&app, &user)?;
+    blocking(move || {
+        let config = s3_config(&db_file)?;
+        let gz = db_file.with_extension("s3-restore.gz");
+        let result = (|| {
+            if !super::s3::download(&config, &gz)? {
+                return Err(BookError::Parse("s3-no-backup".into()));
+            }
+            let file = std::io::BufReader::new(std::fs::File::open(&gz)?);
+            let mut conn = db::open(&db_file)?;
+            for id in super::sync::restore_from(&mut conn, file, &db_file.with_extension("s3-restore"))? {
+                if let Some(f) = super::original_file(&db_file, id) {
+                    let _ = std::fs::remove_file(f);
+                }
+            }
+            Ok(())
+        })();
+        let _ = std::fs::remove_file(&gz);
+        result
     })
     .await
 }

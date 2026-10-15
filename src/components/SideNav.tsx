@@ -1,12 +1,10 @@
 import { findNovel } from '../data/repository';
 import { useT } from '../i18n';
 import { useApp, type Tab } from '../store/AppStore';
-import { BookOpenIcon, GridIcon, HeartIcon, HomeIcon, PlayIcon, UserIcon } from './Icons';
+import { BookOpenIcon, HeartIcon, PlayIcon, UserIcon } from './Icons';
 import { NovelCover } from './NovelCover';
 import { useContinue } from '../lib/useContinue';
 import { localCover } from '../lib/localBook';
-
-const initialsOf = (name?: string) => (name ? name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase() : 'G');
 
 
 /** Tablet: icon rail on the left with the Continue button on top. */
@@ -27,11 +25,9 @@ export function NavRail() {
         <span className="rail__fab"><PlayIcon size={20} style={{ marginLeft: 3 }} /></span>
         {t('nav.continue')}
       </button>
-      {item('home', t('nav.home'), <HomeIcon size={22} />)}
-      {item('category', t('nav.category'), <GridIcon size={22} />)}
       {item('library', t('nav.library'), <HeartIcon size={22} />)}
       <button className="rail__item" style={{ marginTop: 'auto' }} aria-current={app.tab === 'profile' ? 'page' : undefined} onClick={() => app.switchTab('profile')}>
-        <span className="rail__avatar display">{initialsOf(app.user?.name)}</span>{t('nav.profile')}
+        <span className="rail__pill"><UserIcon size={22} /></span>{t('nav.profile')}
       </button>
     </nav>
   );
@@ -62,8 +58,6 @@ export function Sidebar() {
         <span className="side__logo"><BookOpenIcon size={19} /></span>
         <span className="display" style={{ fontSize: 21 }}>BenNovel</span>
       </div>
-      {item('home', t('nav.home'), <HomeIcon />)}
-      {item('category', t('nav.categories'), <GridIcon />)}
       {item('library', t('nav.library'), <HeartIcon />, <span style={{ marginLeft: 'auto', fontSize: 12, opacity: .7 }}>{app.favs.length}</span>)}
       {item('profile', t('nav.profile'), <UserIcon />)}
       {last && (

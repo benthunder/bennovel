@@ -9,7 +9,7 @@ import { CONTENT_LANGS, type ContentLang, type ReplaceRule } from '../data/types
 import { useI18n } from '../i18n';
 import { AI_LANGS, AiFailure, aiErrorDetail, aiTranslateBook, aiTranslateChapter, getAiChapter, getAiMarks, styleOf, type AiChoice, type AiLang, type AiMark } from '../lib/ai';
 import {
-  bookImageUrl, closeLocalBook, getLocalSection, imageKey, importBookPath, libraryUser, openLibraryBook, saveLibraryProgress,
+  bookImageUrl, closeLocalBook, getLocalSection, imageKey, importBookPath, openLibraryBook, saveLibraryProgress,
   type LibraryPlace, type LocalBook, type LocalSectionMeta
 } from '../lib/localBook';
 import { runOcr } from '../lib/ocr';
@@ -292,7 +292,7 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
     if (!path || importing) return;
     setImporting({ done: 0, total: 0 });
     try {
-      const user = libraryUser(app.user);
+      const user = app.libKey;
       const saved = await importBookPath(user, path, (done, total) => setImporting({ done, total }));
       runOcr(user);
       // Chapters are the file's sections, so the place carries over as is.

@@ -8,7 +8,7 @@ import { supabase } from '../lib/supabase';
 import { load, save } from '../lib/storage';
 import { findDownload, offlineChapter, offlineChapters, offlineGlossary } from '../lib/offline';
 import type {
-  Category, ChapterInfo, ChapterText, CollectionKey, ContentLang, ContentLangInfo, GlossaryTerm, Novel, NovelStatus, ReplaceRule, TranslateStyle, UiLang
+  Category, ChapterInfo, ChapterText, CollectionKey, ContentLang, ContentLangInfo, GlossaryTerm, Novel, NovelStatus, ReplaceRule, UiLang
 } from './types';
 import { CONTENT_LANGS } from './types';
 
@@ -235,15 +235,10 @@ export async function getGlossary(novelId: number): Promise<Record<string, Gloss
 }
 
 // Replace rules belong to the reader. In the native app they live in the library file
-// (one list per novel and language) and travel with the Sync button; online novels are
-// keyed by their Supabase id, imported books by the book (see src-tauri/src/library/rules.rs).
-// The web build keeps them in Supabase `replace_rules` when signed in, else on this device.
+// (one list per novel and language) and go into its backups; online novels are keyed by
+// their Supabase id, imported books by the book (see src-tauri/src/library/rules.rs).
+// The web build keeps them on this device. There are no accounts in this version.
 const rulesKey = (novelId: number, lang: ContentLang) => `replaceRules.${novelId}.${lang}`;
-
-async function signedInUserId(): Promise<string | null> {
-  const { data } = await supabase.auth.getSession();
-  return data.session?.user.id ?? null;
-}
 
 type RuleScope = 'online' | 'book';
 
@@ -265,32 +260,20 @@ async function libraryRulesOr(user: string, kind: RuleScope, id: number, lang: C
   return old;
 }
 
-async function supabaseRules(novelId: number, lang: ContentLang): Promise<ReplaceRule[]> {
-  if (!(await signedInUserId())) return load<ReplaceRule[]>(rulesKey(novelId, lang), []);
-  const rows = must(await supabase.from('replace_rules')
-    .select('find, replace')
-    .eq('novel_id', novelId)
-    .eq('lang', lang)
-    .order('position'), 'replace rules');
-  return rows;
+async function deviceRules(novelId: number, lang: ContentLang): Promise<ReplaceRule[]> {
+  return load<ReplaceRule[]>(rulesKey(novelId, lang), []);
 }
 
 /** The reader's replace rules for an online novel in one language, in the order they apply. */
 export async function getReplaceRules(user: string, novelId: number, lang: ContentLang): Promise<ReplaceRule[]> {
-  if (canOpenLocalBooks()) return libraryRulesOr(user, 'online', novelId, lang, () => supabaseRules(novelId, lang));
-  return supabaseRules(novelId, lang);
+  if (canOpenLocalBooks()) return libraryRulesOr(user, 'online', novelId, lang, () => deviceRules(novelId, lang));
+  return deviceRules(novelId, lang);
 }
 
 /** Replaces the reader's whole rule list for an online novel in one language. */
 export async function saveReplaceRules(user: string, novelId: number, lang: ContentLang, rules: ReplaceRule[]): Promise<void> {
   if (canOpenLocalBooks()) return saveLibraryRules(user, 'online', novelId, lang, rules);
-  if (!(await signedInUserId())) return save(rulesKey(novelId, lang), rules.length ? rules : null);
-  const del = await supabase.from('replace_rules').delete().eq('novel_id', novelId).eq('lang', lang);
-  if (del.error) throw new Error(`Saving replace rules failed: ${del.error.message}`);
-  if (!rules.length) return;
-  const ins = await supabase.from('replace_rules')
-    .insert(rules.map((r, position) => ({ novel_id: novelId, lang, find: r.find, replace: r.replace, position })));
-  if (ins.error) throw new Error(`Saving replace rules failed: ${ins.error.message}`);
+  save(rulesKey(novelId, lang), rules.length ? rules : null);
 }
 
 /**
@@ -310,25 +293,4 @@ export const saveBookRules = (user: string, novelId: number, lang: ContentLang, 
 export const applyReplaceRules = (text: string, rules: ReplaceRule[]) =>
   rules.reduce((s, r) => (r.find ? s.split(r.find).join(r.replace) : s), text);
 
-/** AI translation of one language for a novel, in chapters. */
-export interface TranslationProgress { lang: ContentLang; total: number; translated: number; queued: number; running: number; failed: number }
 
-/**
- * Queues AI translation of every released chapter from `fromChapter` on that has no text
- * in `lang` yet. Resolves to how many chapters wait on a job afterwards (0: nothing to do).
- * Needs a signed-in reader.
- */
-export async function requestNovelTranslation(novelId: number, lang: ContentLang, style: TranslateStyle, applyGlossary: boolean, fromChapter = 1): Promise<number> {
-  const { data, error } = await supabase.rpc('request_novel_translation', {
-    p_novel_id: novelId, p_target_lang: lang, p_from_number: fromChapter,
-    p_style: style.toLowerCase() as Lowercase<TranslateStyle>, p_apply_glossary: applyGlossary
-  });
-  if (error) throw new Error(`Requesting translation failed: ${error.message}`);
-  return data ?? 0;
-}
-
-/** Per language other than the original: chapters translated and waiting. */
-export async function getTranslationProgress(novelId: number): Promise<TranslationProgress[]> {
-  const rows = must(await supabase.rpc('novel_translation_progress', { p_novel_id: novelId }), 'translation progress');
-  return rows.map(r => ({ ...r, lang: r.lang as ContentLang }));
-}

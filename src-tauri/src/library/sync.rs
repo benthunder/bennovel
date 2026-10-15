@@ -1,6 +1,6 @@
-//! Sync between devices through one file per user (remote.rs does the network part).
-//! Here the library file is exported as a gzipped snapshot, and a downloaded snapshot
-//! is merged into it row by row, so changes made on two devices both survive:
+//! Backups of the library: the library file is exported as a gzipped snapshot, and a
+//! backup brought back is merged into it row by row, so nothing made since is lost
+//! (s3.rs carries backups to the user's own storage). The merge rules:
 //! - favourites: the later of "added" and "removed" wins (a tie keeps it);
 //! - history and progress: the most recent read wins; a removal newer than the read wins;
 //! - imported books: matched by `book_key`; a book missing here is copied whole
@@ -24,15 +24,9 @@ pub enum SyncError {
     Outdated,
 }
 
-pub(super) const SYNCED_AT: &str = "synced_at";
-
-/// When this file was last synced (epoch ms).
-pub fn synced_at(conn: &Connection) -> rusqlite::Result<Option<i64>> {
-    Ok(db::get_state(conn, SYNCED_AT)?.and_then(|v| v.parse().ok()))
-}
-
 /// A consistent copy of the library file (the live one is in WAL mode), gzipped into
 /// `out`; returns its size. `tmp` is a scratch path that must not exist.
+#[cfg(test)]
 pub fn export_to(conn: &Connection, tmp: &Path, out: &Path) -> Result<u64, SyncError> {
     snapshot(conn, tmp, out, false)
 }
@@ -87,6 +81,7 @@ pub fn merge(conn: &mut Connection, snapshot: &[u8], tmp: &Path) -> Result<Vec<i
 }
 
 /// `merge`, reading the snapshot from `snapshot` as it goes (a downloaded file).
+#[cfg(test)]
 pub fn merge_from(
     conn: &mut Connection,
     snapshot: impl Read,

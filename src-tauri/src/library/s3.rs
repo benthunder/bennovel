@@ -1,20 +1,46 @@
-//! S3-compatible storage the user runs (MinIO, RustFS…), as a `Remote` (remote.rs):
+//! S3-compatible storage the user runs (MinIO, RustFS…), for backups of the library:
 //! requests signed (AWS Signature V4) with the user's own keys. The keys stay in a file
-//! next to the library, never in it, so they don't travel with the synced snapshot.
+//! next to the library, never in it, so they don't travel with a backup.
 //!
-//! The bucket holds one file, `<folder>/library.sqlite.gz`. A store only goes through if
-//! the file is still the one merged (`If-Match` its ETag, or `If-None-Match: *` when
-//! there was none). A server that ignores those headers still works, but the last
-//! upload then wins.
+//! The bucket holds one backup per library, `<folder>/bennovel-backup.bnbackup` (the
+//! same gzipped file as a backup saved to the device). A new backup replaces it.
 
-use super::remote::{agent, Fetched, Progress, Remote, RemoteError, Step, Stored, MAX_DOWNLOAD};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-const FILE: &str = "library.sqlite.gz";
+const FILE: &str = "bennovel-backup.bnbackup";
+/// Refuse to download a file larger than this.
+const MAX_DOWNLOAD: u64 = 4 << 30;
+
+#[derive(Debug, thiserror::Error)]
+pub enum S3Error {
+    /// The storage answered with an error status (and its error code, if any).
+    #[error("s3 {status} {code}")]
+    Status { status: u16, code: String },
+    #[error("{0}")]
+    Network(String),
+    /// Settings missing or wrong; the word names which.
+    #[error("{0}")]
+    Config(&'static str),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+}
+
+/// An HTTP client for the storage, through the system proxy when one is set.
+fn agent() -> ureq::Agent {
+    let builder = ureq::AgentBuilder::new()
+        .try_proxy_from_env(true)
+        .timeout_connect(Duration::from_secs(15))
+        .timeout_read(Duration::from_secs(120))
+        .timeout_write(Duration::from_secs(300));
+    #[cfg(test)]
+    let builder = tests::with_test_ca(builder);
+    builder.build()
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -23,7 +49,7 @@ pub struct Config {
     pub endpoint: String,
     pub region: String,
     pub bucket: String,
-    /// Folder in the bucket for this library's file, e.g. `bennovel/mai`.
+    /// Folder in the bucket for this library's backup, e.g. `bennovel/mai`.
     pub folder: String,
     pub access_key: String,
     pub secret_key: String,
@@ -55,7 +81,7 @@ pub fn save_config(path: &Path, config: Option<&Config>) -> std::io::Result<()> 
 
 impl Config {
     /// Trims the fields and fills the defaults; an error names what is missing.
-    pub fn normalized(mut self) -> Result<Self, RemoteError> {
+    pub fn normalized(mut self) -> Result<Self, S3Error> {
         for f in [
             &mut self.endpoint,
             &mut self.region,
@@ -80,13 +106,13 @@ impl Config {
             .map(|(_, h)| h)
             .unwrap_or("");
         if host.is_empty() || host.contains('/') {
-            return Err(RemoteError::Config("s3-endpoint"));
+            return Err(S3Error::Config("s3-endpoint"));
         }
         if self.bucket.is_empty() {
-            return Err(RemoteError::Config("s3-bucket"));
+            return Err(S3Error::Config("s3-bucket"));
         }
         if self.access_key.is_empty() || self.secret_key.is_empty() {
-            return Err(RemoteError::Config("s3-keys"));
+            return Err(S3Error::Config("s3-keys"));
         }
         Ok(self)
     }
@@ -98,18 +124,22 @@ impl Config {
             format!("{}/{FILE}", self.folder)
         }
     }
-
-    /// Identifies the file synced with, so a changed setting starts over.
-    fn target(&self) -> String {
-        format!("{}/{}/{}", self.endpoint, self.bucket, self.object())
-    }
 }
 
 /// An answer from the storage.
 struct Reply {
     status: u16,
-    etag: Option<String>,
+    headers: Vec<(String, String)>,
     body: Vec<u8>,
+}
+
+impl Reply {
+    fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+    }
 }
 
 struct Client<'a> {
@@ -126,14 +156,13 @@ impl<'a> Client<'a> {
     }
 
     /// Sends a signed request for `key` in the bucket (`None`: the bucket itself).
-    /// Any status comes back as a `Reply`; only a failed connection is an error.
-    fn send(
+    fn request(
         &self,
         method: &str,
         key: Option<&str>,
         body: &[u8],
         extra: &[(&str, &str)],
-    ) -> Result<Reply, RemoteError> {
+    ) -> Result<ureq::Response, S3Error> {
         let c = self.config;
         let host = c.endpoint.split_once("://").map(|(_, h)| h).unwrap_or("");
         let mut path = format!("/{}", uri_encode(&c.bucket, false));
@@ -159,25 +188,45 @@ impl<'a> Client<'a> {
         for (k, v) in extra {
             req = req.set(k, v);
         }
-        let res = match if body.is_empty() && method != "PUT" {
+        match if body.is_empty() && method != "PUT" {
             req.call()
         } else {
             req.send_bytes(body)
         } {
-            Ok(r) => r,
-            Err(ureq::Error::Status(_, r)) => r,
-            Err(ureq::Error::Transport(t)) => return Err(RemoteError::Network(t.to_string())),
-        };
+            Ok(r) => Ok(r),
+            Err(ureq::Error::Status(_, r)) => Ok(r),
+            Err(ureq::Error::Transport(t)) => Err(S3Error::Network(t.to_string())),
+        }
+    }
+
+    /// `request`, read whole. Any status comes back as a `Reply`; only a failed
+    /// connection is an error.
+    fn send(
+        &self,
+        method: &str,
+        key: Option<&str>,
+        body: &[u8],
+        extra: &[(&str, &str)],
+    ) -> Result<Reply, S3Error> {
+        let res = self.request(method, key, body, extra)?;
         let status = res.status();
-        let etag = res.header("etag").map(str::to_string);
+        let headers = res
+            .headers_names()
+            .into_iter()
+            .filter_map(|k| res.header(&k).map(|v| (k.clone(), v.to_string())))
+            .collect();
         let mut body = Vec::new();
         if method != "HEAD" {
             res.into_reader()
                 .take(MAX_DOWNLOAD)
                 .read_to_end(&mut body)
-                .map_err(|e| RemoteError::Network(e.to_string()))?;
+                .map_err(|e| S3Error::Network(e.to_string()))?;
         }
-        Ok(Reply { status, etag, body })
+        Ok(Reply {
+            status,
+            headers,
+            body,
+        })
     }
 }
 
@@ -190,15 +239,15 @@ fn error_code(body: &[u8]) -> String {
         .unwrap_or_default()
 }
 
-fn fail(r: &Reply) -> RemoteError {
-    RemoteError::Status {
+fn fail(r: &Reply) -> S3Error {
+    S3Error::Status {
         status: r.status,
         code: error_code(&r.body),
     }
 }
 
-/// Checks the settings reach the bucket with these keys (the file may not exist yet).
-pub fn check(config: &Config) -> Result<(), RemoteError> {
+/// Checks the settings reach the bucket with these keys (the backup may not exist yet).
+pub fn check(config: &Config) -> Result<(), S3Error> {
     let r = Client::new(config).send(
         "GET",
         Some(&config.object()),
@@ -211,73 +260,66 @@ pub fn check(config: &Config) -> Result<(), RemoteError> {
     }
 }
 
-/// The user's own storage, as a place to sync with.
-pub struct S3 {
-    config: Config,
+/// The backup kept in the storage.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Backup {
+    pub size: u64,
+    /// When it was stored, as the server says it (`Last-Modified`, an HTTP date).
+    pub modified: Option<String>,
 }
 
-impl S3 {
-    pub fn new(config: Config) -> Self {
-        Self { config }
+/// The backup in the storage, `None` when there is none yet.
+pub fn info(config: &Config) -> Result<Option<Backup>, S3Error> {
+    let r = Client::new(config).send("HEAD", Some(&config.object()), &[], &[])?;
+    match r.status {
+        200 => Ok(Some(Backup {
+            size: r
+                .header("content-length")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0),
+            modified: r.header("last-modified").map(str::to_string),
+        })),
+        404 => Ok(None),
+        _ => Err(fail(&r)),
     }
 }
 
-impl Remote for S3 {
-    fn target(&self) -> String {
-        self.config.target()
+/// Stores the backup file at `file`, replacing the one there.
+pub fn upload(config: &Config, file: &Path) -> Result<(), S3Error> {
+    // Sent in one request, the way any S3 server takes it.
+    let body = std::fs::read(file)?;
+    let r = Client::new(config).send(
+        "PUT",
+        Some(&config.object()),
+        &body,
+        &[("content-type", "application/gzip")],
+    )?;
+    match r.status {
+        200 | 201 | 204 => Ok(()),
+        _ => Err(fail(&r)),
     }
+}
 
-    fn fetch(
-        &self,
-        known: Option<&str>,
-        dest: &Path,
-        progress: &Progress,
-    ) -> Result<Fetched, RemoteError> {
-        progress(Step::Download { done: 0, total: 0 });
-        let mut headers = Vec::new();
-        if let Some(etag) = known {
-            headers.push(("if-none-match", etag));
+/// Downloads the backup into `dest`; false when the storage has none.
+pub fn download(config: &Config, dest: &Path) -> Result<bool, S3Error> {
+    let res = Client::new(config).request("GET", Some(&config.object()), &[], &[])?;
+    match res.status() {
+        200 => {
+            let mut body = res.into_reader().take(MAX_DOWNLOAD);
+            let mut file = std::io::BufWriter::new(std::fs::File::create(dest)?);
+            std::io::copy(&mut body, &mut file).map_err(|e| S3Error::Network(e.to_string()))?;
+            std::io::Write::flush(&mut file)?;
+            Ok(true)
         }
-        let r =
-            Client::new(&self.config).send("GET", Some(&self.config.object()), &[], &headers)?;
-        match r.status {
-            200 => {
-                std::fs::write(dest, &r.body)?;
-                Ok(Fetched::File { etag: r.etag })
-            }
-            304 => Ok(Fetched::Unchanged),
-            404 => Ok(Fetched::Missing),
-            _ => Err(fail(&r)),
-        }
-    }
-
-    fn store(
-        &self,
-        file: &Path,
-        current: Option<&str>,
-        progress: &Progress,
-    ) -> Result<Stored, RemoteError> {
-        // Sent in one request, the way any S3 server takes it.
-        let body = std::fs::read(file)?;
-        let total = body.len() as u64;
-        progress(Step::Upload { done: 0, total });
-        let condition = match current {
-            Some(etag) => ("if-match", etag),
-            None => ("if-none-match", "*"),
-        };
-        let r = Client::new(&self.config).send(
-            "PUT",
-            Some(&self.config.object()),
-            &body,
-            &[condition, ("content-type", "application/gzip")],
-        )?;
-        match r.status {
-            200 => {
-                progress(Step::Upload { done: total, total });
-                Ok(Stored::Saved(r.etag))
-            }
-            412 | 409 => Ok(Stored::Conflict),
-            _ => Err(fail(&r)),
+        404 => Ok(false),
+        status => {
+            let mut body = Vec::new();
+            let _ = res.into_reader().take(64 * 1024).read_to_end(&mut body);
+            Err(S3Error::Status {
+                status,
+                code: error_code(&body),
+            })
         }
     }
 }
@@ -456,19 +498,19 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(c.endpoint, "https://minio.example.com:9000");
         assert_eq!(c.region, "us-east-1");
-        assert_eq!(c.object(), "bennovel/mai/library.sqlite.gz");
+        assert_eq!(c.object(), "bennovel/mai/bennovel-backup.bnbackup");
         let no_bucket = Config {
             bucket: "".into(),
             ..c.clone()
         }
         .normalized();
-        assert!(matches!(no_bucket, Err(RemoteError::Config("s3-bucket"))));
+        assert!(matches!(no_bucket, Err(S3Error::Config("s3-bucket"))));
         let path = Config {
             endpoint: "https://h/x".into(),
             ..c
         }
         .normalized();
-        assert!(matches!(path, Err(RemoteError::Config("s3-endpoint"))));
+        assert!(matches!(path, Err(S3Error::Config("s3-endpoint"))));
     }
 
     #[test]
@@ -478,10 +520,14 @@ pub(crate) mod tests {
     }
 
     /// Against a real server, when `S3_TEST_ENDPOINT` (and `S3_TEST_ACCESS_KEY`,
-    /// `S3_TEST_SECRET_KEY`) name one, as in CI with MinIO and RustFS; skipped otherwise.
+    /// `S3_TEST_SECRET_KEY`) name one; skipped otherwise. A backup made on one device
+    /// comes back on another.
     #[test]
-    fn two_devices_sync_through_real_storage() {
-        use super::super::rules::{self, Kind, Rule};
+    fn a_backup_goes_up_and_comes_back() {
+        use super::super::{
+            rules::{self, Kind, Rule},
+            sync,
+        };
         let Ok(endpoint) = std::env::var("S3_TEST_ENDPOINT") else {
             eprintln!("S3_TEST_ENDPOINT not set; skipped");
             return;
@@ -513,9 +559,10 @@ pub(crate) mod tests {
             };
             assert!(matches!(
                 check(&wrong),
-                Err(RemoteError::Status { status: 403, .. })
+                Err(S3Error::Status { status: 403, .. })
             ));
         }
+        assert_eq!(info(&config).unwrap(), None);
 
         let device = |name: &str| {
             let path = crate::book::test_dir().join(format!("s3-{name}-{run}.sqlite3"));
@@ -525,52 +572,31 @@ pub(crate) mod tests {
             db::open(&path).unwrap();
             path
         };
-        let rule = |find: &str| {
-            vec![Rule {
-                find: find.into(),
-                replace: "x".into(),
-            }]
-        };
-        let rules_of = |path: &Path, id: i64| {
-            rules::get(&db::open(path).unwrap(), Kind::Online, id, "en").unwrap()
-        };
+        let rule = vec![Rule {
+            find: "one".into(),
+            replace: "x".into(),
+        }];
         let (a, b) = (device("a"), device("b"));
-        rules::set(&db::open(&a).unwrap(), Kind::Online, 1, "en", &rule("one")).unwrap();
-        rules::set(&db::open(&b).unwrap(), Kind::Online, 2, "en", &rule("two")).unwrap();
+        rules::set(&db::open(&a).unwrap(), Kind::Online, 1, "en", &rule).unwrap();
 
-        let place = S3::new(config.clone());
-        let sync = |path: &Path| super::super::remote::sync(path, &place, &|_| ()).unwrap();
-        sync(&a); // first upload
-        sync(&b); // takes A's, adds its own
-        sync(&a); // takes B's
-        for path in [&a, &b] {
-            assert_eq!(rules_of(path, 1), Some(rule("one")));
-            assert_eq!(rules_of(path, 2), Some(rule("two")));
-        }
+        let gz = a.with_extension("up.gz");
+        let size = sync::backup_to(&db::open(&a).unwrap(), &a.with_extension("up"), &gz).unwrap();
+        upload(&config, &gz).unwrap();
+        assert_eq!(info(&config).unwrap().map(|b| b.size), Some(size));
 
-        // An upload over a file that changed since is refused (what keeps two devices
-        // syncing at once from losing each other's changes).
-        let stale = client
-            .send(
-                "PUT",
-                Some(&config.object()),
-                b"x",
-                &[("if-match", "\"stale\"")],
-            )
-            .unwrap();
-        assert_eq!(stale.status, 412);
-        let first = client
-            .send(
-                "PUT",
-                Some(&config.object()),
-                b"x",
-                &[("if-none-match", "*")],
-            )
-            .unwrap();
-        assert_eq!(first.status, 412);
+        let got = b.with_extension("down.gz");
+        assert!(download(&config, &got).unwrap());
+        let file = std::io::BufReader::new(std::fs::File::open(&got).unwrap());
+        sync::restore_from(&mut db::open(&b).unwrap(), file, &b.with_extension("down")).unwrap();
+        assert_eq!(
+            rules::get(&db::open(&b).unwrap(), Kind::Online, 1, "en").unwrap(),
+            Some(rule)
+        );
+
         let removed = client
             .send("DELETE", Some(&config.object()), &[], &[])
             .unwrap();
         assert_eq!(removed.status, 204);
+        assert!(!download(&config, &got).unwrap());
     }
 }

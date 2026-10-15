@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { categoryNames, chapterTexts, mostReadNovels, withGlossary } from './supabase';
+import { chapterTexts, mostReadNovels, withGlossary } from './supabase';
 
 /** First visible element with exactly this text (sliders and side panels repeat titles). */
 const visibleText = (page: Page, text: string) => page.getByText(text, { exact: true }).filter({ visible: true }).first();
@@ -13,31 +13,29 @@ async function boot(page: Page, { ui = 'en', content = 'en' }: { ui?: string; co
   }, [ui, content]);
 }
 
-/** Goes to Home once the catalog has loaded (saved novels already show in the sidebar before that). */
-async function goHome(page: Page) {
-  await page.getByRole('button', { name: 'Home' }).filter({ visible: true }).first().click();
+/** Waits for the catalog (saved novels already show in the sidebar before that). */
+async function catalogLoaded(page: Page) {
   await expect(page.getByText('Loading the library…')).toHaveCount(0);
 }
 
-/** Opens the app (it starts on the library) and goes to Home. */
-async function openHome(page: Page) {
+/**
+ * Opens the app on the library with `id` as the only favourite: with no Home or
+ * Category page, an online novel is reached from the library.
+ */
+async function openWithFavourite(page: Page, id: number) {
+  await page.addInitScript(id => {
+    localStorage.setItem('bennovel.favs', JSON.stringify([id]));
+    localStorage.setItem('bennovel.history', '[]');
+  }, id);
   await page.goto('/');
-  await goHome(page);
+  await catalogLoaded(page);
 }
-
-test('home lists the most-read novels from Supabase', async ({ page }) => {
-  const top = (await mostReadNovels()).slice(0, 3);
-  await boot(page);
-  await openHome(page);
-  for (const n of top) await expect(visibleText(page, n.title)).toBeVisible();
-  await expect(page.getByText(top[0].author).filter({ visible: true }).first()).toBeVisible();
-});
 
 test('detail lists chapter titles from Supabase', async ({ page }) => {
   const [novel] = await mostReadNovels();
   const chapters = await chapterTexts(novel.id, 'en');
   await boot(page);
-  await openHome(page);
+  await openWithFavourite(page, novel.id);
   await visibleText(page, novel.title).click();
   await expect(page.getByRole('heading', { name: novel.title })).toBeVisible();
   for (const c of chapters.slice(0, 3)) await expect(visibleText(page, c.title)).toBeVisible();
@@ -49,7 +47,7 @@ for (const lang of ['en', 'vi']) {
     const [ch1] = await chapterTexts(novel.id, lang);
     const firstPara = await withGlossary(novel.id, lang, ch1.paragraphs[0]);
     await boot(page, { content: lang });
-    await openHome(page);
+    await openWithFavourite(page, novel.id);
     await visibleText(page, novel.title).click();
     await visibleText(page, ch1.title).click();
     await expect(page.getByRole('heading', { name: ch1.title })).toBeVisible();
@@ -65,7 +63,7 @@ test('replace rules change the chapter text and are kept', async ({ page }) => {
   const word = firstPara.split(/\s+/).find(w => /^[A-Za-z]{4,}$/.test(w))!;
   const replaced = firstPara.split(word).join('Zephyr');
   await boot(page);
-  await openHome(page);
+  await openWithFavourite(page, novel.id);
   await visibleText(page, novel.title).click();
   await visibleText(page, ch1.title).click();
   await expect(page.getByText(firstPara, { exact: true })).toBeVisible();
@@ -78,7 +76,7 @@ test('replace rules change the chapter text and are kept', async ({ page }) => {
   await expect(page.getByText(replaced, { exact: true })).toBeVisible();
 
   await page.reload();
-  await goHome(page);
+  await catalogLoaded(page);
   await visibleText(page, novel.title).click();
   await visibleText(page, ch1.title).click();
   await expect(page.getByText(replaced, { exact: true })).toBeVisible();
@@ -94,19 +92,11 @@ test('only English, Vietnamese, Chinese and Korean are offered', async ({ page }
   await expect(dialog.getByText('Español')).toHaveCount(0);
 });
 
-test('categories use their Vietnamese names', async ({ page }) => {
-  const names = await categoryNames('vi');
-  await boot(page, { ui: 'vi' });
-  await page.goto('/');
-  await page.getByRole('button', { name: 'Thể loại' }).filter({ visible: true }).first().click();
-  for (const name of names) await expect(visibleText(page, name)).toBeVisible();
-});
-
 test('shows a retry when Supabase is unreachable', async ({ page }) => {
   const [novel] = await mostReadNovels();
   await boot(page);
   await page.route('**/rest/v1/**', route => route.abort());
-  await openHome(page);
+  await openWithFavourite(page, novel.id);
   // supabase-js retries failed reads with backoff (about 7s) before giving up.
   await expect(page.getByText('You are offline').filter({ visible: true })).toBeVisible({ timeout: 20_000 });
   await page.unroute('**/rest/v1/**');
