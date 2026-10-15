@@ -38,6 +38,19 @@ pub fn run() {
             use tauri::Manager;
             // AI translation runs in the background, one chapter at a time.
             _app.manage(library::queue::Queue::start(_app.handle().clone()));
+            // Android: the WebView starts without view focus, so the first tap on a text
+            // field only focuses the WebView itself and the keyboard stays hidden. Give it
+            // focus up front so that first tap opens the keyboard.
+            #[cfg(target_os = "android")]
+            if let Some(window) = _app.get_webview_window("main") {
+                let _ = window.with_webview(|webview| {
+                    use jni::objects::JValue;
+                    webview.jni_handle().exec(|env, _, webview| {
+                        let _ = env.call_method(webview, "setFocusableInTouchMode", "(Z)V", &[JValue::Bool(1)]);
+                        let _ = env.call_method(webview, "requestFocus", "()Z", &[]);
+                    });
+                });
+            }
             // Linux (and Windows dev builds) register the bennovel:// sign-in links at run time.
             #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
             {

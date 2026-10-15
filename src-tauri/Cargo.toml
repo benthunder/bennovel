@@ -43,6 +43,10 @@ tauri-plugin-notification = "2"
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 
+# Calls into the Android WebView (focus it so the first tap opens the keyboard).
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+
 # Tests against a real S3 server can trust an extra CA (S3_TEST_CA), e.g. a proxy's.
 [dev-dependencies]
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }

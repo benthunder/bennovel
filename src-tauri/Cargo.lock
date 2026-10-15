@@ -250,6 +250,7 @@ dependencies = [
  "flate2",
  "hmac",
  "image",
+ "jni",
  "libchm",
  "pdfium-render",
  "quick-xml",
