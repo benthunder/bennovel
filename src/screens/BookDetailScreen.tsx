@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { ask } from '@tauri-apps/plugin-dialog';
 import { AiTag, ChapterSheet, useSectionName } from '../components/ChapterSheet';
 import { EditBookDialog } from '../components/EditBookDialog';
-import { ChevronLeftIcon, ChevronRightIcon, PencilIcon, PlayIcon, SparklesIcon, XIcon } from '../components/Icons';
+import { BookOpenIcon, ChevronLeftIcon, ChevronRightIcon, PencilIcon, PlayIcon, SparklesIcon, XIcon } from '../components/Icons';
 import { NovelCover } from '../components/NovelCover';
 import { TranslateFields, defaultTranslation, type Translation } from '../components/ReaderTools';
 import { Spinner } from '../components/ui';
@@ -15,6 +15,7 @@ import { save as store } from '../lib/storage';
 import { aiViewKey } from './LocalBookScreen';
 import { deleteLibraryBook, getLibraryDetail, localCover, openLibraryBook, updateLibraryBook } from '../lib/localBook';
 import { useAsync } from '../lib/useAsync';
+import { getWiki } from '../lib/wiki';
 import { useLayout } from '../lib/useLayout';
 import { useApp } from '../store/AppStore';
 
@@ -127,11 +128,13 @@ export function BookDetailScreen({ novelId }: { novelId: number }) {
           </div>
           {lay.wide && startBtn}
           {lay.wide && <AiBox novelId={novelId} lang={b.lang} onRead={read} />}
+          {lay.wide && <WikiButton novelId={novelId} title={b.title} />}
         </div>
 
         <div style={{ padding: lay.wide ? 0 : '20px 20px 0', display: 'flex', flexDirection: 'column', gap: lay.wide ? 22 : 20, minWidth: 0 }}>
           {lay.isPhone && startBtn}
           {!lay.wide && <AiBox novelId={novelId} lang={b.lang} onRead={read} />}
+          {!lay.wide && <WikiButton novelId={novelId} title={b.title} />}
 
           <div>
             <h5 className="section-title" style={{ marginBottom: 6 }}>{t('detail.synopsis')}</h5>
@@ -181,6 +184,21 @@ export function BookDetailScreen({ novelId }: { novelId: number }) {
         }} />
       )}
     </div>
+  );
+}
+
+/** Opens the book's wiki, with how many entries it has. */
+function WikiButton({ novelId, title }: { novelId: number; title: string }) {
+  const t = useT();
+  const app = useApp();
+  const user = app.libKey;
+  const q = useAsync(() => getWiki(user, novelId), [user, novelId, app.aiRev]);
+  const n = q.status === 'ready' ? q.data?.entries.length ?? null : null;
+  return (
+    <button className="btn btn-secondary btn-block" style={{ gap: 8, marginTop: 8 }} onClick={() => app.push({ s: 'bookWiki', novelId, title })}>
+      <BookOpenIcon size={16} />{t('wiki.open')}
+      {n != null && n > 0 && <span className="muted" style={{ fontSize: 12, fontWeight: 600 }}>· {t('wiki.count', { n })}</span>}
+    </button>
   );
 }
 

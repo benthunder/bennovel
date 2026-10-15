@@ -158,6 +158,7 @@ function LlmDialog({ saved, onClose, onSaved }: { saved: LlmSettings | null; onC
     provider: saved?.provider ?? 'openai',
     baseUrl: saved?.baseUrl ?? LLM_PROVIDERS[0].baseUrl,
     model: saved?.model ?? LLM_PROVIDERS[0].model,
+    embedModel: saved?.embedModel ?? '',
     apiKey: ''
   }));
   const [busy, setBusy] = useState(false);
@@ -220,6 +221,8 @@ function LlmDialog({ saved, onClose, onSaved }: { saved: LlmSettings | null; onC
           : <div className="muted" style={{ fontSize: 12, overflowWrap: 'anywhere' }}>{t('ai.baseUrl')}: {form.baseUrl}</div>}
         {custom && <div className="muted" style={{ fontSize: 11, marginTop: -8 }}>{t('ai.baseUrlHint')}</div>}
         {input('model', t('ai.model'), { required: true, placeholder: LLM_PROVIDERS.find(p => p.id === form.provider)?.model || 'llama3.1' })}
+        {input('embedModel', t('ai.embedModel'), { placeholder: form.provider === 'openai' ? 'text-embedding-3-small' : 'nomic-embed-text' })}
+        <div className="muted" style={{ fontSize: 11, marginTop: -8 }}>{t('ai.embedHint')}</div>
         {input('apiKey', t('ai.apiKey'), {
           type: 'password', autoComplete: 'new-password', required: !custom && !keepsKey,
           placeholder: keepsKey ? t('ai.keyKept') : custom ? t('ai.keyOptional') : undefined

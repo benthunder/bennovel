@@ -12,6 +12,7 @@ import { ProfileScreen } from './screens/ProfileScreen';
 import { ReaderScreen } from './screens/ReaderScreen';
 import { LocalBookScreen } from './screens/LocalBookScreen';
 import { BookDetailScreen } from './screens/BookDetailScreen';
+import { WikiScreen } from './screens/WikiScreen';
 
 function renderRoute(r: Route) {
   switch (r.s) {
@@ -20,6 +21,7 @@ function renderRoute(r: Route) {
     case 'profile': return <ProfileScreen />;
     case 'reader': return <ReaderScreen id={r.id} ch={r.ch} lang={r.lang} />;
     case 'bookDetail': return <BookDetailScreen novelId={r.novelId} />;
+    case 'bookWiki': return <WikiScreen novelId={r.novelId} title={r.title} />;
     case 'book': return <LocalBookScreen book={r.book} place={r.place} path={r.path} />;
   }
 }
