@@ -15,6 +15,7 @@ import { ProfileScreen } from './screens/ProfileScreen';
 import { ReaderScreen } from './screens/ReaderScreen';
 import { LocalBookScreen } from './screens/LocalBookScreen';
 import { BookDetailScreen } from './screens/BookDetailScreen';
+import { WikiScreen } from './screens/WikiScreen';
 
 function renderRoute(r: Route) {
   switch (r.s) {
@@ -26,6 +27,7 @@ function renderRoute(r: Route) {
     case 'profile': return <ProfileScreen />;
     case 'reader': return <ReaderScreen id={r.id} ch={r.ch} lang={r.lang} />;
     case 'bookDetail': return <BookDetailScreen novelId={r.novelId} />;
+    case 'bookWiki': return <WikiScreen novelId={r.novelId} title={r.title} />;
     case 'book': return <LocalBookScreen book={r.book} place={r.place} path={r.path} />;
   }
 }
@@ -39,7 +41,7 @@ export default function App() {
   useOpenedFiles();
   const top = app.top;
   // Online screens wait for the catalog; sign-in and books on the device don't need it.
-  const waiting = status === 'loading' && top.s !== 'book' && top.s !== 'bookDetail' && top.s !== 'login';
+  const waiting = status === 'loading' && top.s !== 'book' && top.s !== 'bookDetail' && top.s !== 'bookWiki' && top.s !== 'login';
   // Keyed by stack depth + route, so each pushed screen starts fresh (scroll, search, filters).
   const key = `${app.stack.length}:${JSON.stringify(top)}:${waiting}`;
   const showNav = top.s !== 'reader' && top.s !== 'book' && top.s !== 'login';
