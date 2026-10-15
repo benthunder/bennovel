@@ -1,6 +1,6 @@
 //! Backups of the library: the library file is exported as a gzipped snapshot, and a
 //! backup brought back is merged into it row by row, so nothing made since is lost
-//! (s3.rs carries backups to the user's own storage). The merge rules:
+//! (the file goes where the user picks). The merge rules:
 //! - favourites: the later of "added" and "removed" wins (a tie keeps it);
 //! - history and progress: the most recent read wins; a removal newer than the read wins;
 //! - imported books: matched by `book_key`; a book missing here is copied whole

@@ -99,7 +99,6 @@ test('Profile works without an account or a connection', async ({ page }) => {
   await boot(page);
   await page.goto('/');
   await page.getByRole('button', { name: 'Profile' }).filter({ visible: true }).first().click();
-  await expect(page.getByText('Reading on this device')).toBeVisible();
   await expect(page.getByRole('button', { name: /Default reading language/ })).toBeVisible();
   // No sign-in anywhere in this version.
   await expect(page.getByRole('button', { name: /Log in/ })).toHaveCount(0);

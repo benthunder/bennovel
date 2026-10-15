@@ -8,7 +8,6 @@ import { aiErrorKey, resumeAiQueue, type AiProgress } from '../lib/ai';
 import { canOpenLocalBooks, libraryUser, type LibraryPlace, type LocalBook } from '../lib/localBook';
 import { runOcr } from '../lib/ocr';
 import { loadReading, saveReading } from '../lib/readingStore';
-import { getS3Settings, type S3Settings } from '../lib/s3';
 import { canDownload, deleteDownload, downloadChapter, downloadLang, downloadNovel, listDownloads, setDownloads, type Download } from '../lib/offline';
 
 export type Tab = 'library' | 'profile';
@@ -336,15 +335,6 @@ function useAppState() {
 
   /** Bumped after a restore, so screens list the library books again. */
   const [libraryRev, setLibraryRev] = useState(0);
-  /** The user's own S3 storage for backups, when one is set. */
-  const [s3, setS3] = useState<S3Settings | null>(null);
-  const refreshS3 = useCallback(async () => {
-    if (canOpenLocalBooks()) setS3(await getS3Settings(libKey).catch(() => null));
-  }, [libKey]);
-  useEffect(() => {
-    setS3(null);
-    void refreshS3();
-  }, [refreshS3]);
   const aiRev = useAiQueue(libKey, showToast);
   /** Lists everything again after the library file changed (a backup brought back). */
   const reloadLibrary = useCallback(() => { reloadReading(); setLibraryRev(n => n + 1); }, [reloadReading]);
@@ -362,7 +352,7 @@ function useAppState() {
     push, back, switchTab, openDetail,
     openChapter, goReader, setReaderLang, setContentLang, setLangDialog, setReaderPrefs,
     toggleFav, showToast, markLocalRead, forgetLocal,
-    libraryRev, s3, refreshS3, downloads, aiRev, reloadLibrary
+    libraryRev, downloads, aiRev, reloadLibrary
   };
 }
 

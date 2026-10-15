@@ -3,7 +3,7 @@ use super::{db, DbBook, LibraryBook};
 use crate::book::commands::{open_picked, pdfium_dirs, Books};
 use crate::book::{detect, open_source, BookError, BookFormat, BookInfo, BookSource, OpenCtx, SectionMeta};
 use serde::Serialize;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tauri_plugin_fs::FilePath;
 
@@ -716,81 +716,6 @@ pub async fn replace_rules_set<R: Runtime>(
     .await
 }
 
-impl From<super::s3::S3Error> for BookError {
-    fn from(e: super::s3::S3Error) -> Self {
-        use super::s3::S3Error as E;
-        // The app looks for these words to say what went wrong.
-        let key = match e {
-            E::Io(e) => return BookError::Io(e),
-            E::Config(key) => key.to_string(),
-            E::Network(msg) => format!("s3-network {msg}"),
-            E::Status {
-                status: 401 | 403,
-                code,
-            } => format!("s3-auth {code}"),
-            E::Status { code, .. } if code == "NoSuchBucket" => "s3-bucket".into(),
-            E::Status { status: 413, code } => format!("too-large {code}"),
-            E::Status { code, .. } if code == "EntityTooLarge" => "too-large".into(),
-            E::Status { status, code } => format!("s3-error {status} {code}"),
-        };
-        BookError::Parse(key)
-    }
-}
-
-/// The S3 settings of a library, without the secret key.
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct S3Settings {
-    pub endpoint: String,
-    pub region: String,
-    pub bucket: String,
-    pub folder: String,
-    pub access_key: String,
-    pub has_secret: bool,
-}
-
-/// The library's own S3 storage for backups, if one is set.
-#[tauri::command]
-pub async fn s3_config_get<R: Runtime>(
-    app: AppHandle<R>,
-    user: String,
-) -> Result<Option<S3Settings>, BookError> {
-    let path = super::s3::config_path(&db_path(&app, &user)?);
-    Ok(super::s3::load_config(&path).map(|c| S3Settings {
-        has_secret: !c.secret_key.is_empty(),
-        endpoint: c.endpoint,
-        region: c.region,
-        bucket: c.bucket,
-        folder: c.folder,
-        access_key: c.access_key,
-    }))
-}
-
-/// Sets the S3 storage for backups, after checking it can be reached with these keys;
-/// an empty secret key keeps the saved one. `None` forgets it.
-#[tauri::command]
-pub async fn s3_config_set<R: Runtime>(
-    app: AppHandle<R>,
-    user: String,
-    config: Option<super::s3::Config>,
-) -> Result<(), BookError> {
-    let path = super::s3::config_path(&db_path(&app, &user)?);
-    blocking(move || {
-        let Some(mut config) = config else {
-            return Ok(super::s3::save_config(&path, None)?);
-        };
-        if config.secret_key.trim().is_empty() {
-            config.secret_key = super::s3::load_config(&path)
-                .map(|c| c.secret_key)
-                .unwrap_or_default();
-        }
-        let config = config.normalized()?;
-        super::s3::check(&config)?;
-        Ok(super::s3::save_config(&path, Some(&config))?)
-    })
-    .await
-}
-
 /* ---------- AI translation with the user's own LLM (llm.rs, translate.rs, queue.rs) ---------- */
 
 use super::llm::{self, AiError};
@@ -1062,73 +987,6 @@ pub async fn library_restore<R: Runtime>(
             }
         }
         Ok(())
-    })
-    .await
-}
-
-/* ---------- Backups in the user's own S3 storage (s3.rs) ---------- */
-
-fn s3_config(library: &Path) -> Result<super::s3::Config, BookError> {
-    super::s3::load_config(&super::s3::config_path(library))
-        .ok_or_else(|| BookError::Parse("s3-not-set".into()))
-}
-
-/// The backup kept in the library's S3 storage, `None` when there is none yet.
-#[tauri::command]
-pub async fn s3_backup_info<R: Runtime>(
-    app: AppHandle<R>,
-    user: String,
-) -> Result<Option<super::s3::Backup>, BookError> {
-    let db_file = db_path(&app, &user)?;
-    blocking(move || Ok(super::s3::info(&s3_config(&db_file)?)?)).await
-}
-
-/// Backs the library up to its S3 storage (the same file as `library_backup`),
-/// replacing the backup there. Returns the new backup.
-#[tauri::command]
-pub async fn s3_backup<R: Runtime>(
-    app: AppHandle<R>,
-    user: String,
-) -> Result<Option<super::s3::Backup>, BookError> {
-    let db_file = db_path(&app, &user)?;
-    blocking(move || {
-        let config = s3_config(&db_file)?;
-        let gz = db_file.with_extension("s3-backup.gz");
-        let result = (|| -> Result<(), BookError> {
-            super::sync::backup_to(&db::open(&db_file)?, &db_file.with_extension("s3-backup"), &gz)?;
-            super::s3::upload(&config, &gz)?;
-            Ok(())
-        })();
-        let _ = std::fs::remove_file(&gz);
-        result?;
-        Ok(super::s3::info(&config)?)
-    })
-    .await
-}
-
-/// Brings back the backup kept in the library's S3 storage, merged into the library
-/// like `library_restore`.
-#[tauri::command]
-pub async fn s3_restore<R: Runtime>(app: AppHandle<R>, user: String) -> Result<(), BookError> {
-    let db_file = db_path(&app, &user)?;
-    blocking(move || {
-        let config = s3_config(&db_file)?;
-        let gz = db_file.with_extension("s3-restore.gz");
-        let result = (|| {
-            if !super::s3::download(&config, &gz)? {
-                return Err(BookError::Parse("s3-no-backup".into()));
-            }
-            let file = std::io::BufReader::new(std::fs::File::open(&gz)?);
-            let mut conn = db::open(&db_file)?;
-            for id in super::sync::restore_from(&mut conn, file, &db_file.with_extension("s3-restore"))? {
-                if let Some(f) = super::original_file(&db_file, id) {
-                    let _ = std::fs::remove_file(f);
-                }
-            }
-            Ok(())
-        })();
-        let _ = std::fs::remove_file(&gz);
-        result
     })
     .await
 }

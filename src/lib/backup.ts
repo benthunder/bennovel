@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 /*
  * Backups: the whole on-device library (books with their AI translations, favourites,
  * history, replace rules, downloaded novels) in one gzipped file. It goes to a file the
- * user picks, or to their own S3 storage (s3.ts). Restoring merges it into the library:
+ * user picks. Restoring merges it into the library:
  * what it holds comes back even if it was removed here since.
  * Native app only: the web build has no library file.
  */

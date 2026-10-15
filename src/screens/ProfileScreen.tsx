@@ -6,9 +6,7 @@ import { UiLangDialog, uiLangLabel } from '../components/UiLangDialog';
 import { CoverGrid, Segmented, Spinner } from '../components/ui';
 import { findNovel, getContentLangs, getNovels } from '../data/repository';
 import { relativeTime, useI18n } from '../i18n';
-import type { MessageKey } from '../i18n/en';
 import { AiFailure, LLM_PROVIDERS, aiErrorDetail, getLlmSettings, setLlmConfig, type LlmConfig, type LlmSettings } from '../lib/ai';
-import { backupToS3, getS3Backup, restoreFromS3, s3Host, setS3Config, S3Failure, type S3Config } from '../lib/s3';
 import { useAsync } from '../lib/useAsync';
 import { createBackup, restoreBackup } from '../lib/backup';
 import { useApp } from '../store/AppStore';
@@ -36,10 +34,6 @@ export function ProfileScreen() {
         gridTemplateRows: lay.wide ? 'auto auto auto 1fr' : 'auto'
       }}>
         <div style={{ gridArea: 'card' }}>
-          <div style={{ borderRadius: 34, background: 'var(--color-surface)', padding: 22, display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <div className="display" style={{ fontSize: 22 }}>{t('profile.offlineTitle')}</div>
-            <div style={{ fontSize: 13, color: 'var(--color-neutral-800)' }}>{t('profile.offlineBody')}</div>
-          </div>
           {canOpenLocalBooks() && <BackupCard />}
         </div>
 
@@ -98,159 +92,48 @@ export function ProfileScreen() {
   );
 }
 
-type BackupJob = 'file' | 'fileRestore' | 's3' | 's3Restore';
+type BackupJob = 'backup' | 'restore';
 
 /**
- * Backups of the whole library (books with their AI translations, history, favourites,
- * downloads): to a file the user keeps, or to their own S3 storage, and back.
+ * A backup of the whole library in a file the user keeps (books with their AI
+ * translations, history, favourites, downloads), and bringing one back.
  */
 function BackupCard() {
   const { t } = useI18n();
   const app = useApp();
   const user = app.libKey;
   const [busy, setBusy] = useState<BackupJob | null>(null);
-  const [editing, setEditing] = useState(false);
-  const [infoRev, setInfoRev] = useState(0);
-  const infoQ = useAsync(() => (app.s3 ? getS3Backup(user) : Promise.resolve(null)), [user, app.s3, infoRev]);
-
   const run = async (job: BackupJob) => {
     setBusy(job);
     try {
-      if (job === 'file') {
+      if (job === 'backup') {
         if (await createBackup(user)) app.showToast(t('backup.done'));
-      } else if (job === 'fileRestore') {
-        if (await restoreBackup(user)) {
-          app.reloadLibrary();
-          app.showToast(t('backup.restored'));
-        }
-      } else if (job === 's3') {
-        await backupToS3(user);
-        setInfoRev(n => n + 1);
-        app.showToast(t('s3.backedUp'));
-      } else {
-        await restoreFromS3(user);
+      } else if (await restoreBackup(user)) {
         app.reloadLibrary();
         app.showToast(t('backup.restored'));
       }
     } catch (e) {
-      if (e instanceof S3Failure) app.showToast(t(e.key));
-      else {
-        console.error(e);
-        app.showToast(`${t(job === 'file' ? 'backup.failed' : 'backup.restoreFailed')} ${String(e)}`);
-      }
+      console.error(e);
+      app.showToast(`${t(job === 'backup' ? 'backup.failed' : 'backup.restoreFailed')} ${String(e)}`);
     } finally {
       setBusy(null);
     }
   };
-  const button = (job: BackupJob, label: string, disabled = false) => (
-    <button className="btn btn-ghost" style={{ fontSize: 12, padding: '0 6px', gap: 6 }} disabled={!!busy || disabled} onClick={() => void run(job)}>
+  const button = (job: BackupJob, label: string) => (
+    <button className="btn btn-ghost" style={{ fontSize: 12, padding: '0 6px', gap: 6 }} disabled={!!busy} onClick={() => void run(job)}>
       {busy === job && <Spinner size={12} />}{label}
     </button>
   );
 
-  const info = infoQ.status === 'ready' ? infoQ.data : null;
-  const modified = info?.modified ? Date.parse(info.modified) : NaN;
-  const s3Status = !app.s3 ? t('s3.none')
-    : infoQ.status === 'loading' ? t('s3.checking')
-      : infoQ.status === 'failed' ? t(infoQ.error instanceof S3Failure ? infoQ.error.key : 's3.err.generic')
-        : info ? (Number.isNaN(modified) ? t('s3.hasBackup') : t('s3.last', { time: relativeTime(t, modified) })) : t('s3.noBackup');
-
   return (
-    <div style={{ marginTop: 12, borderRadius: 28, background: 'var(--color-surface)', padding: '14px 12px 10px 18px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+    <div style={{ borderRadius: 28, background: 'var(--color-surface)', padding: '14px 12px 10px 18px', display: 'flex', flexDirection: 'column', gap: 6 }}>
       <div style={{ fontSize: 14, fontWeight: 700 }}>{t('backup.title')}</div>
       <div className="muted" style={{ fontSize: 12 }}>{t('backup.hint')}</div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, borderTop: '1px solid var(--color-neutral-200)', paddingTop: 6 }}>
-        <span style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: 600 }}>{t('backup.file')}</span>
-        {button('file', t('backup.create'))}
-        {button('fileRestore', t('backup.restore'))}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, borderTop: '1px solid var(--color-neutral-200)', paddingTop: 6 }}>
+        {button('backup', t('backup.create'))}
+        {button('restore', t('backup.restore'))}
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 2, borderTop: '1px solid var(--color-neutral-200)', paddingTop: 6 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {app.s3 ? t('s3.where', { where: `${app.s3.bucket} · ${s3Host(app.s3)}` }) : t('s3.label')}
-          </span>
-          <button className="btn btn-ghost" style={{ fontSize: 12, padding: '0 6px' }} disabled={!!busy} onClick={() => setEditing(true)}>
-            {app.s3 ? t('s3.change') : t('s3.setUp')}
-          </button>
-        </div>
-        <span className="muted" style={{ fontSize: 12 }}>{s3Status}</span>
-        {app.s3 && (
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-            {button('s3', t('s3.backup'))}
-            {button('s3Restore', t('s3.restore'), !info)}
-          </div>
-        )}
-      </div>
-      {editing && <S3Dialog onClose={() => setEditing(false)} />}
     </div>
-  );
-}
-
-type S3Field = keyof S3Config;
-
-/** Settings of the user's own S3 storage; saved only once the server accepts them. */
-function S3Dialog({ onClose }: { onClose: () => void }) {
-  const { t } = useI18n();
-  const app = useApp();
-  const user = app.libKey;
-  const saved = app.s3;
-  const [form, setForm] = useState<S3Config>({
-    endpoint: saved?.endpoint ?? '', region: saved?.region ?? '', bucket: saved?.bucket ?? '',
-    folder: saved?.folder ?? 'bennovel', accessKey: saved?.accessKey ?? '', secretKey: ''
-  });
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<MessageKey | null>(null);
-
-  const apply = async (config: S3Config | null) => {
-    setBusy(true);
-    setError(null);
-    try {
-      await setS3Config(user, config);
-      await app.refreshS3();
-      app.showToast(t(config ? 's3.saved' : 's3.removed'));
-      onClose();
-    } catch (e) {
-      setError(e instanceof S3Failure ? e.key : 's3.err.generic');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const field = (key: S3Field, label: string, props: React.InputHTMLAttributes<HTMLInputElement> = {}) => (
-    <div className="field">
-      <label htmlFor={`s3-${key}`}>{label}</label>
-      <input id={`s3-${key}`} className="input" style={{ height: 40 }} value={form[key]} autoCapitalize="off" autoCorrect="off" spellCheck={false}
-        onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))} {...props} />
-    </div>
-  );
-
-  return (
-    <Modal onClose={busy ? undefined : onClose}>
-      <form className="dialog dialog--sheet" role="dialog" aria-modal="true" aria-label={t('s3.title')} onClick={e => e.stopPropagation()}
-        onSubmit={e => { e.preventDefault(); void apply(form); }}>
-        <div className="dialog-title" style={{ fontSize: 22 }}>{t('s3.title')}</div>
-        <div className="dialog-body" style={{ marginTop: -6 }}>{t('s3.body')}</div>
-        {field('endpoint', t('s3.endpoint'), { placeholder: 'https://minio.example.com:9000', inputMode: 'url', required: true })}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-          {field('bucket', t('s3.bucket'), { required: true })}
-          {field('region', t('s3.region'), { placeholder: 'us-east-1' })}
-        </div>
-        {field('folder', t('s3.folder'))}
-        {field('accessKey', t('s3.accessKey'), { required: true, autoComplete: 'off' })}
-        {field('secretKey', t('s3.secretKey'), {
-          type: 'password', autoComplete: 'new-password', required: !saved?.hasSecret,
-          placeholder: saved?.hasSecret ? t('s3.secretKept') : undefined
-        })}
-        {error && <div role="alert" style={{ fontSize: 13, color: 'var(--color-accent-700)' }}>{t(error)}</div>}
-        <div className="dialog-actions">
-          {saved && <button type="button" className="btn btn-ghost" style={{ marginRight: 'auto' }} disabled={busy} onClick={() => void apply(null)}>{t('s3.remove')}</button>}
-          <button type="button" className="btn btn-secondary" style={{ height: 44, padding: '0 18px' }} disabled={busy} onClick={onClose}>{t('common.cancel')}</button>
-          <button type="submit" className="btn btn-primary" style={{ height: 44, padding: '0 22px' }} disabled={busy}>
-            {busy ? t('s3.checking') : t('common.save')}
-          </button>
-        </div>
-      </form>
-    </Modal>
   );
 }
 

@@ -7,7 +7,7 @@ import { useContinue } from '../lib/useContinue';
 import { localCover } from '../lib/localBook';
 
 
-/** Tablet: icon rail on the left with the Continue button on top. */
+/** Tablet: icon rail on the left, its items centred. */
 export function NavRail() {
   const t = useT();
   const app = useApp();
@@ -21,14 +21,15 @@ export function NavRail() {
   return (
     <nav className="rail">
       <div className="rail__logo"><BookOpenIcon size={20} /></div>
-      <button className="rail__continue" onClick={continueLast}>
-        <span className="rail__fab"><PlayIcon size={20} style={{ marginLeft: 3 }} /></span>
-        {t('nav.continue')}
-      </button>
-      {item('library', t('nav.library'), <HeartIcon size={22} />)}
-      <button className="rail__item" style={{ marginTop: 'auto' }} aria-current={app.tab === 'profile' ? 'page' : undefined} onClick={() => app.switchTab('profile')}>
-        <span className="rail__pill"><UserIcon size={22} /></span>{t('nav.profile')}
-      </button>
+      {/* The three items sit in the middle of the rail. */}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, paddingBottom: 40 }}>
+        <button className="rail__continue" onClick={continueLast}>
+          <span className="rail__fab"><PlayIcon size={20} style={{ marginLeft: 3 }} /></span>
+          {t('nav.continue')}
+        </button>
+        {item('library', t('nav.library'), <HeartIcon size={22} />)}
+        {item('profile', t('nav.profile'), <UserIcon size={22} />)}
+      </div>
     </nav>
   );
 }

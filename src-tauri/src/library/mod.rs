@@ -12,7 +12,6 @@ pub mod offline;
 pub mod queue;
 pub mod reading;
 pub mod rules;
-pub mod s3;
 pub mod sync;
 pub mod translate;
 
