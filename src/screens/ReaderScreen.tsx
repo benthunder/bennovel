@@ -3,8 +3,7 @@ import { ChevronLeftIcon, SlidersIcon, SparklesIcon } from '../components/Icons'
 import { ReaderChrome, ReaderStatusBar, useImmersive } from '../components/ReaderChrome';
 import { ReaderTools, type Translation } from '../components/ReaderTools';
 import { Spinner } from '../components/ui';
-import { applyReplaceRules, getChapterText, getContentLangs, getGlossary, getNovel, getReplaceRules, requestNovelTranslation, saveReplaceRules } from '../data/repository';
-import { libraryUser } from '../lib/localBook';
+import { applyReplaceRules, getChapterText, getContentLangs, getGlossary, getNovel, getReplaceRules, saveReplaceRules } from '../data/repository';
 import { useAsync } from '../lib/useAsync';
 import type { ContentLang, ReplaceRule } from '../data/types';
 import { useI18n } from '../i18n';
@@ -40,13 +39,13 @@ export function ReaderScreen({ id, ch, lang }: { id: number; ch: number; lang: C
   const glossary = glossaryQ.status === 'ready' ? glossaryQ.data : {};
   const textQ = useAsync(() => getChapterText(id, ch, dispLang), [id, ch, dispLang]);
   const chapter = textQ.status === 'ready' ? textQ.data : null;
-  const rulesQ = useAsync(() => getReplaceRules(libraryUser(app.user), id, dispLang), [libraryUser(app.user), id, dispLang]);
+  const rulesQ = useAsync(() => getReplaceRules(app.libKey, id, dispLang), [app.libKey, id, dispLang]);
   // Edits made here win over what was loaded until the language changes.
   const [edited, setEdited] = useState<{ lang: ContentLang; rules: ReplaceRule[] } | null>(null);
   const rules = edited?.lang === dispLang ? edited.rules : rulesQ.status === 'ready' ? rulesQ.data : [];
   const changeRules = (next: ReplaceRule[]) => {
     setEdited({ lang: dispLang, rules: next });
-    saveReplaceRules(libraryUser(app.user), id, dispLang, next).catch(() => app.showToast(t('replace.saveFailed')));
+    saveReplaceRules(app.libKey, id, dispLang, next).catch(() => app.showToast(t('replace.saveFailed')));
   };
   const langName = (c: ContentLang) => getContentLangs().find(l => l.code === c)?.native ?? c;
 
@@ -59,21 +58,6 @@ export function ReaderScreen({ id, ch, lang }: { id: number; ch: number; lang: C
       setTimeout(() => setTrStep(2), TR_STEP_MS * 2),
       setTimeout(() => { setTrStep(null); setTranslated(tr); scrollRef.current?.scrollTo({ top: 0 }); }, TR_STEP_MS * 3)
     );
-  };
-
-  // Real AI translation: queue this chapter and every later one that is not in `tr.lang` yet.
-  const translateFrom = async (tr: Translation) => {
-    if (!app.user) {
-      app.showToast(t('tr.needLogin'));
-      app.push({ s: 'login' });
-      return;
-    }
-    try {
-      const n = await requestNovelTranslation(id, tr.lang, tr.style, tr.dict, ch);
-      app.showToast(n ? t('tr.queuedFrom', { n, ch, lang: langName(tr.lang) }) : t('tr.nothingFrom', { lang: langName(tr.lang) }));
-    } catch {
-      app.showToast(t('tr.requestFailed'));
-    }
   };
 
   const paragraphs = (chapter?.paragraphs ?? []).map(para => para.split(/\[\[([\w-]+)\]\]/).map((seg, i) => {
@@ -165,7 +149,7 @@ export function ReaderScreen({ id, ch, lang }: { id: number; ch: number; lang: C
         )}
       </div>
 
-      {toolsOpen && <ReaderTools glossary={glossary} lang={dispLang} rules={rules} onRulesChange={changeRules} onClose={() => setToolsOpen(false)} onTranslate={runTranslate} onTranslateFrom={translateFrom} />}
+      {toolsOpen && <ReaderTools glossary={glossary} lang={dispLang} rules={rules} onRulesChange={changeRules} onClose={() => setToolsOpen(false)} onTranslate={runTranslate} />}
     </div>
   );
 }
