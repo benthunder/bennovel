@@ -223,6 +223,8 @@ input[type='range'] { accent-color: var(--color-accent); width: 100%; }
 }
 .app[data-device='tablet'] .dialog-backdrop--sheet, .app[data-device='desktop'] .dialog-backdrop--sheet { place-items: center; padding: 24px; }
 .app[data-device='tablet'] .dialog--sheet, .app[data-device='desktop'] .dialog--sheet { width: 440px; max-width: 100%; }
+/* A long sheet scrolls under its buttons, which stay at the bottom. */
+.dialog--sheet > .dialog-actions { position: sticky; bottom: -22px; margin: var(--space-2) -22px -22px; padding: 12px 22px 22px; background: var(--color-surface); z-index: 1; }
 
 /* — import actions (Library › On this device) — */
 .import-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; max-width: 560px; }

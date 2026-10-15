@@ -14,6 +14,7 @@ pub mod reading;
 pub mod rules;
 pub mod sync;
 pub mod translate;
+pub mod wiki;
 
 use crate::book::image::{self, Image};
 use crate::book::{BookError, BookFormat, BookSource, Section, SectionMeta};

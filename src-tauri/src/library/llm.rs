@@ -45,6 +45,10 @@ pub struct Config {
     pub base_url: String,
     pub api_key: String,
     pub model: String,
+    /// The embedding model of the same API (`POST {base_url}/embeddings`) for the
+    /// book wiki's search; empty when none is used.
+    #[serde(default)]
+    pub embed_model: String,
 }
 
 /// The saved LLM as shown in the app: no key.
@@ -54,12 +58,13 @@ pub struct Settings {
     pub provider: String,
     pub base_url: String,
     pub model: String,
+    pub embed_model: String,
     pub has_key: bool,
 }
 
 pub fn load(conn: &Connection) -> rusqlite::Result<Option<Config>> {
     conn.query_row(
-        "select provider, base_url, api_key, model from llm_config where id = 1",
+        "select provider, base_url, api_key, model, embed_model from llm_config where id = 1",
         [],
         |r| {
             Ok(Config {
@@ -67,6 +72,7 @@ pub fn load(conn: &Connection) -> rusqlite::Result<Option<Config>> {
                 base_url: r.get(1)?,
                 api_key: r.get(2)?,
                 model: r.get(3)?,
+                embed_model: r.get(4)?,
             })
         },
     )
@@ -78,6 +84,7 @@ pub fn settings(conn: &Connection) -> rusqlite::Result<Option<Settings>> {
         provider: c.provider,
         base_url: c.base_url,
         model: c.model,
+        embed_model: c.embed_model,
         has_key: !c.api_key.is_empty(),
     }))
 }
@@ -104,16 +111,18 @@ pub fn save(conn: &Connection, config: Option<&Config>) -> rusqlite::Result<()> 
         }
         Some(c) => {
             conn.execute(
-                "insert into llm_config (id, provider, base_url, api_key, model, updated_at)
-                 values (1, ?1, ?2, ?3, ?4, ?5)
+                "insert into llm_config (id, provider, base_url, api_key, model, embed_model, updated_at)
+                 values (1, ?1, ?2, ?3, ?4, ?5, ?6)
                  on conflict (id) do update set provider = excluded.provider,
                    base_url = excluded.base_url, model = excluded.model,
+                   embed_model = excluded.embed_model,
                    api_key = excluded.api_key, updated_at = excluded.updated_at",
                 params![
                     c.provider.trim(),
                     normalize_base(&c.base_url),
                     c.api_key.trim(),
                     c.model.trim(),
+                    c.embed_model.trim(),
                     super::db::now_ms()
                 ],
             )?;
@@ -164,6 +173,23 @@ pub trait Chat: Send + Sync {
     fn chat(&self, system: &str, user: &str) -> Result<String, AiError>;
     /// The model name kept with each translation.
     fn model(&self) -> &str;
+    /// One turn with tools (OpenAI `tools` format): the assistant message as the API
+    /// gives it, with `tool_calls` when the model wants a tool run.
+    fn chat_tools(
+        &self,
+        _messages: &[serde_json::Value],
+        _tools: &serde_json::Value,
+    ) -> Result<serde_json::Value, AiError> {
+        Err(AiError::Other("tools-unsupported".into()))
+    }
+    /// The embedding model, when one is set.
+    fn embed_model(&self) -> Option<&str> {
+        None
+    }
+    /// One vector per text, in order (only called when `embed_model` is set).
+    fn embed(&self, _texts: &[String]) -> Result<Vec<Vec<f32>>, AiError> {
+        Err(AiError::Other("embeddings-unsupported".into()))
+    }
 }
 
 /// An OpenAI-compatible chat API.
@@ -187,7 +213,12 @@ impl OpenAi {
     }
 
     fn post(&self, body: &serde_json::Value) -> Result<String, AiError> {
-        let url = format!("{}/chat/completions", normalize_base(&self.config.base_url));
+        reply_text(&self.post_to("chat/completions", body)?).ok_or(AiError::Empty)
+    }
+
+    /// POSTs `body` to `{base_url}/{path}` and returns the JSON answer.
+    fn post_to(&self, path: &str, body: &serde_json::Value) -> Result<serde_json::Value, AiError> {
+        let url = format!("{}/{path}", normalize_base(&self.config.base_url));
         let mut req = self
             .agent
             .post(&url)
@@ -210,9 +241,22 @@ impl OpenAi {
         let text = res
             .into_string()
             .map_err(|e| AiError::Network(e.to_string()))?;
-        let data: serde_json::Value =
-            serde_json::from_str(&text).map_err(|e| AiError::Other(e.to_string()))?;
-        reply_text(&data).ok_or(AiError::Empty)
+        serde_json::from_str(&text).map_err(|e| AiError::Other(e.to_string()))
+    }
+
+    /// `send`, tried twice more when the server is busy or rate limits.
+    fn retry<T>(&self, send: impl Fn() -> Result<T, AiError>) -> Result<T, AiError> {
+        let mut wait = 4;
+        for _ in 0..2 {
+            match send() {
+                Err(AiError::Http(429 | 500 | 502 | 503 | 504, _)) | Err(AiError::Network(_)) => {
+                    std::thread::sleep(Duration::from_secs(wait));
+                    wait *= 4;
+                }
+                other => return other,
+            }
+        }
+        send()
     }
 }
 
@@ -227,22 +271,69 @@ impl Chat for OpenAi {
             "temperature": 0.3,
         });
         // Rate limits and busy servers pass; try twice more before giving up.
-        let mut wait = 4;
-        for _ in 0..2 {
-            match self.post(&body) {
-                Err(AiError::Http(429 | 500 | 502 | 503 | 504, _)) | Err(AiError::Network(_)) => {
-                    std::thread::sleep(Duration::from_secs(wait));
-                    wait *= 4;
-                }
-                other => return other,
-            }
-        }
-        self.post(&body)
+        self.retry(|| self.post(&body))
     }
 
     fn model(&self) -> &str {
         &self.config.model
     }
+
+    fn chat_tools(
+        &self,
+        messages: &[serde_json::Value],
+        tools: &serde_json::Value,
+    ) -> Result<serde_json::Value, AiError> {
+        let body = serde_json::json!({
+            "model": self.config.model,
+            "messages": messages,
+            "tools": tools,
+            "tool_choice": "auto",
+            "temperature": 0.2,
+        });
+        let data = self.retry(|| self.post_to("chat/completions", &body))?;
+        data.get("choices")
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("message"))
+            .cloned()
+            .ok_or(AiError::Empty)
+    }
+
+    fn embed_model(&self) -> Option<&str> {
+        Some(self.config.embed_model.trim()).filter(|m| !m.is_empty())
+    }
+
+    fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, AiError> {
+        let model = self.embed_model().ok_or(AiError::NotSet)?;
+        let body = serde_json::json!({ "model": model, "input": texts });
+        let data = self.retry(|| self.post_to("embeddings", &body))?;
+        let vectors = embeddings(&data).ok_or(AiError::Empty)?;
+        if vectors.len() != texts.len() {
+            return Err(AiError::Other("embeddings: wrong count".into()));
+        }
+        Ok(vectors)
+    }
+}
+
+/// `data[].embedding` of an embeddings reply, in `index` order.
+fn embeddings(data: &serde_json::Value) -> Option<Vec<Vec<f32>>> {
+    let mut items: Vec<(i64, Vec<f32>)> = data
+        .get("data")?
+        .as_array()?
+        .iter()
+        .enumerate()
+        .map(|(i, d)| {
+            let index = d.get("index").and_then(|v| v.as_i64()).unwrap_or(i as i64);
+            let v = d
+                .get("embedding")?
+                .as_array()?
+                .iter()
+                .map(|x| x.as_f64().map(|f| f as f32))
+                .collect::<Option<Vec<f32>>>()?;
+            Some((index, v))
+        })
+        .collect::<Option<_>>()?;
+    items.sort_by_key(|(i, _)| *i);
+    Some(items.into_iter().map(|(_, v)| v).collect())
 }
 
 /// `choices[0].message.content` of a chat reply.
@@ -272,15 +363,20 @@ fn error_message(body: &str) -> String {
         .unwrap_or_else(|| body.chars().take(300).collect())
 }
 
-/// Checks that the API answers with these settings (a tiny request).
+/// Checks that the API answers with these settings (a tiny request), and its
+/// embedding model too when one is set.
 pub fn check(config: &Config) -> Result<(), AiError> {
-    OpenAi::new(config.clone())
-        .post(&serde_json::json!({
-            "model": config.model,
-            "messages": [{ "role": "user", "content": "Reply with OK." }],
-            "max_tokens": 5,
-        }))
-        .map(|_| ())
+    let api = OpenAi::new(config.clone());
+    api.post(&serde_json::json!({
+        "model": config.model,
+        "messages": [{ "role": "user", "content": "Reply with OK." }],
+        "max_tokens": 5,
+    }))?;
+    if api.embed_model().is_some() {
+        api.embed(&["test".to_string()])
+            .map_err(|e| AiError::Other(format!("embedding model: {e}")))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -316,6 +412,7 @@ mod tests {
             base_url: base.into(),
             api_key: key.into(),
             model: "m".into(),
+            embed_model: String::new(),
         };
         save(
             &conn,
@@ -371,6 +468,7 @@ mod tests {
             base_url,
             api_key: "sk-test".into(),
             model: "m-1".into(),
+            embed_model: "e-1".into(),
         }
     }
 
@@ -399,6 +497,38 @@ mod tests {
             other => panic!("{other:?}"),
         }
         server.join().unwrap();
+    }
+
+    #[test]
+    fn asks_for_embeddings() {
+        let (url, server) = serve(
+            "200 OK",
+            r#"{"data":[{"index":1,"embedding":[0.5,1]},{"index":0,"embedding":[1,0]}]}"#,
+        );
+        let v = OpenAi::new(config(url))
+            .embed(&["a".into(), "b".into()])
+            .unwrap();
+        assert_eq!(v, vec![vec![1.0, 0.0], vec![0.5, 1.0]]);
+        let req = server.join().unwrap();
+        assert!(req.starts_with("POST /v1/embeddings"));
+        assert!(req.contains(r#""model":"e-1""#));
+    }
+
+    #[test]
+    fn sends_tools_and_returns_the_calls() {
+        let (url, server) = serve(
+            "200 OK",
+            r#"{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"wiki_search","arguments":"{\"query\":\"x\"}"}}]}}]}"#,
+        );
+        let msg = OpenAi::new(config(url))
+            .chat_tools(
+                &[serde_json::json!({ "role": "user", "content": "hi" })],
+                &serde_json::json!([{ "type": "function", "function": { "name": "wiki_search" } }]),
+            )
+            .unwrap();
+        assert_eq!(msg["tool_calls"][0]["function"]["name"], "wiki_search");
+        let req = server.join().unwrap();
+        assert!(req.contains(r#""tools":[{"#));
     }
 
     #[test]

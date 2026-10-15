@@ -73,6 +73,8 @@ fn snapshot(
                 super::translate::strip(&copy)?;
             }
         }
+        // Vectors and the wiki's per-book state point at this library's ids.
+        super::wiki::strip(&copy)?;
         copy.execute("vacuum", [])?;
         drop(copy);
         let file = std::io::BufWriter::new(std::fs::File::create(out)?);
@@ -280,6 +282,8 @@ fn merge_attached(tx: &Transaction) -> Result<Vec<i64>, SyncError> {
             params![rid, lid],
         )?;
     }
+
+    super::wiki::merge_attached(tx)?;
 
     // Downloaded online novels: only a backup carries them (sync leaves them out).
     tx.execute_batch(
@@ -701,6 +705,7 @@ mod tests {
                 base_url: "https://api.openai.com/v1".into(),
                 api_key: "sk-secret".into(),
                 model: "m".into(),
+                embed_model: String::new(),
             }),
         )
         .unwrap();
@@ -738,6 +743,7 @@ mod tests {
             base_url: "https://api.openai.com/v1".into(),
             api_key: "sk-secret".into(),
             model: "m".into(),
+            embed_model: String::new(),
         };
         super::super::llm::save(&a, Some(&config)).unwrap();
         let backup = pa.with_extension("llm.gz");

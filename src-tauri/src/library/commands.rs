@@ -1003,3 +1003,122 @@ pub async fn library_restore<R: Runtime>(
     })
     .await
 }
+
+/* ---------- The book wiki (wiki.rs) ---------- */
+
+use super::wiki;
+
+/// The LLM when one is set, for search by meaning; None otherwise.
+fn llm_if_set(conn: &rusqlite::Connection) -> Result<Option<llm::OpenAi>, AiError> {
+    Ok(llm::load(conn)?.map(llm::OpenAi::new))
+}
+
+/// Embeds what the user changed; the wiki works without it, so a failure is ignored.
+fn reindex_quietly(conn: &rusqlite::Connection, novel_id: i64) {
+    if let Ok(Some(model)) = llm_if_set(conn) {
+        if let Err(e) = wiki::reindex(conn, &model, novel_id) {
+            eprintln!("wiki reindex: {e}");
+        }
+    }
+}
+
+/// A book's wiki: entries, relations and its settings.
+#[tauri::command]
+pub async fn wiki_get<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+) -> Result<wiki::Wiki, AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || {
+        let conn = db::open(&path)?;
+        let by_meaning = llm::load(&conn)?.is_some_and(|c| !c.embed_model.trim().is_empty());
+        Ok(wiki::load(&conn, novel_id, by_meaning)?)
+    })
+    .await
+}
+
+/// Entries matching `query` by name, then by meaning when an embedding model is set.
+#[tauri::command]
+pub async fn wiki_search<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+    query: String,
+) -> Result<Vec<wiki::Entry>, AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || {
+        let conn = db::open(&path)?;
+        let model = llm_if_set(&conn)?;
+        wiki::search(&conn, model.as_ref().map(|m| m as &dyn llm::Chat), novel_id, &query, 50)
+    })
+    .await
+}
+
+/// Adds or edits an entry (the user's from now on).
+#[tauri::command]
+pub async fn wiki_save<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+    entry: wiki::EntryInput,
+) -> Result<wiki::Entry, AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || {
+        let conn = db::open(&path)?;
+        let saved = wiki::save(&conn, novel_id, entry)?;
+        reindex_quietly(&conn, novel_id);
+        Ok(saved)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn wiki_remove<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    uid: String,
+) -> Result<(), AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || Ok(wiki::remove(&db::open(&path)?, &uid)?)).await
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn wiki_relate<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+    from_uid: String,
+    to_uid: String,
+    kind: String,
+    note: String,
+) -> Result<String, AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || {
+        wiki::add_relation(&db::open(&path)?, novel_id, &from_uid, &to_uid, &kind, &note)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn wiki_unrelate<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    uid: String,
+) -> Result<(), AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || Ok(wiki::remove_relation(&db::open(&path)?, &uid)?)).await
+}
+
+/// Whether translating this book updates its wiki.
+#[tauri::command]
+pub async fn wiki_set_auto<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+    auto: bool,
+) -> Result<(), AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || Ok(wiki::set_auto(&db::open(&path)?, novel_id, auto)?)).await
+}

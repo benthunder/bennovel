@@ -28,9 +28,10 @@ export const LLM_PROVIDERS = [
 export type LlmProvider = (typeof LLM_PROVIDERS)[number]['id'];
 
 /** The saved LLM, as shown: no key. */
-export interface LlmSettings { provider: string; baseUrl: string; model: string; hasKey: boolean }
+export interface LlmSettings { provider: string; baseUrl: string; model: string; embedModel: string; hasKey: boolean }
 /** LLM settings to save; an empty key keeps the saved one. */
-export interface LlmConfig { provider: string; baseUrl: string; model: string; apiKey: string }
+/** `embedModel`: the API's embedding model for the book wiki's search by meaning; empty for none. */
+export interface LlmConfig { provider: string; baseUrl: string; model: string; embedModel: string; apiKey: string }
 
 export interface AiChapter { title: string; paragraphs: string[]; mode: 'translate' | 'rewrite'; model: string | null }
 export interface AiVersion { lang: AiLang; style: string; chapters: number }

@@ -3,13 +3,15 @@
 //! The flow is a LangGraph graph, built with the `rust-langgraph` crate:
 //!
 //! ```text
-//! START ─► detect ─► translate ─► rewrite ─► save ─► END
+//! START ─► detect ─► recall ─► translate ─► rewrite ─► save ─► learn ─► END
 //! ```
 //!
 //! - detect: the LLM names the language of the first 50 words of the book's first
 //!   chapter (asked once per book, kept in `ai_books`), and picks the mode: another
 //!   language than the one asked for → translate; the same → rewrite (polish it in
 //!   the chosen style, correct in that language).
+//! - recall: the book's wiki entries the chapter names, and those nearest to it in
+//!   meaning (sqlite-vec), go in the prompt with their relations (wiki.rs).
 //! - translate and rewrite each run only in their mode and pass the state on
 //!   otherwise. (rust-langgraph 0.1.1 accepts `add_conditional_edges` but `compile`
 //!   drops them, so the branch is made by the nodes; once fixed upstream it can be a
@@ -18,6 +20,9 @@
 //!   style. That row is the mark that the chapter is done: the queue skips it, and the
 //!   input is always the original text (`source <> 'ai'`), never an AI result, so a
 //!   rewrite is never rewritten again. The graph has no loop and a step limit too.
+//! - learn: the LLM reads the chapter into the wiki with tool calls (wiki.rs), when
+//!   the book's wiki is updated by translating; a failure there is kept for the wiki
+//!   screen and does not fail the translation.
 
 use super::llm::{AiError, Chat};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -35,8 +40,8 @@ const IMAGE_MARK: char = '\u{FFFC}';
 const CHUNK_CHARS: usize = 3500;
 /// Words of the first chapter the language is told from.
 const DETECT_WORDS: usize = 50;
-/// Supersteps allowed: the four nodes, run once each.
-const MAX_STEPS: usize = 6;
+/// Supersteps allowed: the six nodes, run once each.
+const MAX_STEPS: usize = 8;
 
 /// What to do with one chapter.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,6 +87,8 @@ struct Flow {
     source_lang: Option<String>,
     mode: Option<Mode>,
     terms: Vec<(String, String)>,
+    /// The wiki part of the prompt (recall).
+    wiki: String,
     title: String,
     paragraphs: Vec<String>,
     out_title: String,
@@ -116,6 +123,7 @@ pub fn run(conn: &Connection, llm: Arc<dyn Chat>, req: Request) -> Result<Transl
         source_lang: None,
         mode: None,
         terms,
+        wiki: String::new(),
         title,
         paragraphs: split_paragraphs(&content),
         out_title: String::new(),
@@ -192,6 +200,26 @@ fn graph(llm: Arc<dyn Chat>, failed: Arc<Mutex<Option<AiError>>>) -> StateGraph<
     }
     {
         let (llm, failed) = (llm.clone(), failed.clone());
+        g.add_node("recall", move |mut f: Flow, _: &Config| {
+            let (llm, failed) = (llm.clone(), failed.clone());
+            async move {
+                let r = (|| {
+                    let conn = super::db::open(std::path::Path::new(&f.db))?;
+                    f.wiki = super::wiki::context(
+                        &conn,
+                        llm.as_ref(),
+                        f.req.novel_id,
+                        &f.paragraphs.join("\n\n"),
+                        &f.req.lang,
+                    )?;
+                    Ok(f)
+                })();
+                step(&failed, r)
+            }
+        });
+    }
+    {
+        let (llm, failed) = (llm.clone(), failed.clone());
         g.add_node("translate", move |mut f: Flow, _: &Config| {
             let (llm, failed) = (llm.clone(), failed.clone());
             async move {
@@ -204,6 +232,7 @@ fn graph(llm: Arc<dyn Chat>, failed: Arc<Mutex<Option<AiError>>>) -> StateGraph<
                         &f.req.lang,
                         &f.req.style,
                         &f.terms,
+                        &f.wiki,
                     );
                     f.out = run_chunks(llm.as_ref(), &system, &f.paragraphs)?;
                     f.out_title = if f.title.trim().is_empty() {
@@ -230,7 +259,7 @@ fn graph(llm: Arc<dyn Chat>, failed: Arc<Mutex<Option<AiError>>>) -> StateGraph<
                     return Ok(f);
                 }
                 let r = (|| {
-                    let system = rewrite_prompt(&f.req.lang, &f.req.style);
+                    let system = rewrite_prompt(&f.req.lang, &f.req.style, &f.wiki);
                     f.out = run_chunks(llm.as_ref(), &system, &f.paragraphs)?;
                     // Same language: the chapter keeps its title.
                     f.out_title = f.title.clone();
@@ -259,11 +288,35 @@ fn graph(llm: Arc<dyn Chat>, failed: Arc<Mutex<Option<AiError>>>) -> StateGraph<
             }
         });
     }
+    {
+        let (llm, failed) = (llm.clone(), failed.clone());
+        g.add_node("learn", move |f: Flow, _: &Config| {
+            let (llm, failed) = (llm.clone(), failed.clone());
+            async move {
+                let r = (|| {
+                    let conn = super::db::open(std::path::Path::new(&f.db))?;
+                    super::wiki::learn_quietly(
+                        &conn,
+                        llm.as_ref(),
+                        f.req.novel_id,
+                        f.req.chapter_id,
+                        &f.req.lang,
+                        &f.paragraphs.join("\n\n"),
+                        &f.out.join("\n\n"),
+                    )?;
+                    Ok(f)
+                })();
+                step(&failed, r)
+            }
+        });
+    }
     g.set_entry_point("detect");
-    g.add_edge("detect", "translate");
+    g.add_edge("detect", "recall");
+    g.add_edge("recall", "translate");
     g.add_edge("translate", "rewrite");
     g.add_edge("rewrite", "save");
-    g.set_finish_point("save");
+    g.add_edge("save", "learn");
+    g.set_finish_point("learn");
     g
 }
 
@@ -388,7 +441,7 @@ fn parse_lang(reply: &str) -> Option<String> {
         .find(|w| w.len() == 2 && w != "is")
 }
 
-fn lang_name(code: &str) -> &str {
+pub(crate) fn lang_name(code: &str) -> &str {
     match code {
         "en" => "English",
         "vi" => "Vietnamese",
@@ -422,7 +475,13 @@ fn grammar_rules(lang: &str) -> &'static str {
     }
 }
 
-fn translate_prompt(source: &str, target: &str, style: &str, terms: &[(String, String)]) -> String {
+fn translate_prompt(
+    source: &str,
+    target: &str,
+    style: &str,
+    terms: &[(String, String)],
+    wiki: &str,
+) -> String {
     let mut s = format!(
         "You are a professional novel translator. Translate the user's text from {} into {}. Translate the meaning, then {} Style: {}. Keep character names and terms consistent. {FORMAT_RULES}",
         lang_name(source),
@@ -436,16 +495,18 @@ fn translate_prompt(source: &str, target: &str, style: &str, terms: &[(String, S
             s.push_str(&format!("- {k} → {v}\n"));
         }
     }
+    s.push_str(wiki);
     s
 }
 
-fn rewrite_prompt(lang: &str, style: &str) -> String {
-    format!(
+fn rewrite_prompt(lang: &str, style: &str, wiki: &str) -> String {
+    let s = format!(
         "You are a professional {name} novel editor. The user's text is already in {name} but may be a rough machine translation; do not translate it into another language. Rewrite it so it reads as if written in {name} from the start. {} Fix spelling, punctuation and wrong word choices. Style: {}. Keep the meaning, events, dialogue and names; do not summarize, shorten or add anything. {FORMAT_RULES}",
         grammar_rules(lang),
         style_rule(style),
         name = lang_name(lang),
-    )
+    );
+    s + wiki
 }
 
 fn title_prompt(target: &str) -> String {
@@ -711,7 +772,8 @@ pub(crate) mod tests {
              insert into chapters (id, novel_id, number) values (10, 1, 1), (11, 1, 2);
              insert into chapter_translations (chapter_id, lang, source, state, title, content) values
                (10, 'en', 'original', 'published', 'Chapter 1', 'Once upon a time.\n\n\u{FFFC}pic1\n\nThe end.'),
-               (11, 'en', 'original', 'published', 'Chapter 2', 'Second chapter.');",
+               (11, 'en', 'original', 'published', 'Chapter 2', 'Second chapter.');
+             insert into wiki_books (novel_id, auto) values (1, 0);",
         )
         .unwrap();
         (conn, 1)
@@ -797,6 +859,7 @@ pub(crate) mod tests {
                 base_url: "http://x/v1/".into(),
                 api_key: "sk".into(),
                 model: "m".into(),
+                embed_model: String::new(),
             }),
         )
         .unwrap();
@@ -853,10 +916,34 @@ pub(crate) mod tests {
 
     #[test]
     fn prompts_ask_for_the_target_word_order() {
-        assert!(rewrite_prompt("vi", "natural").contains("subject, then verb, then object"));
-        assert!(translate_prompt("zh", "en", "literal", &[])
+        assert!(rewrite_prompt("vi", "natural", "").contains("subject, then verb, then object"));
+        assert!(translate_prompt("zh", "en", "literal", &[], "")
             .contains("subject, then verb, then object"));
-        assert!(!rewrite_prompt("vi", "natural").contains("English order"));
+        assert!(!rewrite_prompt("vi", "natural", "").contains("English order"));
+    }
+
+    #[test]
+    fn the_wiki_goes_in_the_prompt_and_learns_from_the_chapter() {
+        let (conn, _) = book("wiki");
+        super::super::wiki::set_auto(&conn, 1, true).unwrap();
+        conn.execute(
+            "insert into wiki_entries (uid, novel_id, kind, name, names, updated_at)
+             values ('u1', 1, 'term', 'Second', '{\"vi\":\"Thứ Hai\"}', 1)",
+            [],
+        )
+        .unwrap();
+        let llm = std::sync::Arc::new(Fake::new("en"));
+        run(&conn, llm.clone(), req(11, "vi")).unwrap();
+        let calls = llm.calls.lock().unwrap();
+        let translate = calls.iter().find(|(s, _)| s.contains("novel translator")).unwrap();
+        assert!(translate.0.contains("- Second → Thứ Hai (term)"));
+        // Fake has no tools, so the wiki was asked for as JSON after the translation.
+        assert!(calls.last().unwrap().0.contains("JSON"));
+        drop(calls);
+        let done: i64 = conn
+            .query_row("select count(*) from wiki_chapters where chapter_id = 11", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(done, 1);
     }
 
     #[test]
