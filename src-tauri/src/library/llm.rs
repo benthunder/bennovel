@@ -1,8 +1,8 @@
 //! The user's own LLM for AI translation on this device: any chat API in the OpenAI
 //! format (`POST {base_url}/chat/completions`), so OpenAI, Gemini, DeepSeek,
 //! OpenRouter, a local Ollama… all work by their base URL, key and model name.
-//! The settings live in the library file (`llm_config`) and are taken out of every
-//! synced copy (`translate::strip`); the key never goes back to the web side.
+//! The settings live in the library file (`llm_config`) and go into backups, key
+//! included (`sync::backup_to`); the key never goes back to the web side.
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};

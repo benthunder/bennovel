@@ -287,6 +287,12 @@ function useAppState() {
     setToast(msg);
     toastTimer.current = setTimeout(() => setToast(null), 2200);
   }, []);
+  // Started again after a backup brought settings back (see ProfileScreen).
+  useEffect(() => {
+    if (!load('restoredNotice', false)) return;
+    save('restoredNotice', null);
+    showToast(tr('backup.restored'));
+  }, [showToast, tr]);
 
   const push = useCallback((r: Route) => setStack(s => [...s, r]), []);
   const back = useCallback(() => setStack(s => (s.length > 1 ? s.slice(0, -1) : s)), []);

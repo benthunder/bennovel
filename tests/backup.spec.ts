@@ -6,13 +6,19 @@ import { expect, test, type Page } from '@playwright/test';
 
 /** English interface, no connection to the catalog. */
 async function boot(page: Page) {
-  await page.addInitScript(() => localStorage.setItem('bennovel.uiLang', JSON.stringify('en')));
+  // Set once, so settings a restore brings back survive the restart.
+  await page.addInitScript(() => {
+    if (!localStorage.getItem('bennovel.uiLang')) localStorage.setItem('bennovel.uiLang', JSON.stringify('en'));
+  });
   await page.route('**/rest/v1/**', route => route.abort());
 }
 
-/** Stands in for the native app; the save and open dialogs pick `/home/mai/b.bnbackup`. Calls go to `window.__calls`. */
-async function nativeApp(page: Page) {
-  await page.addInitScript(() => {
+/**
+ * Stands in for the native app; the save and open dialogs pick `/home/mai/b.bnbackup`,
+ * and the backup restored holds `settings`. Calls go to `window.__calls`.
+ */
+async function nativeApp(page: Page, settings: string | null = null) {
+  await page.addInitScript(settings => {
     const w = window as unknown as Record<string, unknown>;
     const calls: { cmd: string; args: unknown }[] = [];
     w.__calls = calls;
@@ -30,11 +36,12 @@ async function nativeApp(page: Page) {
           case 'take_opened_files': return [];
           case 'plugin:dialog|save':
           case 'plugin:dialog|open': return '/home/mai/b.bnbackup';
+          case 'library_restore': return settings;
           default: return null;
         }
       }
     };
-  });
+  }, settings);
 }
 
 const calls = (page: Page) => page.evaluate(() => (window as unknown as { __calls: { cmd: string; args: unknown }[] }).__calls);
@@ -66,7 +73,10 @@ test('Profile backs the library up to a file and brings it back, with no sync or
   await page.getByRole('button', { name: 'Restore' }).click();
   await expect(page.getByText('Backup restored.')).toBeVisible();
   const done = await calls(page);
-  expect(done.find(c => c.cmd === 'library_backup')?.args).toMatchObject({ user: '', path: '/home/mai/b.bnbackup' });
+  const backup = done.find(c => c.cmd === 'library_backup')?.args as { user: string; path: string; settings: string };
+  expect(backup).toMatchObject({ user: '', path: '/home/mai/b.bnbackup' });
+  // The app's settings go into the backup with the library.
+  expect(JSON.parse(backup.settings)).toMatchObject({ uiLang: 'en' });
   expect(done.find(c => c.cmd === 'library_restore')?.args).toMatchObject({ user: '', path: '/home/mai/b.bnbackup' });
 });
 
@@ -76,4 +86,17 @@ test('a library from an earlier signed-in version keeps being used', async ({ pa
   await nativeApp(page);
   await page.goto('/');
   await expect.poll(async () => (await calls(page)).find(c => c.cmd === 'library_list')?.args).toMatchObject({ user: 'mai@example.com' });
+});
+
+test('restoring a backup brings back the app and reading settings', async ({ page }) => {
+  await boot(page);
+  await nativeApp(page, JSON.stringify({ uiLang: 'vi', defaultLang: 'vi', readerPrefs: { fontSize: 22, theme: 'night', lineH: 1.75, gap: 'normal', margin: 'normal', align: 'left' } }));
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Profile' }).filter({ visible: true }).first().click();
+  await page.getByRole('button', { name: 'Restore' }).click();
+  // The app starts again in the backup's language and says so.
+  await expect(page.getByText('Đã khôi phục bản sao lưu.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Cá nhân' }).filter({ visible: true }).first()).toBeVisible();
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('bennovel.readerPrefs')!).theme)).toBe('night');
+  expect(await page.evaluate(() => localStorage.getItem('bennovel.defaultLang'))).toBe('"vi"');
 });

@@ -290,7 +290,7 @@ export const vi: Record<MessageKey, string> = {
   'ai.versions': 'Bản AI',
   'ai.versionRow': '{lang} · {style} · {n} chương',
   'ai.hint': 'Dùng LLM đã cài ở Cá nhân. Nếu sách đã là ngôn ngữ đích, AI sẽ viết lại theo văn phong đã chọn và đúng ngữ pháp.',
-  'backup.hint': 'Sách kèm bản dịch AI, lịch sử, yêu thích và truyện đã tải. Khôi phục sẽ gộp lại vào thư viện này.',
+  'backup.hint': 'Toàn bộ: sách kèm bản dịch AI, lịch sử, yêu thích, quy tắc thay thế, từ điển, truyện đã tải, cài đặt app và cài đặt đọc, cùng LLM (gồm cả API key, hãy giữ file cẩn thận). Khôi phục sẽ gộp vào máy này.',
   'backup.create': 'Tạo bản sao lưu',
   'backup.restore': 'Khôi phục',
   'backup.done': 'Đã lưu bản sao lưu.',

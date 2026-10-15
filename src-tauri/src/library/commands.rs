@@ -939,20 +939,27 @@ pub async fn ai_resume<R: Runtime>(
 /* ---------- Backups (sync.rs): the whole library in one file the user keeps ---------- */
 
 /// Writes a backup of the library to `path` (picked in the save dialog): books with
-/// their AI translations, history, favourites, replace rules and downloaded novels.
-/// The LLM settings stay out. Returns its size in bytes.
+/// their AI translations, history, favourites, replace rules, glossaries, downloaded
+/// novels, the LLM settings (API key included) and the app's `settings` (JSON).
+/// Returns its size in bytes.
 #[tauri::command]
 pub async fn library_backup<R: Runtime>(
     app: AppHandle<R>,
     user: String,
     path: FilePath,
+    settings: Option<String>,
 ) -> Result<u64, BookError> {
     use tauri_plugin_fs::{FsExt, OpenOptions};
     let db_file = db_path(&app, &user)?;
     blocking(move || {
         let gz = db_file.with_extension("backup.gz");
         let result = (|| {
-            let size = super::sync::backup_to(&db::open(&db_file)?, &db_file.with_extension("backup"), &gz)?;
+            let size = super::sync::backup_to(
+                &db::open(&db_file)?,
+                &db_file.with_extension("backup"),
+                &gz,
+                settings.as_deref(),
+            )?;
             let mut opts = OpenOptions::new();
             opts.write(true).create(true).truncate(true);
             let mut out = app.fs().open(path, opts)?;
@@ -967,13 +974,14 @@ pub async fn library_backup<R: Runtime>(
 }
 
 /// Brings back a backup picked by the user, merged into the library: what it holds
-/// returns even if it was deleted here since.
+/// returns even if it was deleted here since. Returns the app's settings kept in the
+/// backup (JSON), for the app to apply.
 #[tauri::command]
 pub async fn library_restore<R: Runtime>(
     app: AppHandle<R>,
     user: String,
     path: FilePath,
-) -> Result<(), BookError> {
+) -> Result<Option<String>, BookError> {
     use tauri_plugin_fs::{FsExt, OpenOptions};
     let db_file = db_path(&app, &user)?;
     blocking(move || {
@@ -981,12 +989,17 @@ pub async fn library_restore<R: Runtime>(
         opts.read(true);
         let file = app.fs().open(path, opts)?;
         let mut conn = db::open(&db_file)?;
-        for id in super::sync::restore_from(&mut conn, std::io::BufReader::new(file), &db_file.with_extension("restore"))? {
+        let restored = super::sync::restore_from(
+            &mut conn,
+            std::io::BufReader::new(file),
+            &db_file.with_extension("restore"),
+        )?;
+        for id in restored.gone {
             if let Some(f) = super::original_file(&db_file, id) {
                 let _ = std::fs::remove_file(f);
             }
         }
-        Ok(())
+        Ok(restored.settings)
     })
     .await
 }

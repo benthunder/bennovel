@@ -288,7 +288,7 @@ export const en = {
   'ai.versions': 'AI versions',
   'ai.versionRow': '{lang} · {style} · {n} chapters',
   'ai.hint': 'Uses the LLM set in Profile. If the book is already in the target language, the AI rewrites it in the chosen style with correct grammar.',
-  'backup.hint': 'Books with their AI translations, history, favourites and downloaded novels. Restoring adds them back to this library.',
+  'backup.hint': 'Everything: books with their AI translations, history, favourites, replace rules, glossaries, downloaded novels, app and reading settings, and the LLM (its API key too, so keep the file safe). Restoring merges it into this device.',
   'backup.create': 'Create backup',
   'backup.restore': 'Restore',
   'backup.done': 'Backup saved.',

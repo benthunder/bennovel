@@ -9,6 +9,7 @@ import { relativeTime, useI18n } from '../i18n';
 import { AiFailure, LLM_PROVIDERS, aiErrorDetail, getLlmSettings, setLlmConfig, type LlmConfig, type LlmSettings } from '../lib/ai';
 import { useAsync } from '../lib/useAsync';
 import { createBackup, restoreBackup } from '../lib/backup';
+import { save } from '../lib/storage';
 import { useApp } from '../store/AppStore';
 import { useLayout } from '../lib/useLayout';
 import { canOpenLocalBooks, listLibrary, localCover, openLibraryBook, type LibraryBook } from '../lib/localBook';
@@ -108,9 +109,16 @@ function BackupCard() {
     try {
       if (job === 'backup') {
         if (await createBackup(user)) app.showToast(t('backup.done'));
-      } else if (await restoreBackup(user)) {
-        app.reloadLibrary();
-        app.showToast(t('backup.restored'));
+      } else {
+        const restored = await restoreBackup(user);
+        if (restored === 'settings') {
+          // Language and reader settings are read at start: start again with them.
+          save('restoredNotice', true);
+          window.location.reload();
+        } else if (restored) {
+          app.reloadLibrary();
+          app.showToast(t('backup.restored'));
+        }
       }
     } catch (e) {
       console.error(e);
