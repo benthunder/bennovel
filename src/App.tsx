@@ -7,10 +7,7 @@ import { useLayout } from './lib/useLayout';
 import { useOpenedFiles } from './lib/useOpenedFiles';
 import { useApp, type Route } from './store/AppStore';
 import { DetailScreen } from './screens/DetailScreen';
-import { HomeScreen } from './screens/HomeScreen';
 import { LibraryScreen } from './screens/LibraryScreen';
-import { ListScreen } from './screens/ListScreen';
-import { LoginScreen } from './screens/LoginScreen';
 import { ProfileScreen } from './screens/ProfileScreen';
 import { ReaderScreen } from './screens/ReaderScreen';
 import { LocalBookScreen } from './screens/LocalBookScreen';
@@ -18,10 +15,7 @@ import { BookDetailScreen } from './screens/BookDetailScreen';
 
 function renderRoute(r: Route) {
   switch (r.s) {
-    case 'login': return <LoginScreen recovery={r.recovery} />;
-    case 'home': return <HomeScreen />;
     case 'detail': return <DetailScreen id={r.id} />;
-    case 'list': return <ListScreen src={r.src} />;
     case 'library': return <LibraryScreen />;
     case 'profile': return <ProfileScreen />;
     case 'reader': return <ReaderScreen id={r.id} ch={r.ch} lang={r.lang} />;
@@ -38,11 +32,11 @@ export default function App() {
   // the system goes straight to the reader.
   useOpenedFiles();
   const top = app.top;
-  // Online screens wait for the catalog; sign-in and books on the device don't need it.
-  const waiting = status === 'loading' && top.s !== 'book' && top.s !== 'bookDetail' && top.s !== 'login';
+  // Online screens wait for the catalog; books on the device don't need it.
+  const waiting = status === 'loading' && (top.s === 'detail' || top.s === 'reader');
   // Keyed by stack depth + route, so each pushed screen starts fresh (scroll, search, filters).
   const key = `${app.stack.length}:${JSON.stringify(top)}:${waiting}`;
-  const showNav = top.s !== 'reader' && top.s !== 'book' && top.s !== 'login';
+  const showNav = top.s !== 'reader' && top.s !== 'book';
   // Tablet gets a navigation rail and desktop a sidebar; content starts to their right.
   const contentLeft = showNav ? lay.navLeft : 0;
 

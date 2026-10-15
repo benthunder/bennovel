@@ -1,6 +1,6 @@
 [package]
 name = "bennovel"
-version = "0.10.1"
+version = "0.11.0"
 description = "BenNovel — novel reader"
 edition = "2021"
 
@@ -33,8 +33,6 @@ tauri-plugin-folder-picker = { path = "plugins/folder-picker" }
 tauri-plugin-deep-link = "2"
 tauri-plugin-opener = "2"
 ureq = { version = "2", default-features = false, features = ["tls"] }
-hmac = "0.12"
-sha2 = "0.10"
 tokio = { version = "1", features = ["sync", "rt"] }
 rust-langgraph = { version = "0.1.1", default-features = false }
 tauri-plugin-notification = "2"
@@ -46,8 +44,3 @@ tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 # Calls into the Android WebView (focus it so the first tap opens the keyboard).
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"
-
-# Tests against a real S3 server can trust an extra CA (S3_TEST_CA), e.g. a proxy's.
-[dev-dependencies]
-rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
-rustls-pki-types = { version = "1", features = ["std"] }

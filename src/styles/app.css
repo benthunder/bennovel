@@ -130,7 +130,7 @@ input[type='range'] { accent-color: var(--color-accent); width: 100%; }
   position: absolute; left: 0; right: 0; bottom: 0; z-index: 20; height: var(--nav-h);
   padding: 0 10px var(--safe-bottom); background: var(--color-bg); border-radius: 30px 30px 0 0;
   box-shadow: 0 -4px 18px color-mix(in srgb, #2e2b25 10%, transparent);
-  display: grid; grid-template-columns: repeat(5, 1fr); align-items: center;
+  display: grid; grid-template-columns: repeat(3, 1fr); align-items: center;
 }
 .bottom-nav__item {
   border: none; background: none; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 3px;
