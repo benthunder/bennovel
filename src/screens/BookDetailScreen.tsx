@@ -13,7 +13,7 @@ import {
 } from '../lib/ai';
 import { save as store } from '../lib/storage';
 import { aiViewKey } from './LocalBookScreen';
-import { deleteLibraryBook, getLibraryDetail, libraryUser, localCover, openLibraryBook, updateLibraryBook } from '../lib/localBook';
+import { deleteLibraryBook, getLibraryDetail, localCover, openLibraryBook, updateLibraryBook } from '../lib/localBook';
 import { useAsync } from '../lib/useAsync';
 import { getWiki } from '../lib/wiki';
 import { useLayout } from '../lib/useLayout';
@@ -27,7 +27,7 @@ export function BookDetailScreen({ novelId }: { novelId: number }) {
   const t = useT();
   const app = useApp();
   const lay = useLayout();
-  const user = libraryUser(app.user);
+  const user = app.libKey;
   const sectionName = useSectionName();
   // Loaded again after saving the details.
   const [rev, setRev] = useState(0);
@@ -191,7 +191,7 @@ export function BookDetailScreen({ novelId }: { novelId: number }) {
 function WikiButton({ novelId, title }: { novelId: number; title: string }) {
   const t = useT();
   const app = useApp();
-  const user = libraryUser(app.user);
+  const user = app.libKey;
   const q = useAsync(() => getWiki(user, novelId), [user, novelId, app.aiRev]);
   const n = q.status === 'ready' ? q.data?.entries.length ?? null : null;
   return (
@@ -218,7 +218,7 @@ function Stat({ value, label }: { value: React.ReactNode; label: string }) {
 function AiBox({ novelId, lang, onRead }: { novelId: number; lang: string; onRead: (at?: number) => void }) {
   const { t, uiLang } = useI18n();
   const app = useApp();
-  const user = libraryUser(app.user);
+  const user = app.libKey;
   const llmQ = useAsync(() => getLlmSettings(user), [user]);
   const progressQ = useAsync(() => getAiProgress(user, novelId), [user, novelId, app.aiRev]);
   const versionsQ = useAsync(() => getAiVersions(user, novelId), [user, novelId, app.aiRev]);
