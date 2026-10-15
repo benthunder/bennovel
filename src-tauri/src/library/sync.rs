@@ -54,6 +54,7 @@ fn snapshot(conn: &Connection, tmp: &Path, out: &Path, downloads: bool) -> Resul
         }
         // The LLM settings (with their API key) and the AI queue never leave the device.
         super::translate::strip(&copy)?;
+        super::wiki::strip(&copy)?;
         copy.execute("vacuum", [])?;
         drop(copy);
         let file = std::io::BufWriter::new(std::fs::File::create(out)?);
@@ -234,6 +235,8 @@ fn merge_attached(tx: &Transaction) -> Result<Vec<i64>, SyncError> {
             params![rid, lid],
         )?;
     }
+
+    super::wiki::merge_attached(tx)?;
 
     // Downloaded online novels: only a backup carries them (sync leaves them out).
     tx.execute_batch(
@@ -655,6 +658,7 @@ mod tests {
                 base_url: "https://api.openai.com/v1".into(),
                 api_key: "sk-secret".into(),
                 model: "m".into(),
+                embed_model: String::new(),
             }),
         )
         .unwrap();

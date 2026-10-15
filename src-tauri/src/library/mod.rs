@@ -17,6 +17,7 @@ pub mod s3;
 pub mod server;
 pub mod sync;
 pub mod translate;
+pub mod wiki;
 
 use crate::book::image::{self, Image};
 use crate::book::{BookError, BookFormat, BookSource, Section, SectionMeta};
