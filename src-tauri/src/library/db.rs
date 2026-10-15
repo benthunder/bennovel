@@ -264,6 +264,69 @@ create table ai_jobs (
   unique (chapter_id, lang, style)
 );
 "#,
+    r#"
+-- The wiki of an imported book (see wiki.rs): characters, places, factions, items and
+-- terms with the relations between them, filled by the AI as it translates and edited
+-- by the user. Synced: `uid` is the same on every device, the newer `updated_at` (epoch
+-- ms) wins and a removal is kept as `deleted = 1` so it reaches other devices.
+create table wiki_entries (
+  id            integer primary key,
+  uid           text not null unique,
+  novel_id      integer not null references novels (id) on delete cascade,
+  kind          text not null check (kind in ('character', 'place', 'faction', 'item', 'term', 'other')),
+  -- As written in the original text.
+  name          text not null,
+  -- JSON object: the name to use per language, {"vi": "Lâm Động"}.
+  names         text not null default '{}',
+  -- JSON array of other names in the original text.
+  aliases       text not null default '[]',
+  summary       text not null default '',
+  first_chapter integer,
+  source        text not null default 'ai' check (source in ('ai', 'user')),
+  deleted       integer not null default 0,
+  updated_at    integer not null,
+  unique (novel_id, name)
+);
+
+create table wiki_relations (
+  id            integer primary key,
+  uid           text not null unique,
+  novel_id      integer not null references novels (id) on delete cascade,
+  from_uid      text not null references wiki_entries (uid) on delete cascade,
+  to_uid        text not null references wiki_entries (uid) on delete cascade,
+  -- Short, in the language it was written in ("sư phụ của").
+  kind          text not null,
+  note          text not null default '',
+  first_chapter integer,
+  deleted       integer not null default 0,
+  updated_at    integer not null,
+  unique (from_uid, to_uid, kind)
+);
+create index wiki_relations_novel on wiki_relations (novel_id);
+
+-- Local only, never synced: each entry's embedding (float32, read by sqlite-vec) from
+-- the embedding model set with the LLM, and the text it was made from.
+create table wiki_vectors (
+  entry_id  integer primary key references wiki_entries (id) on delete cascade,
+  model     text not null,
+  text      text not null,
+  embedding blob not null
+);
+
+-- Local only: per book, whether translating updates the wiki, its last failure, and
+-- the chapters already read into it.
+create table wiki_books (
+  novel_id   integer primary key references novels (id) on delete cascade,
+  auto       integer not null default 1,
+  last_error text
+);
+create table wiki_chapters (
+  chapter_id integer primary key references chapters (id) on delete cascade,
+  done_at    integer not null
+);
+
+alter table llm_config add column embed_model text not null default '';
+"#,
 ];
 
 /// Epoch milliseconds now.
@@ -296,7 +359,20 @@ pub fn set_state(conn: &Connection, key: &str, value: &str) -> rusqlite::Result<
     Ok(())
 }
 
+/// Builds sqlite-vec (`vec_distance_cosine`…) into every connection opened from here
+/// on; it is compiled into the app, so it works on Android too.
+fn load_vec() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| unsafe {
+        #[allow(clippy::missing_transmute_annotations)]
+        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+            sqlite_vec::sqlite3_vec_init as *const (),
+        )));
+    });
+}
+
 pub fn open(path: &Path) -> rusqlite::Result<Connection> {
+    load_vec();
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
