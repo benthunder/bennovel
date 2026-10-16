@@ -13,6 +13,12 @@
 //!   name only. The vectors stay on the device; entries and relations are synced.
 //! - An entry the user edited keeps their words: the AI may only add to it. One the
 //!   user removed stays removed.
+//! - What an entry is and how it links to others is the same in every language: the
+//!   relation types (`REL_TYPES`) are codes the app names in each language, levels are
+//!   ordered by `rank`, places nest by `located_in` (the map). Only the words are kept
+//!   per language (`names`, `summaries`, a free relation's `labels`); the app shows
+//!   them in the reading language, else the raw ones, and `translate_missing` fills a
+//!   language in.
 
 use super::llm::{AiError, Chat};
 use rusqlite::{params, Connection, OptionalExtension, Row};
@@ -20,7 +26,38 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
-pub const KINDS: &[&str] = &["character", "place", "faction", "item", "term", "other"];
+pub const KINDS: &[&str] = &[
+    "character",
+    "place",
+    "faction",
+    "item",
+    "level",
+    "term",
+    "other",
+];
+/// Relation types, as `from` to `to` ("A master_of B"). The app shows each in the
+/// reading language and from the other side too ("B disciple of A"). Anything else is
+/// a free relation in someone's own words.
+pub const REL_TYPES: &[&str] = &[
+    "master_of",
+    "disciple_of",
+    "parent_of",
+    "child_of",
+    "sibling_of",
+    "spouse_of",
+    "lover_of",
+    "friend_of",
+    "enemy_of",
+    "member_of",
+    "leader_of",
+    "located_in",
+    "owns",
+    "has_level",
+];
+/// The key of the descriptions written in the book's own language.
+pub const RAW: &str = "raw";
+/// Entries or relations put in one request of `translate_missing`.
+const TRANSLATE_BATCH: usize = 25;
 /// Tool-call rounds allowed for one chapter.
 const MAX_ROUNDS: usize = 12;
 /// Entries put in a translation prompt at most.
@@ -47,7 +84,10 @@ pub struct Entry {
     /// The name to use per language.
     pub names: BTreeMap<String, String>,
     pub aliases: Vec<String>,
-    pub summary: String,
+    /// The description per language; `RAW` in the book's own language.
+    pub summaries: BTreeMap<String, String>,
+    /// A level's place in its ladder, lowest first.
+    pub rank: Option<i64>,
     pub first_chapter: Option<i64>,
     /// "ai" or "user" (edited by the user).
     pub source: String,
@@ -60,7 +100,10 @@ pub struct Relation {
     pub uid: String,
     pub from_uid: String,
     pub to_uid: String,
+    /// One of `REL_TYPES`, or a free relation's words as first written.
     pub kind: String,
+    /// A free relation's words per language.
+    pub labels: BTreeMap<String, String>,
     pub note: String,
     pub first_chapter: Option<i64>,
 }
@@ -78,7 +121,9 @@ pub struct EntryInput {
     #[serde(default)]
     pub aliases: Vec<String>,
     #[serde(default)]
-    pub summary: String,
+    pub summaries: BTreeMap<String, String>,
+    #[serde(default)]
+    pub rank: Option<i64>,
 }
 
 /// A book's wiki as the app shows it.
@@ -95,22 +140,60 @@ pub struct Wiki {
 }
 
 const ENTRY_COLS: &str =
-    "e.uid, e.kind, e.name, e.names, e.aliases, e.summary, e.first_chapter, e.source, e.updated_at";
+    "e.uid, e.kind, e.name, e.names, e.aliases, e.summaries, e.first_chapter, e.source, e.updated_at, e.rank";
+/// Columns after `ENTRY_COLS` start here.
+const AFTER: usize = 10;
 
 fn entry_row(r: &Row) -> rusqlite::Result<Entry> {
     let names: String = r.get(3)?;
     let aliases: String = r.get(4)?;
+    let summaries: String = r.get(5)?;
     Ok(Entry {
         uid: r.get(0)?,
         kind: r.get(1)?,
         name: r.get(2)?,
         names: serde_json::from_str(&names).unwrap_or_default(),
         aliases: serde_json::from_str(&aliases).unwrap_or_default(),
-        summary: r.get(5)?,
+        summaries: serde_json::from_str(&summaries).unwrap_or_default(),
         first_chapter: r.get(6)?,
         source: r.get(7)?,
         updated_at: r.get(8)?,
+        rank: r.get(9)?,
     })
+}
+
+impl Entry {
+    /// The description in `lang`, else the raw one, else any.
+    pub fn summary_in(&self, lang: &str) -> &str {
+        self.summaries
+            .get(lang)
+            .or_else(|| self.summaries.get(RAW))
+            .or_else(|| self.summaries.values().next())
+            .map(String::as_str)
+            .unwrap_or("")
+    }
+}
+
+/// A relation type's code for `kind` ("Master of" → master_of), if it is one.
+pub fn rel_type(kind: &str) -> Option<&'static str> {
+    let k = kind.trim().to_ascii_lowercase().replace([' ', '-'], "_");
+    REL_TYPES.iter().find(|t| **t == k).copied()
+}
+
+/// How a relation reads in prompts to the model (English words for the types).
+fn rel_words(r: &Relation, lang: &str) -> String {
+    match rel_type(&r.kind) {
+        Some(t) => t.replace('_', " "),
+        None => r
+            .labels
+            .get(lang)
+            .cloned()
+            .unwrap_or_else(|| r.kind.clone()),
+    }
+}
+
+fn to_json<T: Serialize>(v: &T, empty: &str) -> String {
+    serde_json::to_string(v).unwrap_or_else(|_| empty.into())
 }
 
 fn new_uid(conn: &Connection) -> rusqlite::Result<String> {
@@ -128,17 +211,19 @@ pub fn entries(conn: &Connection, novel_id: i64) -> rusqlite::Result<Vec<Entry>>
 
 pub fn relations(conn: &Connection, novel_id: i64) -> rusqlite::Result<Vec<Relation>> {
     let mut stmt = conn.prepare(
-        "select r.uid, r.from_uid, r.to_uid, r.kind, r.note, r.first_chapter from wiki_relations r
+        "select r.uid, r.from_uid, r.to_uid, r.kind, r.note, r.first_chapter, r.labels from wiki_relations r
          join wiki_entries a on a.uid = r.from_uid join wiki_entries b on b.uid = r.to_uid
          where r.novel_id = ?1 and r.deleted = 0 and a.deleted = 0 and b.deleted = 0
          order by r.id",
     )?;
     let rows = stmt.query_map([novel_id], |r| {
+        let labels: String = r.get(6)?;
         Ok(Relation {
             uid: r.get(0)?,
             from_uid: r.get(1)?,
             to_uid: r.get(2)?,
             kind: r.get(3)?,
+            labels: serde_json::from_str(&labels).unwrap_or_default(),
             note: r.get(4)?,
             first_chapter: r.get(5)?,
         })
@@ -205,7 +290,7 @@ fn find(
              order by e.name = ?2 desc, e.deleted limit 1"
         ),
         params![novel_id, name.trim()],
-        |r| Ok((r.get(9)?, entry_row(r)?, r.get::<_, bool>(10)?)),
+        |r| Ok((r.get(AFTER)?, entry_row(r)?, r.get::<_, bool>(AFTER + 1)?)),
     )
     .optional()
 }
@@ -238,60 +323,58 @@ fn clean_names(names: BTreeMap<String, String>) -> BTreeMap<String, String> {
         .collect()
 }
 
-#[allow(clippy::too_many_arguments)]
-fn write_entry(
-    conn: &Connection,
-    id: i64,
-    kind: &str,
-    name: &str,
-    names: &BTreeMap<String, String>,
-    aliases: &[String],
-    summary: &str,
-    source: &str,
-) -> rusqlite::Result<()> {
+/// An entry's fields as written to its row.
+struct Fields<'a> {
+    kind: &'a str,
+    name: &'a str,
+    names: &'a BTreeMap<String, String>,
+    aliases: &'a [String],
+    summaries: &'a BTreeMap<String, String>,
+    rank: Option<i64>,
+    source: &'a str,
+}
+
+fn write_entry(conn: &Connection, id: i64, f: &Fields) -> rusqlite::Result<()> {
     conn.execute(
-        "update wiki_entries set kind = ?2, name = ?3, names = ?4, aliases = ?5, summary = ?6,
-           source = ?7, deleted = 0, updated_at = ?8 where id = ?1",
+        "update wiki_entries set kind = ?2, name = ?3, names = ?4, aliases = ?5, summaries = ?6,
+           rank = ?7, source = ?8, deleted = 0, updated_at = ?9 where id = ?1",
         params![
             id,
-            kind,
-            name,
-            serde_json::to_string(names).unwrap_or_else(|_| "{}".into()),
-            serde_json::to_string(aliases).unwrap_or_else(|_| "[]".into()),
-            summary,
-            source,
+            f.kind,
+            f.name,
+            to_json(f.names, "{}"),
+            to_json(&f.aliases, "[]"),
+            to_json(f.summaries, "{}"),
+            f.rank,
+            f.source,
             super::db::now_ms()
         ],
     )?;
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn insert_entry(
     conn: &Connection,
     novel_id: i64,
-    kind: &str,
-    name: &str,
-    names: &BTreeMap<String, String>,
-    aliases: &[String],
-    summary: &str,
+    f: &Fields,
     first_chapter: Option<i64>,
-    source: &str,
 ) -> rusqlite::Result<String> {
     let uid = new_uid(conn)?;
     conn.execute(
-        "insert into wiki_entries (uid, novel_id, kind, name, names, aliases, summary, first_chapter, source, updated_at)
-         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        "insert into wiki_entries (uid, novel_id, kind, name, names, aliases, summaries, rank,
+           first_chapter, source, updated_at)
+         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             uid,
             novel_id,
-            kind,
-            name,
-            serde_json::to_string(names).unwrap_or_else(|_| "{}".into()),
-            serde_json::to_string(aliases).unwrap_or_else(|_| "[]".into()),
-            summary,
+            f.kind,
+            f.name,
+            to_json(f.names, "{}"),
+            to_json(&f.aliases, "[]"),
+            to_json(f.summaries, "{}"),
+            f.rank,
             first_chapter,
-            source,
+            f.source,
             super::db::now_ms()
         ],
     )?;
@@ -312,7 +395,16 @@ pub fn save(conn: &Connection, novel_id: i64, input: EntryInput) -> Result<Entry
     let kind = kind_of(&input.kind);
     let names = clean_names(input.names);
     let aliases = clean_list(input.aliases, &name);
-    let summary = input.summary.trim();
+    let summaries = clean_names(input.summaries);
+    let fields = Fields {
+        kind,
+        name: &name,
+        names: &names,
+        aliases: &aliases,
+        summaries: &summaries,
+        rank: input.rank.filter(|_| kind == "level"),
+        source: "user",
+    };
     let id: Option<i64> = match input.uid.as_deref() {
         Some(uid) => Some(
             conn.query_row(
@@ -344,14 +436,12 @@ pub fn save(conn: &Connection, novel_id: i64, input: EntryInput) -> Result<Entry
     }
     let uid = match id {
         Some(id) => {
-            write_entry(conn, id, kind, &name, &names, &aliases, summary, "user")?;
+            write_entry(conn, id, &fields)?;
             conn.query_row("select uid from wiki_entries where id = ?1", [id], |r| {
                 r.get(0)
             })?
         }
-        None => insert_entry(
-            conn, novel_id, kind, &name, &names, &aliases, summary, None, "user",
-        )?,
+        None => insert_entry(conn, novel_id, &fields, None)?,
     };
     Ok(by_uid(conn, &uid)?.expect("saved entry"))
 }
@@ -372,7 +462,8 @@ pub fn remove(conn: &Connection, uid: &str) -> rusqlite::Result<()> {
 }
 
 /// Adds (or, from the user, brings back) a relation; returns its uid, or None when the
-/// user removed it before and the AI asks again.
+/// user removed it before and the AI asks again. `kind` is a relation type, or free
+/// words written in `lang`.
 #[allow(clippy::too_many_arguments)]
 fn relate(
     conn: &Connection,
@@ -380,16 +471,32 @@ fn relate(
     from_uid: &str,
     to_uid: &str,
     kind: &str,
+    lang: &str,
     note: &str,
     first_chapter: Option<i64>,
     by_user: bool,
 ) -> rusqlite::Result<Option<String>> {
-    let kind = kind.trim();
+    let typed = rel_type(kind);
+    let kind = typed.unwrap_or(kind.trim());
     let note = note.trim();
+    // A free relation is found by its words in any language.
+    let kind: String = match typed {
+        Some(_) => kind.to_string(),
+        None => conn
+            .query_row(
+                "select kind from wiki_relations where from_uid = ?1 and to_uid = ?2 and (kind = ?3
+                   or exists (select 1 from json_each(labels) l where l.value = ?3))",
+                params![from_uid, to_uid, kind],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or_else(|| kind.to_string()),
+    };
+    let label = typed.is_none().then(|| kind.clone());
     let existing: Option<(String, bool)> = conn
         .query_row(
             "select uid, deleted from wiki_relations where from_uid = ?1 and to_uid = ?2 and kind = ?3",
-            params![from_uid, to_uid, kind],
+            params![from_uid, to_uid, &kind],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()?;
@@ -406,10 +513,14 @@ fn relate(
         }
         None => {
             let uid = new_uid(conn)?;
+            let mut labels = BTreeMap::new();
+            if let Some(label) = label {
+                labels.insert(lang.to_string(), label);
+            }
             conn.execute(
-                "insert into wiki_relations (uid, novel_id, from_uid, to_uid, kind, note, first_chapter, updated_at)
-                 values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![uid, novel_id, from_uid, to_uid, kind, note, first_chapter, now],
+                "insert into wiki_relations (uid, novel_id, from_uid, to_uid, kind, labels, note, first_chapter, updated_at)
+                 values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![uid, novel_id, from_uid, to_uid, kind, to_json(&labels, "{}"), note, first_chapter, now],
             )?;
             Ok(Some(uid))
         }
@@ -423,6 +534,7 @@ pub fn add_relation(
     from_uid: &str,
     to_uid: &str,
     kind: &str,
+    lang: &str,
     note: &str,
 ) -> Result<String, AiError> {
     if kind.trim().is_empty() || from_uid == to_uid {
@@ -433,7 +545,10 @@ pub fn add_relation(
             return Err(AiError::Other("wiki-entry-missing".into()));
         }
     }
-    Ok(relate(conn, novel_id, from_uid, to_uid, kind, note, None, true)?.expect("by user"))
+    Ok(relate(
+        conn, novel_id, from_uid, to_uid, kind, lang, note, None, true,
+    )?
+    .expect("by user"))
 }
 
 pub fn remove_relation(conn: &Connection, uid: &str) -> rusqlite::Result<()> {
@@ -457,6 +572,8 @@ struct AiEntry {
     aliases: Vec<String>,
     #[serde(default)]
     summary: String,
+    #[serde(default)]
+    rank: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -497,30 +614,39 @@ fn upsert_ai(
             if !translated.is_empty() && (!mine || !names.contains_key(lang)) {
                 names.insert(lang.to_string(), translated);
             }
-            let (kind, summary) = if mine {
-                let summary = if e.summary.is_empty() {
-                    item.summary.trim()
-                } else {
-                    &e.summary
-                };
-                (e.kind.as_str(), summary.to_string())
+            let mut summaries = e.summaries.clone();
+            let summary = item.summary.trim();
+            if !summary.is_empty() && (!mine || !summaries.contains_key(lang)) {
+                summaries.insert(lang.to_string(), summary.to_string());
+            }
+            let kind = if mine || item.kind.trim().is_empty() {
+                e.kind.as_str()
             } else {
-                let kind = if item.kind.trim().is_empty() {
-                    e.kind.as_str()
-                } else {
-                    kind_of(&item.kind)
-                };
-                let summary = if item.summary.trim().is_empty() {
-                    e.summary.clone()
-                } else {
-                    item.summary.trim().to_string()
-                };
-                (kind, summary)
+                kind_of(&item.kind)
             };
-            if names != e.names || aliases != e.aliases || summary != e.summary || kind != e.kind {
-                write_entry(
-                    conn, id, kind, &e.name, &names, &aliases, &summary, &e.source,
-                )?;
+            let rank = if kind != "level" {
+                None
+            } else if mine {
+                e.rank.or(item.rank)
+            } else {
+                item.rank.or(e.rank)
+            };
+            if names != e.names
+                || aliases != e.aliases
+                || summaries != e.summaries
+                || kind != e.kind
+                || rank != e.rank
+            {
+                let f = Fields {
+                    kind,
+                    name: &e.name,
+                    names: &names,
+                    aliases: &aliases,
+                    summaries: &summaries,
+                    rank,
+                    source: &e.source,
+                };
+                write_entry(conn, id, &f)?;
             }
             Ok(Some(e.uid))
         }
@@ -529,18 +655,22 @@ fn upsert_ai(
             if !translated.is_empty() {
                 names.insert(lang.to_string(), translated);
             }
+            let mut summaries = BTreeMap::new();
+            if !item.summary.trim().is_empty() {
+                summaries.insert(lang.to_string(), item.summary.trim().to_string());
+            }
             let aliases = clean_list(item.aliases, &name);
-            Ok(Some(insert_entry(
-                conn,
-                novel_id,
-                kind_of(&item.kind),
-                &name,
-                &names,
-                &aliases,
-                item.summary.trim(),
-                chapter,
-                "ai",
-            )?))
+            let kind = kind_of(&item.kind);
+            let f = Fields {
+                kind,
+                name: &name,
+                names: &names,
+                aliases: &aliases,
+                summaries: &summaries,
+                rank: item.rank.filter(|_| kind == "level"),
+                source: "ai",
+            };
+            Ok(Some(insert_entry(conn, novel_id, &f, chapter)?))
         }
     }
 }
@@ -548,6 +678,7 @@ fn upsert_ai(
 fn relate_ai(
     conn: &Connection,
     novel_id: i64,
+    lang: &str,
     chapter: Option<i64>,
     item: &AiRelation,
 ) -> rusqlite::Result<Result<String, &'static str>> {
@@ -565,6 +696,7 @@ fn relate_ai(
         &from.uid,
         &to.uid,
         &item.relation,
+        lang,
         &item.note,
         chapter,
         false,
@@ -587,8 +719,8 @@ fn embed_text(e: &Entry) -> String {
     if !e.aliases.is_empty() {
         s.push_str(&format!(". Also: {}", e.aliases.join(", ")));
     }
-    if !e.summary.is_empty() {
-        s.push_str(&format!(". {}", e.summary));
+    for d in e.summaries.values() {
+        s.push_str(&format!(". {d}"));
     }
     s
 }
@@ -606,9 +738,9 @@ pub fn reindex(conn: &Connection, llm: &dyn Chat, novel_id: i64) -> Result<usize
     let stale: Vec<(i64, String)> = stmt
         .query_map([novel_id], |r| {
             let e = entry_row(r)?;
-            let id: i64 = r.get(9)?;
-            let m: Option<String> = r.get(10)?;
-            let t: Option<String> = r.get(11)?;
+            let id: i64 = r.get(AFTER)?;
+            let m: Option<String> = r.get(AFTER + 1)?;
+            let t: Option<String> = r.get(AFTER + 2)?;
             Ok((id, embed_text(&e), m, t))
         })?
         .filter_map(|row| match row {
@@ -661,7 +793,7 @@ fn nearest(
          order by d limit ?4"
     ))?;
     let rows = stmt.query_map(params![novel_id, model, q, limit as i64], |r| {
-        Ok((entry_row(r)?, r.get(9)?))
+        Ok((entry_row(r)?, r.get(AFTER)?))
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
@@ -682,7 +814,7 @@ pub fn search(
     let mut stmt = conn.prepare(&format!(
         "select {ENTRY_COLS} from wiki_entries e where e.novel_id = ?1 and e.deleted = 0 and (
            instr(lower(e.name), ?2) > 0 or instr(lower(e.aliases), ?2) > 0
-           or instr(lower(e.names), ?2) > 0 or instr(lower(e.summary), ?2) > 0)
+           or instr(lower(e.names), ?2) > 0 or instr(lower(e.summaries), ?2) > 0)
          order by lower(e.name) = ?2 desc, instr(lower(e.name), ?2) = 0, e.name limit ?3"
     ))?;
     let mut out: Vec<Entry> = stmt
@@ -767,8 +899,12 @@ pub fn context(
         if !e.aliases.is_empty() {
             s.push_str(&format!("; also called {}", e.aliases.join(", ")));
         }
-        if !e.summary.is_empty() {
-            s.push_str(&format!(": {}", head(&e.summary, 200)));
+        if let Some(rank) = e.rank {
+            s.push_str(&format!("; rank {rank}"));
+        }
+        let summary = e.summary_in(lang);
+        if !summary.is_empty() {
+            s.push_str(&format!(": {}", head(summary, 200)));
         }
         s.push('\n');
     }
@@ -778,7 +914,12 @@ pub fn context(
         .filter_map(|r| {
             let a = names.get(r.from_uid.as_str())?;
             let b = names.get(r.to_uid.as_str())?;
-            Some(format!("- {} — {} — {}\n", a.name, r.kind, b.name))
+            Some(format!(
+                "- {} — {} — {}\n",
+                a.name,
+                rel_words(&r, lang),
+                b.name
+            ))
         })
         .take(CONTEXT_ENTRIES)
         .collect();
@@ -818,7 +959,8 @@ fn tools(lang: &str) -> Value {
                         "kind": { "type": "string", "enum": KINDS },
                         "translated": { "type": "string", "description": format!("The name as used in the {lang} translation.") },
                         "aliases": { "type": "array", "items": { "type": "string" }, "description": "Other names or titles in the original text." },
-                        "summary": { "type": "string", "description": format!("In {lang}, at most three sentences: who or what it is, as known so far. Write the whole summary, old facts included.") }
+                        "summary": { "type": "string", "description": format!("In {lang}, at most three sentences: who or what it is, as known so far. Write the whole summary, old facts included.") },
+                        "rank": { "type": "integer", "description": "Only for kind level: its place in its ladder of ranks or cultivation realms, 1 for the lowest." }
                     },
                     "required": ["name", "kind"]
                 }
@@ -834,7 +976,7 @@ fn tools(lang: &str) -> Value {
                     "properties": {
                         "from": { "type": "string" },
                         "to": { "type": "string" },
-                        "relation": { "type": "string", "description": format!("Short, in {lang}: what `from` is to `to` (for example: master of, sworn brother of, member of, located in).") },
+                        "relation": { "type": "string", "description": format!("What `from` is to `to`: one of {} (located_in for a place or faction inside a bigger place, has_level for a character's current rank or realm). Only when none fits, a few words in {lang}.", REL_TYPES.join(", ")) },
                         "note": { "type": "string" }
                     },
                     "required": ["from", "to", "relation"]
@@ -846,7 +988,7 @@ fn tools(lang: &str) -> Value {
 
 fn learn_rules(lang: &str) -> String {
     format!(
-        "You keep the wiki of a novel being translated into {}. From the chapter below, record the characters, places, factions or sects, important items and special terms (cultivation ranks, techniques…) that matter to the story, and the relationships between characters and with factions. Skip passers-by and common words. Use the name exactly as written in the original text, and the name the translation uses. Only add what the chapter shows; do not guess.",
+        "You keep the wiki of a novel being translated into {}. From the chapter below, record the characters, places, factions or sects, important items, levels (ranks, cultivation realms, each with its rank number) and special terms (techniques…) that matter to the story, and the relationships: between characters, with factions, a character's current level, and which place lies in which (the map). Skip passers-by and common words. Use the name exactly as written in the original text, and the name the translation uses. Only add what the chapter shows; do not guess.",
         super::translate::lang_name(lang)
     )
 }
@@ -860,10 +1002,11 @@ fn learn_prompt(lang: &str) -> String {
 
 fn json_prompt(lang: &str) -> String {
     format!(
-        "{} Reply with only one JSON object and nothing else: {{\"entries\": [{{\"name\": original name, \"kind\": one of {}, \"translated\": name in the translation, \"aliases\": [other names], \"summary\": at most three sentences in {}}}], \"relations\": [{{\"from\": original name, \"to\": original name, \"relation\": short, in {}, \"note\": \"\"}}]}}",
+        "{} Reply with only one JSON object and nothing else: {{\"entries\": [{{\"name\": original name, \"kind\": one of {}, \"translated\": name in the translation, \"aliases\": [other names], \"summary\": at most three sentences in {}, \"rank\": number for a level only}}], \"relations\": [{{\"from\": original name, \"to\": original name, \"relation\": one of {} (else a few words in {}), \"note\": \"\"}}]}}",
         learn_rules(lang),
         KINDS.join(", "),
         super::translate::lang_name(lang),
+        REL_TYPES.join(", "),
         super::translate::lang_name(lang),
     )
 }
@@ -889,7 +1032,7 @@ fn learn_input(
                     .get(lang)
                     .map(|n| format!(" → {n}"))
                     .unwrap_or_default(),
-                head(&e.summary, 160)
+                head(e.summary_in(lang), 160)
             ));
         }
         s.push('\n');
@@ -936,7 +1079,7 @@ fn run_tool(
                     .iter()
                     .map(|e| json!({
                         "name": e.name, "kind": e.kind, "translated": e.names.get(lang),
-                        "aliases": e.aliases, "summary": e.summary,
+                        "aliases": e.aliases, "summary": e.summary_in(lang), "rank": e.rank,
                     }))
                     .collect::<Vec<_>>()),
                 Err(e) => json!({ "error": e.to_string() }),
@@ -955,7 +1098,7 @@ fn run_tool(
             Err(e) => json!({ "ok": false, "error": e.to_string() }),
         },
         "wiki_relate" => match serde_json::from_value::<AiRelation>(args) {
-            Ok(item) => match relate_ai(conn, novel_id, chapter, &item)? {
+            Ok(item) => match relate_ai(conn, novel_id, lang, chapter, &item)? {
                 Ok(_) => {
                     *changes += 1;
                     json!({ "ok": true })
@@ -984,10 +1127,7 @@ fn apply_json(
     chapter: Option<i64>,
     reply: &str,
 ) -> rusqlite::Result<usize> {
-    let (Some(a), Some(b)) = (reply.find('{'), reply.rfind('}')) else {
-        return Ok(0);
-    };
-    let Ok(answer) = serde_json::from_str::<AiAnswer>(&reply[a..=b]) else {
+    let Some(answer) = parse_object::<AiAnswer>(reply) else {
         return Ok(0);
     };
     let mut changes = 0;
@@ -997,7 +1137,7 @@ fn apply_json(
         }
     }
     for item in &answer.relations {
-        if relate_ai(conn, novel_id, chapter, item)?.is_ok() {
+        if relate_ai(conn, novel_id, lang, chapter, item)?.is_ok() {
             changes += 1;
         }
     }
@@ -1106,6 +1246,168 @@ pub fn learn_quietly(
     }
 }
 
+/* ---------- Translating the wiki ---------- */
+
+/// The language the book is written in: the one the LLM found, else the import's guess.
+pub fn book_lang(conn: &Connection, novel_id: i64) -> rusqlite::Result<String> {
+    conn.query_row(
+        "select coalesce((select source_lang from ai_books where novel_id = ?1), original_lang)
+         from novels where id = ?1",
+        [novel_id],
+        |r| r.get(0),
+    )
+}
+
+/// What `lang` is still missing: entries without a name or description in it, and free
+/// relations without words in it. `RAW` asks for descriptions in the book's language.
+pub fn missing(
+    conn: &Connection,
+    novel_id: i64,
+    lang: &str,
+) -> rusqlite::Result<(Vec<Entry>, Vec<Relation>)> {
+    let raw = lang == RAW || lang == book_lang(conn, novel_id)?;
+    let entries = entries(conn, novel_id)?
+        .into_iter()
+        .filter(|e| {
+            let no_name = !raw && !e.names.contains_key(lang);
+            let no_summary = !e.summaries.is_empty() && !e.summaries.contains_key(lang);
+            no_name || no_summary
+        })
+        .collect();
+    let relations = if raw {
+        Vec::new()
+    } else {
+        relations(conn, novel_id)?
+            .into_iter()
+            .filter(|r| rel_type(&r.kind).is_none() && !r.labels.contains_key(lang))
+            .collect()
+    };
+    Ok((entries, relations))
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct Translated {
+    #[serde(default)]
+    entries: Vec<TranslatedEntry>,
+    #[serde(default)]
+    relations: Vec<TranslatedRelation>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TranslatedEntry {
+    id: usize,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    summary: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct TranslatedRelation {
+    id: usize,
+    #[serde(default)]
+    label: String,
+}
+
+/// Fills in what `lang` is missing (see `missing`) with the LLM, a batch at a time.
+/// Only adds: a name or description already in `lang` stays as it is. Returns how many
+/// entries and relations changed.
+pub fn translate_missing(
+    conn: &Connection,
+    llm: &dyn Chat,
+    novel_id: i64,
+    lang: &str,
+) -> Result<usize, AiError> {
+    let book = book_lang(conn, novel_id)?;
+    let target = if lang == RAW { book.as_str() } else { lang };
+    let raw = lang == RAW || lang == book;
+    let (entries, relations) = missing(conn, novel_id, lang)?;
+    let system = format!(
+        "You translate the wiki of a novel into {}. For each entry, give its name as a translation of this novel would write it (keep established forms; Sino-Vietnamese readings for Chinese names in Vietnamese) and its description in {0}; for each relation, its words in {0}. Fill only the fields asked for. Reply with only one JSON object and nothing else: {{\"entries\": [{{\"id\": number, \"name\": \"...\", \"summary\": \"...\"}}], \"relations\": [{{\"id\": number, \"label\": \"...\"}}]}}",
+        super::translate::lang_name(target)
+    );
+    let mut changed = 0;
+    for batch in entries.chunks(TRANSLATE_BATCH) {
+        let items: Vec<Value> = batch
+            .iter()
+            .enumerate()
+            .map(|(i, e)| {
+                let mut v = json!({ "id": i, "original_name": e.name, "kind": e.kind });
+                if !raw && !e.names.contains_key(lang) {
+                    v["name"] = json!("?");
+                }
+                if !e.summaries.is_empty() && !e.summaries.contains_key(lang) {
+                    v["summary"] = json!("?");
+                    v["summary_now"] = json!(e.summary_in(lang));
+                }
+                if let Some(n) = e.names.values().next() {
+                    v["known_as"] = json!(n);
+                }
+                v
+            })
+            .collect();
+        let reply = llm.chat(&system, &json!({ "entries": items }).to_string())?;
+        let answer = parse_object::<Translated>(&reply).unwrap_or_default();
+        for t in answer.entries {
+            let Some(e) = batch.get(t.id) else { continue };
+            let mut names = e.names.clone();
+            let mut summaries = e.summaries.clone();
+            if !raw && !t.name.trim().is_empty() {
+                names
+                    .entry(lang.to_string())
+                    .or_insert_with(|| t.name.trim().to_string());
+            }
+            if !e.summaries.is_empty() && !t.summary.trim().is_empty() {
+                summaries
+                    .entry(lang.to_string())
+                    .or_insert_with(|| t.summary.trim().to_string());
+            }
+            if names != e.names || summaries != e.summaries {
+                conn.execute(
+                    "update wiki_entries set names = ?2, summaries = ?3, updated_at = ?4 where uid = ?1",
+                    params![e.uid, to_json(&names, "{}"), to_json(&summaries, "{}"), super::db::now_ms()],
+                )?;
+                changed += 1;
+            }
+        }
+    }
+    for batch in relations.chunks(TRANSLATE_BATCH) {
+        let items: Vec<Value> = batch
+            .iter()
+            .enumerate()
+            .map(|(i, r)| json!({ "id": i, "label": "?", "words_now": r.labels.values().next().unwrap_or(&r.kind) }))
+            .collect();
+        let reply = llm.chat(&system, &json!({ "relations": items }).to_string())?;
+        let answer = parse_object::<Translated>(&reply).unwrap_or_default();
+        for t in answer.relations {
+            let (Some(r), label) = (batch.get(t.id), t.label.trim()) else {
+                continue;
+            };
+            if label.is_empty() {
+                continue;
+            }
+            let mut labels = r.labels.clone();
+            labels.insert(lang.to_string(), label.to_string());
+            conn.execute(
+                "update wiki_relations set labels = ?2, updated_at = ?3 where uid = ?1",
+                params![r.uid, to_json(&labels, "{}"), super::db::now_ms()],
+            )?;
+            changed += 1;
+        }
+    }
+    if changed > 0 {
+        // Search by meaning finds the new words too; it is a help, not a must.
+        let _ = reindex(conn, llm, novel_id);
+    }
+    Ok(changed)
+}
+
+/// The JSON object anywhere in a model's reply.
+fn parse_object<T: serde::de::DeserializeOwned>(reply: &str) -> Option<T> {
+    let (a, b) = (reply.find('{')?, reply.rfind('}')?);
+    serde_json::from_str(reply.get(a..=b)?).ok()
+}
+
 /// Takes what stays on this device out of a copy about to be synced.
 pub fn strip(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
@@ -1119,22 +1421,22 @@ pub fn strip(conn: &Connection) -> rusqlite::Result<()> {
 pub fn merge_attached(tx: &rusqlite::Transaction) -> rusqlite::Result<()> {
     tx.execute_batch(
         "
-        insert into main.wiki_entries (uid, novel_id, kind, name, names, aliases, summary,
-            first_chapter, source, deleted, updated_at)
-          select e.uid, m.id, e.kind, e.name, e.names, e.aliases, e.summary,
-            e.first_chapter, e.source, e.deleted, e.updated_at
+        insert into main.wiki_entries (uid, novel_id, kind, name, names, aliases, summaries,
+            rank, first_chapter, source, deleted, updated_at)
+          select e.uid, m.id, e.kind, e.name, e.names, e.aliases, e.summaries,
+            e.rank, e.first_chapter, e.source, e.deleted, e.updated_at
           from r.wiki_entries e join r.novels rn on rn.id = e.novel_id
           join main.novels m on m.book_key = rn.book_key
           where not exists (select 1 from main.wiki_entries x
                             where x.novel_id = m.id and x.name = e.name and x.uid <> e.uid)
           on conflict (uid) do update set kind = excluded.kind, name = excluded.name,
-            names = excluded.names, aliases = excluded.aliases, summary = excluded.summary,
-            source = excluded.source, deleted = excluded.deleted, updated_at = excluded.updated_at
+            names = excluded.names, aliases = excluded.aliases, summaries = excluded.summaries,
+            rank = excluded.rank, source = excluded.source, deleted = excluded.deleted, updated_at = excluded.updated_at
           where excluded.updated_at > wiki_entries.updated_at;
 
-        insert into main.wiki_relations (uid, novel_id, from_uid, to_uid, kind, note,
+        insert into main.wiki_relations (uid, novel_id, from_uid, to_uid, kind, labels, note,
             first_chapter, deleted, updated_at)
-          select w.uid, m.id, w.from_uid, w.to_uid, w.kind, w.note, w.first_chapter,
+          select w.uid, m.id, w.from_uid, w.to_uid, w.kind, w.labels, w.note, w.first_chapter,
             w.deleted, w.updated_at
           from r.wiki_relations w join r.novels rn on rn.id = w.novel_id
           join main.novels m on m.book_key = rn.book_key
@@ -1143,8 +1445,8 @@ pub fn merge_attached(tx: &rusqlite::Transaction) -> rusqlite::Result<()> {
             and not exists (select 1 from main.wiki_relations x
                             where x.from_uid = w.from_uid and x.to_uid = w.to_uid
                               and x.kind = w.kind and x.uid <> w.uid)
-          on conflict (uid) do update set kind = excluded.kind, note = excluded.note,
-            deleted = excluded.deleted, updated_at = excluded.updated_at
+          on conflict (uid) do update set kind = excluded.kind, labels = excluded.labels,
+            note = excluded.note, deleted = excluded.deleted, updated_at = excluded.updated_at
           where excluded.updated_at > wiki_relations.updated_at;
         ",
     )
@@ -1305,7 +1607,8 @@ mod tests {
                 name: "林动".into(),
                 names: BTreeMap::from([("vi".into(), "Lâm Động".into())]),
                 aliases: vec!["动少".into()],
-                summary: "Nhân vật chính.".into(),
+                summaries: BTreeMap::from([("vi".into(), "Nhân vật chính.".into())]),
+                rank: None,
             },
         )
         .unwrap();
@@ -1318,7 +1621,8 @@ mod tests {
                 name: "林琅天".into(),
                 names: BTreeMap::new(),
                 aliases: vec![],
-                summary: String::new(),
+                summaries: BTreeMap::new(),
+                rank: None,
             },
         )
         .unwrap();
@@ -1331,11 +1635,12 @@ mod tests {
                 name: "炎城".into(),
                 names: BTreeMap::new(),
                 aliases: vec![],
-                summary: String::new(),
+                summaries: BTreeMap::new(),
+                rank: None,
             },
         )
         .unwrap();
-        add_relation(&conn, novel, &b.uid, &a.uid, "kẻ thù của", "").unwrap();
+        add_relation(&conn, novel, &b.uid, &a.uid, "kẻ thù của", "vi", "").unwrap();
         let ctx = context(&conn, &llm, novel, "动少 看着 林琅天。", "vi").unwrap();
         assert!(ctx.contains("林动 → Lâm Động (character); also called 动少: Nhân vật chính."));
         assert!(ctx.contains("林琅天 — kẻ thù của — 林动"));
@@ -1358,7 +1663,8 @@ mod tests {
                 name: "林动".into(),
                 names: BTreeMap::from([("vi".into(), "Lâm Động".into())]),
                 aliases: vec![],
-                summary: "Viết bởi tôi.".into(),
+                summaries: BTreeMap::from([("vi".into(), "Viết bởi tôi.".into())]),
+                rank: None,
             },
         )
         .unwrap();
@@ -1368,11 +1674,14 @@ mod tests {
             translated: translated.into(),
             aliases: vec!["小动".into()],
             summary: "AI summary".into(),
+            rank: None,
         };
         upsert_ai(&conn, novel, "vi", Some(2), ai("林动", "Lâm Đông")).unwrap();
         upsert_ai(&conn, novel, "en", Some(2), ai("林动", "Lin Dong")).unwrap();
         let now = by_uid(&conn, &e.uid).unwrap().unwrap();
-        assert_eq!(now.summary, "Viết bởi tôi.");
+        assert_eq!(now.summaries["vi"], "Viết bởi tôi.");
+        // The AI adds a description in a language the user left empty.
+        assert_eq!(now.summaries["en"], "AI summary");
         assert_eq!(now.kind, "character");
         assert_eq!(now.names["vi"], "Lâm Động");
         assert_eq!(now.names["en"], "Lin Dong");
@@ -1395,7 +1704,8 @@ mod tests {
                 name: "林动".into(),
                 names: BTreeMap::new(),
                 aliases: vec![],
-                summary: String::new(),
+                summaries: BTreeMap::new(),
+                rank: None,
             },
         )
         .unwrap();
@@ -1438,7 +1748,8 @@ mod tests {
                 name: "炎城".into(),
                 names: BTreeMap::new(),
                 aliases: vec![],
-                summary: "Thành.".into(),
+                summaries: BTreeMap::from([("vi".into(), "Thành.".into())]),
+                rank: None,
             },
         )
         .unwrap();
@@ -1451,11 +1762,12 @@ mod tests {
                 name: "林动".into(),
                 names: BTreeMap::new(),
                 aliases: vec![],
-                summary: String::new(),
+                summaries: BTreeMap::new(),
+                rank: None,
             },
         )
         .unwrap();
-        add_relation(&a, novel, &f.uid, &e.uid, "sống ở", "").unwrap();
+        add_relation(&a, novel, &f.uid, &e.uid, "located_in", "vi", "").unwrap();
         let snap = crate::library::sync::export(&a, &path.with_extension("tmp")).unwrap();
         crate::library::sync::merge(&mut b, &snap, &path.with_extension("in")).unwrap();
         assert_eq!(entries(&b, 1).unwrap().len(), 2);
@@ -1469,5 +1781,126 @@ mod tests {
         crate::library::sync::merge(&mut a, &snap, &path.with_extension("in2")).unwrap();
         assert_eq!(entries(&a, novel).unwrap().len(), 1);
         assert!(relations(&a, novel).unwrap().is_empty());
+    }
+
+    #[test]
+    fn relation_types_are_codes_and_free_words_are_kept_per_language() {
+        let (conn, novel) = book("types");
+        let entry = |name: &str, kind: &str| {
+            save(
+                &conn,
+                novel,
+                EntryInput {
+                    uid: None,
+                    kind: kind.into(),
+                    name: name.into(),
+                    names: BTreeMap::new(),
+                    aliases: vec![],
+                    summaries: BTreeMap::new(),
+                    rank: Some(3),
+                },
+            )
+            .unwrap()
+        };
+        let a = entry("药老", "character");
+        let b = entry("萧炎", "character");
+        let realm = entry("斗师", "level");
+        assert_eq!(realm.rank, Some(3));
+        // A rank only belongs to a level.
+        assert_eq!(a.rank, None);
+        add_relation(&conn, novel, &a.uid, &b.uid, "Master of", "vi", "").unwrap();
+        add_relation(&conn, novel, &b.uid, &realm.uid, "has_level", "en", "").unwrap();
+        add_relation(&conn, novel, &b.uid, &a.uid, "nghĩa phụ", "vi", "").unwrap();
+        let rels = relations(&conn, novel).unwrap();
+        assert_eq!(rels[0].kind, "master_of");
+        assert!(rels[0].labels.is_empty());
+        assert_eq!(rels[1].kind, "has_level");
+        assert_eq!(rels[2].kind, "nghĩa phụ");
+        assert_eq!(rels[2].labels["vi"], "nghĩa phụ");
+        // The same free relation written in another language is found by its words.
+        let mut labels = rels[2].labels.clone();
+        labels.insert("en".into(), "godfather".into());
+        conn.execute(
+            "update wiki_relations set labels = ?2 where uid = ?1",
+            params![rels[2].uid, to_json(&labels, "{}")],
+        )
+        .unwrap();
+        let again = add_relation(&conn, novel, &b.uid, &a.uid, "godfather", "en", "").unwrap();
+        assert_eq!(again, rels[2].uid);
+        assert_eq!(relations(&conn, novel).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn translates_what_a_language_is_missing() {
+        struct Translator(Mutex<Vec<String>>);
+        impl Chat for Translator {
+            fn chat(&self, system: &str, user: &str) -> Result<String, AiError> {
+                assert!(system.contains("English"));
+                self.0.lock().unwrap().push(user.to_string());
+                Ok(if user.contains("\"relations\"") {
+                    r#"{"relations":[{"id":0,"label":"godfather"}]}"#.into()
+                } else {
+                    r#"{"entries":[{"id":0,"name":"Lin Dong","summary":"The hero."},{"id":1,"name":"Yan City"}]}"#.into()
+                })
+            }
+            fn model(&self) -> &str {
+                "t"
+            }
+        }
+        let (conn, novel) = book("tr");
+        conn.execute("update novels set original_lang = 'zh'", [])
+            .unwrap();
+        let lin = save(
+            &conn,
+            novel,
+            EntryInput {
+                uid: None,
+                kind: "character".into(),
+                name: "林动".into(),
+                names: BTreeMap::from([("vi".into(), "Lâm Động".into())]),
+                aliases: vec![],
+                summaries: BTreeMap::from([("vi".into(), "Nhân vật chính.".into())]),
+                rank: None,
+            },
+        )
+        .unwrap();
+        let city = save(
+            &conn,
+            novel,
+            EntryInput {
+                uid: None,
+                kind: "place".into(),
+                name: "炎城".into(),
+                names: BTreeMap::new(),
+                aliases: vec![],
+                summaries: BTreeMap::new(),
+                rank: None,
+            },
+        )
+        .unwrap();
+        add_relation(&conn, novel, &lin.uid, &city.uid, "nghĩa phụ", "vi", "").unwrap();
+        add_relation(&conn, novel, &lin.uid, &city.uid, "located_in", "vi", "").unwrap();
+        let (e, r) = missing(&conn, novel, "en").unwrap();
+        assert_eq!((e.len(), r.len()), (2, 1));
+        let llm = Translator(Mutex::default());
+        assert_eq!(translate_missing(&conn, &llm, novel, "en").unwrap(), 3);
+        let lin = by_uid(&conn, &lin.uid).unwrap().unwrap();
+        assert_eq!(lin.names["en"], "Lin Dong");
+        assert_eq!(lin.names["vi"], "Lâm Động");
+        assert_eq!(lin.summaries["en"], "The hero.");
+        let city = by_uid(&conn, &city.uid).unwrap().unwrap();
+        assert_eq!(city.names["en"], "Yan City");
+        // No description anywhere, so none is asked for.
+        assert!(city.summaries.is_empty());
+        let rels = relations(&conn, novel).unwrap();
+        assert_eq!(
+            rels.iter().find(|r| r.kind == "nghĩa phụ").unwrap().labels["en"],
+            "godfather"
+        );
+        // Nothing is missing now; the typed relation never needed words.
+        let (e, r) = missing(&conn, novel, "en").unwrap();
+        assert_eq!((e.len(), r.len()), (0, 0));
+        assert_eq!(translate_missing(&conn, &llm, novel, "en").unwrap(), 0);
+        assert_eq!(llm.0.lock().unwrap().len(), 2);
     }
 }

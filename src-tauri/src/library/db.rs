@@ -327,6 +327,51 @@ create table wiki_chapters (
 
 alter table llm_config add column embed_model text not null default '';
 "#,
+    r#"
+-- The wiki in every language (see wiki.rs). What an entry is and how entries link stays
+-- the same in all languages; its words are kept per language and the reader's language
+-- picks them, falling back to the raw text. Rebuilt to add the `level` kind (ranks,
+-- cultivation realms), ordered by `rank`; `migrate` runs this with foreign keys off so
+-- the relations and vectors keep pointing at the same rows.
+create table wiki_entries_new (
+  id            integer primary key,
+  uid           text not null unique,
+  novel_id      integer not null references novels (id) on delete cascade,
+  kind          text not null check (kind in ('character', 'place', 'faction', 'item', 'level', 'term', 'other')),
+  -- As written in the original text (the raw name).
+  name          text not null,
+  -- JSON object: the name to use per language, {"vi": "Lâm Động"}.
+  names         text not null default '{}',
+  -- JSON array of other names in the original text.
+  aliases       text not null default '[]',
+  -- Unused since the per-language `summaries`; kept for older files.
+  summary       text not null default '',
+  -- JSON object: the description per language; "raw" is in the book's own language.
+  summaries     text not null default '{}',
+  -- A level's place in its ladder, lowest first.
+  rank          integer,
+  first_chapter integer,
+  source        text not null default 'ai' check (source in ('ai', 'user')),
+  deleted       integer not null default 0,
+  updated_at    integer not null,
+  unique (novel_id, name)
+);
+-- A description was written in the language of the names the AI gave with it.
+insert into wiki_entries_new (id, uid, novel_id, kind, name, names, aliases, summary, summaries,
+    first_chapter, source, deleted, updated_at)
+  select id, uid, novel_id, kind, name, names, aliases, '',
+    case when summary = '' then '{}'
+      else json_object(coalesce((select key from json_each(names) order by key = 'vi' desc limit 1), 'raw'), summary) end,
+    first_chapter, source, deleted, updated_at
+  from wiki_entries;
+drop table wiki_entries;
+alter table wiki_entries_new rename to wiki_entries;
+
+-- `kind` is a relation type (wiki.rs REL_TYPES: master_of, member_of, located_in,
+-- has_level…), shown in each language by the app; any other text is the user's or the
+-- AI's own words, with `labels` holding them per language ({"vi": "nghĩa huynh"}).
+alter table wiki_relations add column labels text not null default '{}';
+"#,
 ];
 
 /// Epoch milliseconds now.
@@ -385,11 +430,77 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
 
 fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
     let done: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-    for (i, sql) in MIGRATIONS.iter().enumerate().skip(done as usize) {
-        let tx = conn.transaction()?;
-        tx.execute_batch(sql)?;
-        tx.pragma_update(None, "user_version", i as i64 + 1)?;
-        tx.commit()?;
+    if done as usize >= MIGRATIONS.len() {
+        return Ok(());
     }
-    Ok(())
+    // Some migrations rebuild a table; with foreign keys on, dropping the old one would
+    // delete the rows that point at it.
+    conn.pragma_update(None, "foreign_keys", false)?;
+    let result = (|| {
+        for (i, sql) in MIGRATIONS.iter().enumerate().skip(done as usize) {
+            let tx = conn.transaction()?;
+            tx.execute_batch(sql)?;
+            tx.pragma_update(None, "user_version", i as i64 + 1)?;
+            tx.commit()?;
+        }
+        Ok(())
+    })();
+    conn.pragma_update(None, "foreign_keys", true)?;
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_multilingual_wiki_keeps_older_entries_and_relations() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+        for sql in &MIGRATIONS[..9] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 9).unwrap();
+        conn.execute_batch(
+            "insert into authors (id, slug, name) values (1, 'a', 'A');
+             insert into novels (id, slug, author_id, original_lang, book_key) values (1, 'n', 1, 'zh', 'k');
+             insert into wiki_entries (id, uid, novel_id, kind, name, names, summary, updated_at) values
+               (1, 'a', 1, 'character', '林动', '{\"vi\":\"Lâm Động\"}', 'Nhân vật chính.', 1),
+               (2, 'b', 1, 'place', '炎城', '{}', 'A city.', 1),
+               (3, 'c', 1, 'term', '元力', '{}', '', 1);
+             insert into wiki_relations (uid, novel_id, from_uid, to_uid, kind, updated_at)
+               values ('r', 1, 'a', 'b', 'sống ở', 1);
+             insert into wiki_vectors (entry_id, model, text, embedding) values (1, 'm', 't', x'00');",
+        )
+        .unwrap();
+        migrate(&mut conn).unwrap();
+        let rows: Vec<(String, String)> = conn
+            .prepare("select uid, summaries from wiki_entries order by id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows[0], ("a".into(), r#"{"vi":"Nhân vật chính."}"#.into()));
+        assert_eq!(rows[1], ("b".into(), r#"{"raw":"A city."}"#.into()));
+        assert_eq!(rows[2], ("c".into(), "{}".into()));
+        let kept: (i64, i64, String) = conn
+            .query_row(
+                "select (select count(*) from wiki_relations), (select count(*) from wiki_vectors),
+                   (select labels from wiki_relations)",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(kept, (1, 1, "{}".into()));
+        conn.execute(
+            "insert into wiki_entries (uid, novel_id, kind, name, rank, updated_at) values ('d', 1, 'level', '斗师', 2, 1)",
+            [],
+        )
+        .unwrap();
+        let fk: bool = conn
+            .pragma_query_value(None, "foreign_keys", |r| r.get(0))
+            .unwrap();
+        assert!(fk);
+    }
 }

@@ -1107,11 +1107,46 @@ pub async fn wiki_relate<R: Runtime>(
     from_uid: String,
     to_uid: String,
     kind: String,
+    lang: String,
     note: String,
 ) -> Result<String, AiError> {
     let path = db_path(&app, &user)?;
     ai_blocking(move || {
-        wiki::add_relation(&db::open(&path)?, novel_id, &from_uid, &to_uid, &kind, &note)
+        wiki::add_relation(&db::open(&path)?, novel_id, &from_uid, &to_uid, &kind, &lang, &note)
+    })
+    .await
+}
+
+/// What the wiki is missing in `lang`: entries and free relations without its words.
+#[tauri::command]
+pub async fn wiki_missing<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+    lang: String,
+) -> Result<usize, AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || {
+        let (entries, relations) = wiki::missing(&db::open(&path)?, novel_id, &lang)?;
+        Ok(entries.len() + relations.len())
+    })
+    .await
+}
+
+/// Translates what the wiki is missing in `lang` with the user's LLM; returns how many
+/// entries and relations changed.
+#[tauri::command]
+pub async fn wiki_translate<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+    lang: String,
+) -> Result<usize, AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || {
+        let conn = db::open(&path)?;
+        let model = llm_if_set(&conn)?.ok_or(AiError::NotSet)?;
+        wiki::translate_missing(&conn, &model, novel_id, &lang)
     })
     .await
 }
