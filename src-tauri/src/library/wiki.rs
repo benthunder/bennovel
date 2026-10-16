@@ -743,6 +743,95 @@ fn to_blob(v: &[f32]) -> Vec<u8> {
 }
 
 /// What an entry's vector is made from.
+/// How each relation type reads from each end (English, Vietnamese), for what gets
+/// embedded: "Lâm Động: disciple of / đệ tử của Đạo Tông" is found by meaning in either
+/// language. Same words as the app's (`wiki.rel.*`).
+const REL_WORDS: &[(&str, [&str; 2], [&str; 2])] = &[
+    (
+        "master_of",
+        ["master of", "sư phụ của"],
+        ["disciple of", "đệ tử của"],
+    ),
+    (
+        "disciple_of",
+        ["disciple of", "đệ tử của"],
+        ["master of", "sư phụ của"],
+    ),
+    (
+        "parent_of",
+        ["parent of", "cha/mẹ của"],
+        ["child of", "con của"],
+    ),
+    (
+        "child_of",
+        ["child of", "con của"],
+        ["parent of", "cha/mẹ của"],
+    ),
+    (
+        "sibling_of",
+        ["sibling of", "anh chị em của"],
+        ["sibling of", "anh chị em của"],
+    ),
+    (
+        "spouse_of",
+        ["spouse of", "vợ/chồng của"],
+        ["spouse of", "vợ/chồng của"],
+    ),
+    (
+        "lover_of",
+        ["lover of", "người yêu của"],
+        ["lover of", "người yêu của"],
+    ),
+    (
+        "friend_of",
+        ["friend of", "bạn của"],
+        ["friend of", "bạn của"],
+    ),
+    (
+        "enemy_of",
+        ["enemy of", "kẻ thù của"],
+        ["enemy of", "kẻ thù của"],
+    ),
+    (
+        "member_of",
+        ["member of", "thành viên của"],
+        ["has member", "có thành viên"],
+    ),
+    (
+        "leader_of",
+        ["leader of", "đứng đầu"],
+        ["led by", "người đứng đầu là"],
+    ),
+    (
+        "located_in",
+        ["located in", "nằm trong"],
+        ["contains", "gồm có"],
+    ),
+    ("owns", ["owns", "sở hữu"], ["owned by", "thuộc về"]),
+    (
+        "has_level",
+        ["at level", "đạt cảnh giới"],
+        ["reached by", "người đạt"],
+    ),
+];
+
+/// The words for relation `r` seen from entry `uid`'s end, in every language known.
+fn rel_words_all(r: &Relation, uid: &str) -> Vec<String> {
+    match REL_WORDS.iter().find(|(c, _, _)| *c == r.kind) {
+        Some((_, from, to)) => (if r.from_uid == uid { from } else { to })
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+        None => {
+            let mut w: Vec<String> = r.labels.values().cloned().collect();
+            if w.is_empty() {
+                w.push(r.kind.clone());
+            }
+            w
+        }
+    }
+}
+
 fn embed_text(e: &Entry) -> String {
     let mut s = format!("{} ({})", e.name, e.kind);
     for n in e.names.values() {
@@ -757,11 +846,41 @@ fn embed_text(e: &Entry) -> String {
     s
 }
 
+/// What an entry is embedded as: its words, then its links to other entries (the graph)
+/// in every language, so "đệ tử của Đạo Tông" or "disciple of the Dao Sect" finds it.
+fn embed_text_linked(e: &Entry, rels: &[Relation], by_uid: &BTreeMap<&str, &Entry>) -> String {
+    let mut s = embed_text(e);
+    for r in rels
+        .iter()
+        .filter(|r| r.from_uid == e.uid || r.to_uid == e.uid)
+    {
+        let other = if r.from_uid == e.uid {
+            &r.to_uid
+        } else {
+            &r.from_uid
+        };
+        let Some(o) = by_uid.get(other.as_str()) else {
+            continue;
+        };
+        let mut names = vec![o.name.clone()];
+        names.extend(o.names.values().filter(|n| **n != o.name).cloned());
+        s.push_str(&format!(
+            ". {} {}",
+            rel_words_all(r, &e.uid).join(" / "),
+            names.join(" / ")
+        ));
+    }
+    s
+}
+
 /// Embeds the entries whose vector is missing or out of date; returns how many.
 pub fn reindex(conn: &Connection, llm: &dyn Chat, novel_id: i64) -> Result<usize, AiError> {
     let Some(model) = llm.embed_model().map(String::from) else {
         return Ok(0);
     };
+    let all = entries(conn, novel_id)?;
+    let by_uid: BTreeMap<&str, &Entry> = all.iter().map(|e| (e.uid.as_str(), e)).collect();
+    let rels = relations(conn, novel_id)?;
     let mut stmt = conn.prepare(&format!(
         "select {ENTRY_COLS}, e.id, v.model, v.text from wiki_entries e
          left join wiki_vectors v on v.entry_id = e.id
@@ -773,7 +892,7 @@ pub fn reindex(conn: &Connection, llm: &dyn Chat, novel_id: i64) -> Result<usize
             let id: i64 = r.get(AFTER)?;
             let m: Option<String> = r.get(AFTER + 1)?;
             let t: Option<String> = r.get(AFTER + 2)?;
-            Ok((id, embed_text(&e), m, t))
+            Ok((id, embed_text_linked(&e, &rels, &by_uid), m, t))
         })?
         .filter_map(|row| match row {
             Ok((id, text, m, t)) => (m.as_deref() != Some(model.as_str())
@@ -1955,6 +2074,16 @@ mod tests {
         let again = add_relation(&conn, novel, &b.uid, &a.uid, "godfather", "en", "").unwrap();
         assert_eq!(again, rels[2].uid);
         assert_eq!(relations(&conn, novel).unwrap().len(), 3);
+        // The links are embedded with each end, in every language, the right way round.
+        let all = entries(&conn, novel).unwrap();
+        let by_uid: BTreeMap<&str, &Entry> = all.iter().map(|e| (e.uid.as_str(), e)).collect();
+        let rels = relations(&conn, novel).unwrap();
+        let text = |uid: &str| embed_text_linked(by_uid[uid], &rels, &by_uid);
+        let xiao = text(&b.uid);
+        assert!(xiao.contains("disciple of / đệ tử của 药老"), "{xiao}");
+        assert!(xiao.contains("at level / đạt cảnh giới 斗师"), "{xiao}");
+        assert!(xiao.contains("godfather"), "{xiao}");
+        assert!(text(&a.uid).contains("master of / sư phụ của 萧炎"));
     }
 
     #[test]
