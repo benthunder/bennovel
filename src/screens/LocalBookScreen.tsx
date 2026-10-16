@@ -110,8 +110,11 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
     setAi({ lang: aiLang ?? ai?.lang ?? (lang === 'vi' ? 'en' : 'vi'), style: ai?.style ?? 'Natural', dict: ai?.dict ?? true, view: l });
     setOriginal(new Set());
   };
-  /** The raw text is already in the reading language, so nothing needs translating. */
-  const rawIsView = viewLang === 'raw' || viewLang === lang;
+  /**
+   * Reading Raw, so nothing needs an AI version. A language is always an AI version, even
+   * the raw text's own: then the AI rewrites its bad sentences.
+   */
+  const rawIsView = viewLang === 'raw';
   const [marksRev, setMarksRev] = useState(0);
   const marksQ = useAsync(
     () => (place ? getAiMarks(place.user, place.novelId) : Promise.resolve([] as AiMark[])),
@@ -402,7 +405,7 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
           {Array.from({ length: span[1] - span[0] + 1 }, (_, k) => span[0] + k).map(i => (
             <BookPart key={`${gen}-${i}`} bookId={book.id} index={i} meta={book.sections[i]} name={sectionName(book.sections[i], i, total)}
               fix={fix} st={partStyle} color={theme.fg} onReady={onPartReady}
-              marksReady={!!marks} lang={lang} rev={aiRev[i] ?? 0} viewLang={rawIsView ? lang : viewLang}
+              marksReady={!!marks} lang={lang} rev={aiRev[i] ?? 0} viewLang={viewLang}
               ai={(() => {
                 const v = versionOf(i);
                 return v && place ? { user: place.user, novelId: place.novelId, lang: v.lang, style: styleOf(v.style), others: (marks?.get(i)?.length ?? 1) - 1 } : null;
@@ -443,7 +446,7 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
               <button key={l} role="menuitemradio" aria-checked={l === viewLang} onClick={() => pickView(l)}
                 style={{ display: 'flex', width: '100%', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '10px 12px', border: 'none', borderRadius: 10, background: l === viewLang ? 'color-mix(in srgb, var(--color-accent) 16%, transparent)' : 'none', color: 'inherit', font: 'inherit', fontSize: 14, fontWeight: l === viewLang ? 700 : 500, cursor: 'pointer', textAlign: 'left' }}>
                 <span>{l === 'raw' ? t('reader.raw') : langLabel(l)}</span>
-                <span style={{ fontSize: 11, opacity: .6 }}>{l === 'raw' ? t('reader.rawSub') : l === lang ? t('reader.viewOriginal') : t('reader.viewAi')}</span>
+                <span style={{ fontSize: 11, opacity: .6 }}>{l === 'raw' ? t('reader.rawSub') : t('reader.viewAi')}</span>
               </button>
             ))}
           </div>
@@ -521,18 +524,18 @@ function BookPart({ bookId, index, meta, name, fix, st, color, onReady, marksRea
   const heading = (q.status === 'ready' && q.data.title) || (meta?.label ?? name);
   const ready = q.status !== 'loading';
   useEffect(() => { if (ready) onReady(index); }, [ready]);
-  const isAi = q.status === 'ready' && q.data.isAi;
+  // The text loaded can still be the last version's while a switch to another one loads.
+  const isAi = q.status === 'ready' && q.data.isAi && !!ai;
   // The wiki as of this chapter (reading order from 1), so later chapters give nothing away.
   const wikiQ = useAsync(() => (wiki ? getWikiAt(wiki.user, wiki.novelId, index + 1) : Promise.resolve(null)), [wiki?.user, wiki?.novelId, wiki?.rev, index]);
   const wikiAt = wikiQ.status === 'ready' ? wikiQ.data : null;
   // Names are found as the text shows them; the card speaks the reading language.
-  // (`isAi` can still be the last text's while a switch to another version loads.)
-  const termsLang = isAi && ai ? ai.lang : 'raw';
-  const cardLang = isAi && ai ? ai.lang : AI_LANGS.some(l => l.code === viewLang) ? viewLang : 'raw';
+  const termsLang = isAi ? ai!.lang : 'raw';
+  const cardLang = isAi ? ai!.lang : AI_LANGS.some(l => l.code === viewLang) ? viewLang : 'raw';
   const terms = useMemo(() => wikiTerms(wikiAt, termsLang), [wikiAt, termsLang]);
   const langName = (l: string) => LANG_NATIVE[l] ?? l;
-  // Read in another language than the book's, and this chapter has no version in it.
-  const missing = !ai && viewLang !== lang;
+  // Read in a language (the raw text's own too), and this chapter has no AI version in it.
+  const missing = !ai && viewLang !== 'raw';
   const link: CSSProperties = { border: 'none', background: 'none', font: 'inherit', fontSize: 12, fontWeight: 700, textDecoration: 'underline', cursor: 'pointer', color: 'inherit', padding: 0 };
 
   return (
@@ -556,14 +559,14 @@ function BookPart({ bookId, index, meta, name, fix, st, color, onReady, marksRea
             {isAi && <SparklesIcon size={12} />}
             {isAi
               ? t('ai.markAi', { lang: ai!.lang === lang ? `${langName(ai!.lang)} (${t('ai.markRewrite')})` : langName(ai!.lang), style: t(`tr.style.${ai!.style}`) })
-              : missing ? t('ai.missingLang', { lang: langName(viewLang) }) : t(ai || viewLang === lang ? 'ai.markOriginal' : 'ai.markNone')}
+              : missing ? t('ai.missingLang', { lang: langName(viewLang) }) : t(ai || viewLang === 'raw' ? 'ai.markOriginal' : 'ai.markNone')}
           </span>
           {isAi && <button style={link} onClick={() => onShowOriginal(true)}>{t('ai.showOriginal')}</button>}
           {!isAi && ai && <button style={link} onClick={() => onShowOriginal(false)}>{t('ai.showAi')}</button>}
           {onTranslate && missing && (
             <button onClick={onTranslate}
               style={{ display: 'inline-flex', alignItems: 'center', gap: 6, height: 30, padding: '0 12px', borderRadius: 999, border: 'none', background: st.accent, color: 'var(--color-bg)', font: 'inherit', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
-              <SparklesIcon size={13} />{t('ai.translateInto', { lang: langName(viewLang) })}
+              <SparklesIcon size={13} />{t(viewLang === lang ? 'ai.rewriteInto' : 'ai.translateInto', { lang: langName(viewLang) })}
             </button>
           )}
           {onTranslate && !missing && <button style={link} onClick={onTranslate}>{t(isAi ? 'ai.again' : 'ai.translateHere')}</button>}
