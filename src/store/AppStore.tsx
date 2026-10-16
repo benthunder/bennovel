@@ -20,7 +20,7 @@ export type Route =
   /** A book in the on-device library. */
   | { s: 'bookDetail'; novelId: number }
   /** The wiki of a book in the on-device library. */
-  | { s: 'bookWiki'; novelId: number; title: string }
+  | { s: 'bookWiki'; novelId: number; title: string; lang?: string }
   /** `path`: a file opened without saving, which can still be imported from the reader. */
   | { s: 'book'; book: LocalBook; place?: LibraryPlace; path?: string };
 

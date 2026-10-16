@@ -8,8 +8,23 @@ import { AiFailure } from './ai';
  * when an embedding model is set with the LLM.
  */
 
-export const WIKI_KINDS = ['character', 'place', 'faction', 'item', 'term', 'other'] as const;
+export const WIKI_KINDS = ['character', 'place', 'faction', 'item', 'level', 'term', 'other'] as const;
 export type WikiKind = (typeof WIKI_KINDS)[number];
+
+/**
+ * Relation types, as "from … to" ("A master_of B"); the same in every language and
+ * named by the app (`wiki.rel.<type>`, `.rev` from the other side). Any other `kind`
+ * is a free relation in someone's own words, kept per language in `labels`.
+ */
+export const REL_TYPES = [
+  'master_of', 'disciple_of', 'parent_of', 'child_of', 'sibling_of', 'spouse_of', 'lover_of',
+  'friend_of', 'enemy_of', 'member_of', 'leader_of', 'located_in', 'owns', 'has_level'
+] as const;
+export type RelType = (typeof REL_TYPES)[number];
+export const isRelType = (k: string): k is RelType => (REL_TYPES as readonly string[]).includes(k);
+
+/** The wiki's words in the book's own language ("Raw"). */
+export const RAW = 'raw';
 
 export interface WikiEntry {
   uid: string;
@@ -19,17 +34,30 @@ export interface WikiEntry {
   /** The name to use per language. */
   names: Record<string, string>;
   aliases: string[];
-  summary: string;
+  /** The description per language; `raw` in the book's own language. */
+  summaries: Record<string, string>;
+  /** A level's place in its ladder, lowest first. */
+  rank: number | null;
   firstChapter: number | null;
   source: 'ai' | 'user';
   updatedAt: number;
 }
 
-export interface WikiRelation { uid: string; fromUid: string; toUid: string; kind: string; note: string; firstChapter: number | null }
+export interface WikiRelation {
+  uid: string; fromUid: string; toUid: string;
+  /** A `RelType`, or a free relation's words as first written. */
+  kind: string;
+  /** A free relation's words per language. */
+  labels: Record<string, string>;
+  note: string; firstChapter: number | null;
+}
 
 export interface Wiki { entries: WikiEntry[]; relations: WikiRelation[]; auto: boolean; lastError: string | null; byMeaning: boolean }
 
-export interface WikiEntryInput { uid?: string; kind: WikiKind; name: string; names: Record<string, string>; aliases: string[]; summary: string }
+export interface WikiEntryInput {
+  uid?: string; kind: WikiKind; name: string; names: Record<string, string>; aliases: string[];
+  summaries: Record<string, string>; rank: number | null;
+}
 
 export const getWiki = (user: string, novelId: number) => invoke<Wiki>('wiki_get', { user, novelId });
 export const searchWiki = (user: string, novelId: number, query: string) => invoke<WikiEntry[]>('wiki_search', { user, novelId, query });
@@ -43,10 +71,34 @@ export async function saveWikiEntry(user: string, novelId: number, entry: WikiEn
 }
 
 export const removeWikiEntry = (user: string, uid: string) => invoke<void>('wiki_remove', { user, uid });
-export const addWikiRelation = (user: string, novelId: number, fromUid: string, toUid: string, kind: string, note = '') =>
-  invoke<string>('wiki_relate', { user, novelId, fromUid, toUid, kind, note });
+/** `kind`: a `RelType`, or free words written in `lang`. */
+export const addWikiRelation = (user: string, novelId: number, fromUid: string, toUid: string, kind: string, lang: string, note = '') =>
+  invoke<string>('wiki_relate', { user, novelId, fromUid, toUid, kind, lang, note });
 export const removeWikiRelation = (user: string, uid: string) => invoke<void>('wiki_unrelate', { user, uid });
 export const setWikiAuto = (user: string, novelId: number, auto: boolean) => invoke<void>('wiki_set_auto', { user, novelId, auto });
 
-/** The name to show: in `lang` when the wiki has one, else as in the original. */
-export const wikiLabel = (e: WikiEntry, lang: string) => e.names[lang] || e.names.vi || e.names.en || e.name;
+/** How many entries and free relations have no words in `lang` yet. */
+export const getWikiMissing = (user: string, novelId: number, lang: string) => invoke<number>('wiki_missing', { user, novelId, lang });
+
+/** Fills in what `lang` is missing with the user's LLM; returns how many changed. */
+export async function translateWiki(user: string, novelId: number, lang: string) {
+  try {
+    return await invoke<number>('wiki_translate', { user, novelId, lang });
+  } catch (e) {
+    throw new AiFailure(e);
+  }
+}
+
+/** The name to show in `lang`: its name there, else the raw one. */
+export const wikiLabel = (e: WikiEntry, lang: string) => (lang === RAW ? e.name : e.names[lang] || e.name);
+
+/** The description to show in `lang` and whether it is in that language (else raw, else any). */
+export function wikiSummary(e: WikiEntry, lang: string): { text: string; inLang: boolean } {
+  if (e.summaries[lang]) return { text: e.summaries[lang], inLang: true };
+  const text = e.summaries[RAW] ?? Object.values(e.summaries)[0] ?? '';
+  return { text, inLang: !text };
+}
+
+/** Whether an entry lacks a name or description in `lang` (it shows the raw ones then). */
+export const wikiMissingIn = (e: WikiEntry, lang: string) =>
+  lang !== RAW && (!e.names[lang] || (Object.keys(e.summaries).length > 0 && !e.summaries[lang]));

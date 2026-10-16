@@ -118,24 +118,26 @@ test('the LLM sheet opens fully in view when Profile is scrolled down', async ({
   await expect(page.getByRole('button', { name: 'Save' })).toBeInViewport();
 });
 
-test('each chapter is marked, translated again and switched to its original', async ({ page }) => {
+test('each chapter is marked, translated again and switched to its original', async ({ page }, info) => {
   await nativeApp(page);
   await page.goto('/');
   await page.getByText('Device Diary').filter({ visible: true }).first().click();
   await page.getByRole('button', { name: /Continue/ }).filter({ visible: true }).first().click();
   const first = page.locator('[data-part="0"]');
   await expect(first.getByText('Words of section 1.', { exact: true })).toBeVisible();
-  // Read in the book's own language: the original, nothing to translate.
+  // A book opens in Raw, the text as imported: nothing to translate.
+  await expect(page.getByRole('button', { name: 'Reading language' })).toHaveText('RAW');
   await expect(first.locator('[data-ai-mark]')).toHaveCount(0);
   await expect(first.getByRole('button', { name: /Translate/ })).toHaveCount(0);
-  // The language button switches the reading language: English (original) or Vietnamese.
+  // The language button switches the reading language: Raw, English or Vietnamese.
   await page.getByRole('button', { name: 'Reading language' }).click();
   const menu = page.getByRole('menu', { name: 'Reading language' });
-  await expect(menu.getByRole('menuitemradio')).toHaveText([/EN · English/, /VI · Tiếng Việt/]);
+  await expect(menu.getByRole('menuitemradio')).toHaveText([/Raw/, /EN · English/, /VI · Tiếng Việt/]);
   await menu.getByRole('menuitemradio', { name: /VI · Tiếng Việt/ }).click();
   await expect(page.getByRole('button', { name: 'Reading language' })).toHaveText('VI');
   // No Vietnamese version yet: the chapter keeps its original and offers the AI.
   await expect(first.getByText('No Tiếng Việt version yet')).toBeVisible();
+  await page.screenshot({ path: `test-results/raw-${info.project.name}-missing.png` });
   await expect(first.getByText('Words of section 1.', { exact: true })).toBeVisible();
   await first.getByRole('button', { name: 'Translate into Tiếng Việt with AI' }).click();
   await expect(page.getByTestId('reader-status')).toContainText('Translating Part 1 of 2…');
@@ -154,11 +156,21 @@ test('each chapter is marked, translated again and switched to its original', as
   await expect(first.getByText('Original', { exact: true })).toBeVisible();
   await first.getByRole('button', { name: 'Show AI version' }).click();
   await expect(first.getByText('Lời của phần 1 (2).')).toBeVisible();
-  // Back to English: the originals again.
+  // English is the raw text's own language: the originals again, nothing to translate.
   await page.getByRole('button', { name: 'Reading language' }).click();
   await page.getByRole('menuitemradio', { name: /EN · English/ }).click();
   await expect(first.getByText('Words of section 1.', { exact: true })).toBeVisible();
   await expect(first.locator('[data-ai-mark]')).toHaveCount(0);
+  await expect(page.locator('[data-part="1"]').getByRole('button', { name: /Translate/ })).toHaveCount(0);
+  // So is Raw, and it stays picked for the book.
+  await page.getByRole('button', { name: 'Reading language' }).click();
+  await page.getByRole('menuitemradio', { name: /Raw/ }).click();
+  await expect(page.getByRole('button', { name: 'Reading language' })).toHaveText('RAW');
+  await expect(first.locator('[data-ai-mark]')).toHaveCount(0);
+  expect(await page.evaluate(() => {
+    const key = Object.keys(localStorage).find(k => k.startsWith('bennovel.aiView.'));
+    return key ? JSON.parse(localStorage.getItem(key)!).view : null;
+  })).toBe('raw');
   // The chapter list marks the translated chapter only.
   await page.getByRole('button', { name: 'Choose a chapter' }).click();
   const sheet = page.getByRole('dialog');

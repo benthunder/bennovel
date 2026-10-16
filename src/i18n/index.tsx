@@ -49,6 +49,10 @@ export function useI18n() {
 
 export const useT = () => useI18n().t;
 
+/** A message in `lang` when the app has that language, for text shown in a book's language. */
+export const messageIn = (lang: string, key: MessageKey): string | undefined =>
+  (MESSAGES as Record<string, Record<MessageKey, string>>)[lang]?.[key];
+
 export function relativeTime(t: TFn, at: number, now = Date.now()) {
   const min = Math.floor((now - at) / 60000);
   if (min < 1) return t('time.justNow');
