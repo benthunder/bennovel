@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { TranslateStyle, UiLang } from '../data/types';
 import type { MessageKey } from '../i18n/en';
+import { load } from './storage';
 
 /*
  * AI translation of books on this device with the user's own LLM: any chat API in the
@@ -42,6 +43,19 @@ export interface AiChoice { lang: AiLang; style: TranslateStyle; dict: boolean }
 const styleArg = (s: TranslateStyle) => s.toLowerCase();
 /** `natural` back to `Natural`. */
 export const styleOf = (s: string) => (s.charAt(0).toUpperCase() + s.slice(1)) as TranslateStyle;
+
+/**
+ * What a library book is read in, remembered per book: `view` is the reading language,
+ * `raw` (the text as imported) or one of `AI_LANGS`; the rest is the last AI request.
+ */
+export type AiView = AiChoice & { view?: string };
+export const aiViewKey = (user: string, novelId: number) => `aiView.${user}:${novelId}`;
+/** The reading language of a remembered choice; `raw` when nothing (or something unknown) was picked. */
+export function readingLangOf(v: AiView | null): string {
+  const l = v?.view ?? v?.lang;
+  return l && AI_LANGS.some(x => x.code === l) ? l : 'raw';
+}
+export const getReadingLang = (user: string, novelId: number) => readingLangOf(load<AiView | null>(aiViewKey(user, novelId), null));
 
 export const getLlmSettings = (user: string) => invoke<LlmSettings | null>('llm_config_get', { user });
 

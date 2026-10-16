@@ -254,3 +254,17 @@ textarea.input { min-height: 90px; resize: vertical; }
 .btn, .tag, .seg, .input { border-radius: 999px; }
 .input { padding-inline: 14px; }
 
+
+/* A wiki name in the reader's text: bold, tappable, reads as part of the sentence. */
+.wiki-term {
+  display: inline;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 700;
+  text-decoration: underline dotted color-mix(in srgb, currentColor 45%, transparent);
+  text-underline-offset: 3px;
+  cursor: pointer;
+}

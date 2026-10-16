@@ -111,12 +111,15 @@ pub fn run() {
             library::commands::ai_cancel,
             library::commands::ai_resume,
             library::commands::wiki_get,
+            library::commands::wiki_at,
             library::commands::wiki_search,
             library::commands::wiki_save,
             library::commands::wiki_remove,
             library::commands::wiki_relate,
             library::commands::wiki_unrelate,
             library::commands::wiki_set_auto,
+            library::commands::wiki_missing,
+            library::commands::wiki_translate,
             opened::take_opened_files,
         ])
         .build(tauri::generate_context!())

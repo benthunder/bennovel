@@ -1,13 +1,17 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { ChapterSheet, useSectionName } from '../components/ChapterSheet';
-import { ChevronLeftIcon, DownloadIcon, ListIcon, SlidersIcon, SparklesIcon } from '../components/Icons';
+import { BookOpenIcon, ChevronLeftIcon, DownloadIcon, ListIcon, SlidersIcon, SparklesIcon } from '../components/Icons';
 import { ReaderChrome, ReaderStatusBar, useImmersive } from '../components/ReaderChrome';
 import { ReaderTools, type ToolsTab, type Translation } from '../components/ReaderTools';
 import { Spinner } from '../components/ui';
+import { WikiPopup, markWikiTerms, wikiTerms } from '../components/WikiPopup';
 import { applyReplaceRules, getBookRules, saveBookRules } from '../data/repository';
 import { CONTENT_LANGS, type ContentLang, type ReplaceRule } from '../data/types';
 import { useI18n } from '../i18n';
-import { AI_LANGS, AiFailure, aiErrorDetail, aiTranslateBook, aiTranslateChapter, getAiChapter, getAiMarks, onAiChapterProgress, styleOf, type AiChoice, type AiLang, type AiMark } from '../lib/ai';
+import {
+  AI_LANGS, AiFailure, aiErrorDetail, aiTranslateBook, aiTranslateChapter, aiViewKey, getAiChapter, getAiMarks, onAiChapterProgress, readingLangOf, styleOf,
+  type AiChoice, type AiLang, type AiMark, type AiView
+} from '../lib/ai';
 import {
   bookImageUrl, closeLocalBook, getLocalSection, imageKey, importBookPath, openLibraryBook, saveLibraryProgress,
   type LibraryPlace, type LocalBook, type LocalSectionMeta
@@ -16,6 +20,7 @@ import { runOcr } from '../lib/ocr';
 import { load, save as store } from '../lib/storage';
 import { useAsync } from '../lib/useAsync';
 import { useLayout } from '../lib/useLayout';
+import { getWikiAt, type Wiki, type WikiEntry } from '../lib/wiki';
 import { READER_THEMES, useApp } from '../store/AppStore';
 
 const GAP_PX = { tight: 6, normal: 16, airy: 28 };
@@ -37,7 +42,7 @@ const MAX_PARTS = 6;
 const LANG_NATIVE: Record<string, string> = { en: 'English', vi: 'Tiếng Việt', zh: '中文', ko: '한국어' };
 const langLabel = (code: string) => `${code.toUpperCase()} · ${LANG_NATIVE[code] ?? code}`;
 
-export const aiViewKey = (user: string, novelId: number) => `aiView.${user}:${novelId}`;
+export { aiViewKey };
 
 export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?: LibraryPlace; path?: string }) {
   const { t, uiLang } = useI18n();
@@ -87,22 +92,26 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
   // and style chosen when it has several), the others their original. Each chapter can
   // be switched back to the original on its own.
   const viewKey = place ? aiViewKey(place.user, place.novelId) : null;
-  // `view`: the language the chapters are read in (the language button); without it, the
-  // last AI choice's. The book's own language shows its originals (or their rewrites).
-  const [ai, setAiState] = useState<(AiChoice & { view?: string }) | null>(() => (viewKey ? load<(AiChoice & { view?: string }) | null>(viewKey, null) : null));
-  const setAi = (v: AiChoice & { view?: string }) => {
+  // `view`: the language the chapters are read in (the language button): `raw`, the text
+  // as imported (the first time, always), or an AI language. A chapter without a version
+  // in it shows the raw text with a button to translate it; so does one whose raw text
+  // already is in that language, without the button.
+  const [ai, setAiState] = useState<AiView | null>(() => (viewKey ? load<AiView | null>(viewKey, null) : null));
+  const setAi = (v: AiView) => {
     setAiState(v);
     if (viewKey) store(viewKey, v);
   };
-  const viewLang = ai?.view ?? ai?.lang ?? lang;
+  const viewLang = readingLangOf(ai);
   const [langMenu, setLangMenu] = useState<DOMRect | null>(null);
-  const viewLangs = [lang as string, ...AI_LANGS.map(l => l.code as string).filter(c => c !== lang)];
+  const viewLangs = ['raw', ...AI_LANGS.map(l => l.code as string)];
   const pickView = (l: string) => {
     setLangMenu(null);
     const aiLang = AI_LANGS.find(x => x.code === l)?.code;
     setAi({ lang: aiLang ?? ai?.lang ?? (lang === 'vi' ? 'en' : 'vi'), style: ai?.style ?? 'Natural', dict: ai?.dict ?? true, view: l });
     setOriginal(new Set());
   };
+  /** The raw text is already in the reading language, so nothing needs translating. */
+  const rawIsView = viewLang === 'raw' || viewLang === lang;
   const [marksRev, setMarksRev] = useState(0);
   const marksQ = useAsync(
     () => (place ? getAiMarks(place.user, place.novelId) : Promise.resolve([] as AiMark[])),
@@ -119,6 +128,8 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
   }
   if (marksQ.status === 'failed' && !marks) setMarks(new Map());
   const [original, setOriginal] = useState<ReadonlySet<number>>(new Set());
+  /** The wiki entry tapped in a chapter, with that chapter's view of the wiki. */
+  const [wikiPop, setWikiPop] = useState<{ wiki: Wiki; entry: WikiEntry; lang: string; at: number } | null>(null);
   const showOriginal = (i: number, on: boolean) => setOriginal(o => {
     const next = new Set(o);
     if (on) next.add(i); else next.delete(i);
@@ -166,7 +177,7 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
     });
     try {
       await aiTranslateChapter(place.user, novelId, at, c, true);
-      setAi(c);
+      setAi({ ...c, view: c.lang });
       showOriginal(at, false);
       setMarksRev(n => n + 1);
       setAiRev(r => ({ ...r, [at]: (r[at] ?? 0) + 1 }));
@@ -190,7 +201,7 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
       const r = await aiTranslateBook(place.user, place.novelId, index, c, uiLang);
       const vars = { n: r.queued, lang: aiLangName(c.lang), style: t(`tr.style.${c.style}`) };
       app.showToast(t(r.queued === 0 ? 'ai.nothing' : r.mode === 'rewrite' ? 'ai.queuedRewrite' : 'ai.queued', vars));
-      setAi(c);
+      setAi({ ...c, view: viewLang });
     } catch (e) {
       aiFail(e);
     }
@@ -370,7 +381,13 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
           <button onClick={e => setLangMenu(e.currentTarget.getBoundingClientRect())} aria-haspopup="menu" aria-expanded={!!langMenu}
             aria-label={t('reader.viewLang')} title={t('reader.viewLang')}
             style={{ height: 34, padding: '0 12px', borderRadius: 999, border: `2px solid ${line}`, background: 'none', color: theme.fg, font: 'inherit', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
-            {viewLang.toUpperCase()}
+            {viewLang === 'raw' ? t('reader.raw').toUpperCase() : viewLang.toUpperCase()}
+          </button>
+        )}
+        {place && (
+          <button className="icon-btn icon-btn--plain" aria-label={t('reader.wiki')} title={t('reader.wiki')}
+            onClick={() => app.push({ s: 'bookWiki', novelId: place.novelId, title: book.title ?? t('book.untitled'), lang: viewLang })}>
+            <BookOpenIcon size={21} />
           </button>
         )}
         {total > 1 && (
@@ -385,13 +402,15 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
           {Array.from({ length: span[1] - span[0] + 1 }, (_, k) => span[0] + k).map(i => (
             <BookPart key={`${gen}-${i}`} bookId={book.id} index={i} meta={book.sections[i]} name={sectionName(book.sections[i], i, total)}
               fix={fix} st={partStyle} color={theme.fg} onReady={onPartReady}
-              marksReady={!!marks} lang={lang} rev={aiRev[i] ?? 0} viewLang={viewLang}
+              marksReady={!!marks} lang={lang} rev={aiRev[i] ?? 0} viewLang={rawIsView ? lang : viewLang}
               ai={(() => {
                 const v = versionOf(i);
                 return v && place ? { user: place.user, novelId: place.novelId, lang: v.lang, style: styleOf(v.style), others: (marks?.get(i)?.length ?? 1) - 1 } : null;
               })()}
               original={original.has(i)} onShowOriginal={on => showOriginal(i, on)}
-              onTranslate={place && (versionOf(i) || viewLang !== lang) ? () => {
+              wiki={place ? { user: place.user, novelId: place.novelId, rev: app.aiRev } : null}
+              onWiki={(wiki, entry, l) => setWikiPop({ wiki, entry, lang: l, at: i })}
+              onTranslate={place && (versionOf(i) || !rawIsView) ? () => {
                 const v = versionOf(i);
                 const c = v && !original.has(i) ? { lang: v.lang, style: styleOf(v.style), dict: ai?.dict ?? true } : lastChoice();
                 void translateChapter(c, i);
@@ -423,12 +442,19 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
             {viewLangs.map(l => (
               <button key={l} role="menuitemradio" aria-checked={l === viewLang} onClick={() => pickView(l)}
                 style={{ display: 'flex', width: '100%', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '10px 12px', border: 'none', borderRadius: 10, background: l === viewLang ? 'color-mix(in srgb, var(--color-accent) 16%, transparent)' : 'none', color: 'inherit', font: 'inherit', fontSize: 14, fontWeight: l === viewLang ? 700 : 500, cursor: 'pointer', textAlign: 'left' }}>
-                <span>{langLabel(l)}</span>
-                <span style={{ fontSize: 11, opacity: .6 }}>{l === lang ? t('reader.viewOriginal') : t('reader.viewAi')}</span>
+                <span>{l === 'raw' ? t('reader.raw') : langLabel(l)}</span>
+                <span style={{ fontSize: 11, opacity: .6 }}>{l === 'raw' ? t('reader.rawSub') : l === lang ? t('reader.viewOriginal') : t('reader.viewAi')}</span>
               </button>
             ))}
           </div>
         </div>
+      )}
+
+      {wikiPop && place && (
+        <WikiPopup key={wikiPop.entry.uid} wiki={wikiPop.wiki} entry={wikiPop.entry} lang={wikiPop.lang}
+          chapter={sectionName(book.sections[wikiPop.at], wikiPop.at, total)}
+          onPick={e => setWikiPop(w => w && { ...w, entry: e })} onClose={() => setWikiPop(null)}
+          onOpenWiki={() => { setWikiPop(null); app.push({ s: 'bookWiki', novelId: place.novelId, title: book.title ?? t('book.untitled'), lang: wikiPop.lang }); }} />
       )}
 
       {toc && <ChapterSheet sections={book.sections} current={index} marks={marks ?? undefined} onPick={jump} onClose={() => setToc(false)} />}
@@ -459,7 +485,7 @@ type PartStyle = {
  * One part of the book in the long scroll: its heading, then its text. Marked `data-ready` once its content is in, so the reader knows the
  * height is real before adding the next part.
  */
-function BookPart({ bookId, index, meta, name, fix, st, color, onReady, marksReady, lang, rev, viewLang, ai, original, onShowOriginal, onTranslate }: {
+function BookPart({ bookId, index, meta, name, fix, st, color, onReady, marksReady, lang, rev, viewLang, ai, original, onShowOriginal, onTranslate, wiki, onWiki }: {
   bookId: number; index: number; meta: LocalSectionMeta | undefined; name: string;
   fix: (s: string) => string; st: PartStyle; color: string;
   onReady: (index: number) => void;
@@ -478,6 +504,9 @@ function BookPart({ bookId, index, meta, name, fix, st, color, onReady, marksRea
   onShowOriginal: (on: boolean) => void;
   /** Translates this chapter (again, when it has a version); library books only. */
   onTranslate?: () => void;
+  /** A library book's wiki: its names in this chapter are marked, as known by this chapter. */
+  wiki: { user: string; novelId: number; rev: number } | null;
+  onWiki: (wiki: Wiki, entry: WikiEntry, lang: string) => void;
 }) {
   const { t } = useI18n();
   const showAi = !!ai && !original;
@@ -493,6 +522,14 @@ function BookPart({ bookId, index, meta, name, fix, st, color, onReady, marksRea
   const ready = q.status !== 'loading';
   useEffect(() => { if (ready) onReady(index); }, [ready]);
   const isAi = q.status === 'ready' && q.data.isAi;
+  // The wiki as of this chapter (reading order from 1), so later chapters give nothing away.
+  const wikiQ = useAsync(() => (wiki ? getWikiAt(wiki.user, wiki.novelId, index + 1) : Promise.resolve(null)), [wiki?.user, wiki?.novelId, wiki?.rev, index]);
+  const wikiAt = wikiQ.status === 'ready' ? wikiQ.data : null;
+  // Names are found as the text shows them; the card speaks the reading language.
+  // (`isAi` can still be the last text's while a switch to another version loads.)
+  const termsLang = isAi && ai ? ai.lang : 'raw';
+  const cardLang = isAi && ai ? ai.lang : AI_LANGS.some(l => l.code === viewLang) ? viewLang : 'raw';
+  const terms = useMemo(() => wikiTerms(wikiAt, termsLang), [wikiAt, termsLang]);
   const langName = (l: string) => LANG_NATIVE[l] ?? l;
   // Read in another language than the book's, and this chapter has no version in it.
   const missing = !ai && viewLang !== lang;
@@ -543,7 +580,9 @@ function BookPart({ bookId, index, meta, name, fix, st, color, onReady, marksRea
             onError={e => { e.currentTarget.style.display = 'none'; }}
             style={{ display: 'block', maxWidth: '100%', height: 'auto', margin: `0 auto ${st.gap}px`, borderRadius: 4 }} />
         ) : (
-          <p key={i} style={{ margin: `0 0 ${st.gap}px`, fontSize: st.fontSize, lineHeight: st.lineH, textAlign: st.align, textWrap: 'pretty' }}>{fix(para)}</p>
+          <p key={i} style={{ margin: `0 0 ${st.gap}px`, fontSize: st.fontSize, lineHeight: st.lineH, textAlign: st.align, textWrap: 'pretty' }}>
+            {wikiAt ? markWikiTerms(fix(para), terms, e => onWiki(wikiAt, e, cardLang)) : fix(para)}
+          </p>
         );
       })}
     </section>
