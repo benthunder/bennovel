@@ -171,6 +171,7 @@ fn pauses(e: &AiError) -> bool {
         AiError::NotSet
             | AiError::Auth(_)
             | AiError::Network(_)
+            | AiError::Timeout
             | AiError::Http(402 | 404 | 429 | 500..=599, _)
     )
 }

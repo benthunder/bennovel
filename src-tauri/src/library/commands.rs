@@ -782,8 +782,19 @@ fn chapter_id(conn: &rusqlite::Connection, novel_id: i64, index: usize) -> Resul
         .ok_or_else(|| AiError::Other(format!("chapter {index} does not exist")))
 }
 
+/// How far a chapter translated from the reader is: parts done of all its parts.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ChapterProgress {
+    novel_id: i64,
+    index: usize,
+    done: usize,
+    total: usize,
+}
+
 /// Translates (or, in the book's own language, rewrites) one chapter now and returns
-/// it; a chapter done before comes back as it is unless `again`.
+/// it; a chapter done before comes back as it is unless `again`. Progress goes out as
+/// `ai-chapter-progress`; the wiki learns from it in the background after the save.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn ai_translate_chapter<R: Runtime>(
@@ -806,10 +817,14 @@ pub async fn ai_translate_chapter<R: Runtime>(
             }
         }
         let model = std::sync::Arc::new(llm_for(&conn)?);
-        translate::run(
+        let progress: translate::OnProgress = std::sync::Arc::new(move |done, total| {
+            let _ = app.emit("ai-chapter-progress", ChapterProgress { novel_id, index, done, total });
+        });
+        translate::run_with(
             &conn,
             model,
             translate::Request { novel_id, chapter_id, lang, style, glossary },
+            translate::Hooks { progress: Some(progress), learn_in_background: true },
         )
     })
     .await
