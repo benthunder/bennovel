@@ -11,7 +11,7 @@ import { useT } from '../i18n';
 import { useApp } from '../store/AppStore';
 import { useLayout } from '../lib/useLayout';
 import {
-  canOpenLocalBooks, deleteLibraryBook, importLocalBook, importLocalFolder, canPickFolder, libraryUser, listLibrary, localCover, pickLocalBook, updateLibraryBook,
+  canOpenLocalBooks, deleteLibraryBook, importLocalBook, importLocalFolder, canPickFolder, listLibrary, localCover, pickLocalBook, updateLibraryBook,
   type LibraryBook
 } from '../lib/localBook';
 import { runOcr, useOcrStatus } from '../lib/ocr';
@@ -52,13 +52,6 @@ export function LibraryScreen() {
       )}
       <CoverGrid novels={favs} onOpen={app.openDetail} cols={lay.libCols} gap={lay.libGap} fs={lay.libFs} />
       {missing && <div style={{ marginTop: 8 }}><OfflineNote /></div>}
-      {favs.length === 0 && !missing && (
-        <div className="card" style={{ alignItems: 'flex-start', padding: 22, marginTop: 8, maxWidth: 420 }}>
-          <div className="card-title">{t('library.emptyTitle')}</div>
-          <p className="card-body">{t('library.emptyBody')}</p>
-          <button className="btn btn-primary" onClick={() => app.switchTab('category')}>{t('library.browse')}</button>
-        </div>
-      )}
     </div>
   );
 }
@@ -68,7 +61,7 @@ function DeviceBooks({ onOpenFile }: { onOpenFile: () => void }) {
   const t = useT();
   const app = useApp();
   const lay = useLayout();
-  const user = libraryUser(app.user);
+  const user = app.libKey;
   const [books, setBooks] = useState<LibraryBook[] | null>(null);
   const [importing, setImporting] = useState<{ done: number; total: number } | null>(null);
   const [editing, setEditing] = useState<LibraryBook | null>(null);

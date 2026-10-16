@@ -1,19 +1,18 @@
 import { useEffect, useState } from 'react';
-import { GlobeIcon, LanguagesIcon, LogOutIcon, RefreshIcon, SparklesIcon } from '../components/Icons';
+import { GlobeIcon, LanguagesIcon, SparklesIcon } from '../components/Icons';
 import { Modal } from '../components/Modal';
 import { NovelCover } from '../components/NovelCover';
 import { UiLangDialog, uiLangLabel } from '../components/UiLangDialog';
 import { CoverGrid, Segmented, Spinner } from '../components/ui';
 import { findNovel, getContentLangs, getNovels } from '../data/repository';
 import { relativeTime, useI18n } from '../i18n';
-import type { MessageKey } from '../i18n/en';
 import { AiFailure, LLM_PROVIDERS, aiErrorDetail, getLlmSettings, setLlmConfig, type LlmConfig, type LlmSettings } from '../lib/ai';
-import { s3Host, setS3Config, type S3Config } from '../lib/s3';
 import { useAsync } from '../lib/useAsync';
-import { createBackup, restoreBackup, SyncFailure, type SyncStep } from '../lib/sync';
+import { createBackup, restoreBackup } from '../lib/backup';
+import { save } from '../lib/storage';
 import { useApp } from '../store/AppStore';
 import { useLayout } from '../lib/useLayout';
-import { canOpenLocalBooks, libraryUser, listLibrary, localCover, openLibraryBook, type LibraryBook } from '../lib/localBook';
+import { canOpenLocalBooks, listLibrary, localCover, openLibraryBook, type LibraryBook } from '../lib/localBook';
 
 export function ProfileScreen() {
   const { t, uiLang } = useI18n();
@@ -21,12 +20,10 @@ export function ProfileScreen() {
   const lay = useLayout();
   const [tab, setTab] = useState<'history' | 'favs'>('history');
   const [uiLangOpen, setUiLangOpen] = useState(false);
-  const user = app.user;
   const [llmOpen, setLlmOpen] = useState(false);
   const [llmRev, setLlmRev] = useState(0);
-  const llmQ = useAsync(() => (canOpenLocalBooks() ? getLlmSettings(libraryUser(user)) : Promise.resolve(null)), [user?.email, llmRev]);
+  const llmQ = useAsync(() => (canOpenLocalBooks() ? getLlmSettings(app.libKey) : Promise.resolve(null)), [app.libKey, llmRev]);
   const llm = llmQ.status === 'ready' ? llmQ.data : null;
-  const initials = user ? user.name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase() : 'G';
   const langLabel = getContentLangs().find(l => l.code === app.contentLang)?.native ?? t('lang.askEach');
   const rows = useHistoryRows();
 
@@ -38,23 +35,7 @@ export function ProfileScreen() {
         gridTemplateRows: lay.wide ? 'auto auto auto 1fr' : 'auto'
       }}>
         <div style={{ gridArea: 'card' }}>
-          {user ? (
-            <div style={{ borderRadius: 34, background: 'var(--color-surface)', padding: 22, display: 'flex', flexDirection: lay.wide ? 'column' : 'row', gap: 16, alignItems: lay.wide ? 'flex-start' : 'center' }}>
-              <span className="display" style={{ width: 72, height: 72, flex: 'none', borderRadius: '50%', background: 'var(--color-accent-2-300)', color: 'var(--color-accent-2-900)', display: 'grid', placeItems: 'center', fontSize: 26 }}>{initials}</span>
-              <div style={{ minWidth: 0 }}>
-                <div className="display" style={{ fontSize: 22, lineHeight: 1.1 }}>{user.name}</div>
-                <div className="muted" style={{ fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis' }}>{user.email}</div>
-                <span className="tag tag-accent-2" style={{ marginTop: 6 }}>{t('profile.signedInWith', { p: user.provider })}</span>
-              </div>
-            </div>
-          ) : (
-            <div style={{ borderRadius: 34, background: 'var(--color-surface)', padding: 22, display: 'flex', flexDirection: 'column', gap: 10, alignItems: 'flex-start' }}>
-              <div className="display" style={{ fontSize: 22 }}>{t('profile.guestTitle')}</div>
-              <div style={{ fontSize: 13, color: 'var(--color-neutral-800)' }}>{t('profile.guestBody')}</div>
-              <button className="btn btn-primary" style={{ height: 44, padding: '0 22px' }} onClick={() => app.push({ s: 'login' })}>{t('profile.loginCta')}</button>
-            </div>
-          )}
-          {canOpenLocalBooks() && <SyncCard />}
+          {canOpenLocalBooks() && <BackupCard />}
         </div>
 
         <Segmented value={tab} onChange={setTab} style={{ gridArea: 'tabs' }} optStyle={{ padding: 10 }}
@@ -104,12 +85,6 @@ export function ProfileScreen() {
               <span className="muted" style={{ fontSize: 13, maxWidth: '45%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{llm ? llm.model : t('ai.notSet')} ›</span>
             </button>
           )}
-          {user && (
-            <button className="menu-row menu-row--danger" onClick={() => { app.logout(); app.showToast(t('auth.loggedOut')); }}>
-              <LogOutIcon />
-              <span style={{ flex: 1, fontSize: 14, fontWeight: 700 }}>{t('profile.logout')}</span>
-            </button>
-          )}
         </div>
       </div>
       {uiLangOpen && <UiLangDialog onClose={() => setUiLangOpen(false)} />}
@@ -118,160 +93,55 @@ export function ProfileScreen() {
   );
 }
 
-const MB = 1024 * 1024;
-
-/** What a running sync is doing, e.g. "Uploading… 40% · 12 / 30 MB". */
-function stepText(t: ReturnType<typeof useI18n>['t'], step: SyncStep | null): string {
-  if (!step) return t('sync.syncing');
-  if (!('done' in step)) return t(`sync.step.${step.step}`);
-  const mb = (n: number) => (n / MB).toFixed(n < 10 * MB ? 1 : 0);
-  const progress = step.total > 0
-    ? `${Math.floor((step.done / step.total) * 100)}% · ${mb(step.done)} / ${mb(step.total)} MB`
-    : step.done > 0 ? `${mb(step.done)} MB` : '';
-  return t(`sync.step.${step.step}`, { progress }).trim();
-}
-
-/**
- * The Sync button: brings this device's library and its synced copy together, in the
- * account's storage or the user's own S3 storage.
- */
-function SyncCard() {
-  const { t } = useI18n();
-  const app = useApp();
-  const [editing, setEditing] = useState(false);
-  const status = app.syncing ? stepText(t, app.syncStep) : app.syncedAt ? t('sync.last', { time: relativeTime(t, app.syncedAt) }) : t('sync.never');
-  const where = app.s3 ? `${app.s3.bucket} · ${s3Host(app.s3)}` : t('s3.account');
-  return (
-    <div style={{ marginTop: 12, borderRadius: 28, background: 'var(--color-surface)', padding: '12px 12px 10px 18px', display: 'flex', flexDirection: 'column', gap: 6 }}>
-      {app.canSync ? (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 14, fontWeight: 700 }}>{status}</div>
-            <div className="muted" style={{ fontSize: 12 }}>{t('sync.hint')}</div>
-          </div>
-          <button className="btn btn-primary" style={{ height: 40, padding: '0 16px', gap: 8, flex: 'none' }} disabled={app.syncing} onClick={app.syncNow}>
-            <RefreshIcon size={16} style={app.syncing ? { animation: 'nxspin 1s linear infinite' } : undefined} />
-            {t('sync.button')}
-          </button>
-        </div>
-      ) : (
-        <div className="muted" style={{ fontSize: 12 }}>{t('s3.guestHint')}</div>
-      )}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        {app.canSync && <span className="muted" style={{ flex: 1, minWidth: 0, fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t('s3.via', { where })}</span>}
-        <button className="btn btn-ghost" style={{ fontSize: 12, padding: '0 6px', marginLeft: 'auto' }} disabled={app.syncing} onClick={() => setEditing(true)}>
-          {app.s3 ? t('s3.change') : t('s3.setUp')}
-        </button>
-      </div>
-      <BackupRow />
-      {editing && <S3Dialog onClose={() => setEditing(false)} />}
-    </div>
-  );
-}
+type BackupJob = 'backup' | 'restore';
 
 /**
  * A backup of the whole library in a file the user keeps (books with their AI
  * translations, history, favourites, downloads), and bringing one back.
  */
-function BackupRow() {
+function BackupCard() {
   const { t } = useI18n();
   const app = useApp();
-  const user = libraryUser(app.user);
-  const [busy, setBusy] = useState<'backup' | 'restore' | null>(null);
-  const run = async (kind: 'backup' | 'restore') => {
-    setBusy(kind);
+  const user = app.libKey;
+  const [busy, setBusy] = useState<BackupJob | null>(null);
+  const run = async (job: BackupJob) => {
+    setBusy(job);
     try {
-      if (kind === 'backup') {
+      if (job === 'backup') {
         if (await createBackup(user)) app.showToast(t('backup.done'));
-      } else if (await restoreBackup(user)) {
-        app.reloadLibrary();
-        app.showToast(t('backup.restored'));
+      } else {
+        const restored = await restoreBackup(user);
+        if (restored === 'settings') {
+          // Language and reader settings are read at start: start again with them.
+          save('restoredNotice', true);
+          window.location.reload();
+        } else if (restored) {
+          app.reloadLibrary();
+          app.showToast(t('backup.restored'));
+        }
       }
     } catch (e) {
       console.error(e);
-      app.showToast(`${t(kind === 'backup' ? 'backup.failed' : 'backup.restoreFailed')} ${String(e)}`);
+      app.showToast(`${t(job === 'backup' ? 'backup.failed' : 'backup.restoreFailed')} ${String(e)}`);
     } finally {
       setBusy(null);
     }
   };
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, borderTop: '1px solid var(--color-neutral-200)', paddingTop: 6 }}>
-      <span className="muted" style={{ flex: 1, minWidth: 0, fontSize: 12 }}>{t('backup.hint')}</span>
-      <button className="btn btn-ghost" style={{ fontSize: 12, padding: '0 6px', gap: 6 }} disabled={!!busy || app.syncing} onClick={() => void run('backup')}>
-        {busy === 'backup' && <Spinner size={12} />}{t('backup.create')}
-      </button>
-      <button className="btn btn-ghost" style={{ fontSize: 12, padding: '0 6px', gap: 6 }} disabled={!!busy || app.syncing} onClick={() => void run('restore')}>
-        {busy === 'restore' && <Spinner size={12} />}{t('backup.restore')}
-      </button>
-    </div>
-  );
-}
-
-type S3Field = keyof S3Config;
-
-/** Settings of the user's own S3 storage; saved only once the server accepts them. */
-function S3Dialog({ onClose }: { onClose: () => void }) {
-  const { t } = useI18n();
-  const app = useApp();
-  const user = libraryUser(app.user);
-  const saved = app.s3;
-  const [form, setForm] = useState<S3Config>({
-    endpoint: saved?.endpoint ?? '', region: saved?.region ?? '', bucket: saved?.bucket ?? '',
-    folder: saved?.folder ?? 'bennovel', accessKey: saved?.accessKey ?? '', secretKey: ''
-  });
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<MessageKey | null>(null);
-
-  const apply = async (config: S3Config | null) => {
-    setBusy(true);
-    setError(null);
-    try {
-      await setS3Config(user, config);
-      await app.refreshS3();
-      app.showToast(t(config ? 's3.saved' : 's3.removed'));
-      onClose();
-    } catch (e) {
-      setError(e instanceof SyncFailure ? e.key : 'sync.err.generic');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const field = (key: S3Field, label: string, props: React.InputHTMLAttributes<HTMLInputElement> = {}) => (
-    <div className="field">
-      <label htmlFor={`s3-${key}`}>{label}</label>
-      <input id={`s3-${key}`} className="input" style={{ height: 40 }} value={form[key]} autoCapitalize="off" autoCorrect="off" spellCheck={false}
-        onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))} {...props} />
-    </div>
+  const button = (job: BackupJob, label: string) => (
+    <button className="btn btn-ghost" style={{ fontSize: 12, padding: '0 6px', gap: 6 }} disabled={!!busy} onClick={() => void run(job)}>
+      {busy === job && <Spinner size={12} />}{label}
+    </button>
   );
 
   return (
-    <Modal onClose={busy ? undefined : onClose}>
-      <form className="dialog dialog--sheet" role="dialog" aria-modal="true" aria-label={t('s3.title')} onClick={e => e.stopPropagation()}
-        onSubmit={e => { e.preventDefault(); void apply(form); }}>
-        <div className="dialog-title" style={{ fontSize: 22 }}>{t('s3.title')}</div>
-        <div className="dialog-body" style={{ marginTop: -6 }}>{t('s3.body')}</div>
-        {field('endpoint', t('s3.endpoint'), { placeholder: 'https://minio.example.com:9000', inputMode: 'url', required: true })}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-          {field('bucket', t('s3.bucket'), { required: true })}
-          {field('region', t('s3.region'), { placeholder: 'us-east-1' })}
-        </div>
-        {field('folder', t('s3.folder'))}
-        {field('accessKey', t('s3.accessKey'), { required: true, autoComplete: 'off' })}
-        {field('secretKey', t('s3.secretKey'), {
-          type: 'password', autoComplete: 'new-password', required: !saved?.hasSecret,
-          placeholder: saved?.hasSecret ? t('s3.secretKept') : undefined
-        })}
-        {error && <div role="alert" style={{ fontSize: 13, color: 'var(--color-accent-700)' }}>{t(error)}</div>}
-        <div className="dialog-actions">
-          {saved && <button type="button" className="btn btn-ghost" style={{ marginRight: 'auto' }} disabled={busy} onClick={() => void apply(null)}>{t('s3.remove')}</button>}
-          <button type="button" className="btn btn-secondary" style={{ height: 44, padding: '0 18px' }} disabled={busy} onClick={onClose}>{t('common.cancel')}</button>
-          <button type="submit" className="btn btn-primary" style={{ height: 44, padding: '0 22px' }} disabled={busy}>
-            {busy ? t('s3.checking') : t('common.save')}
-          </button>
-        </div>
-      </form>
-    </Modal>
+    <div style={{ borderRadius: 28, background: 'var(--color-surface)', padding: '14px 12px 10px 18px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div style={{ fontSize: 14, fontWeight: 700 }}>{t('backup.title')}</div>
+      <div className="muted" style={{ fontSize: 12 }}>{t('backup.hint')}</div>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, borderTop: '1px solid var(--color-neutral-200)', paddingTop: 6 }}>
+        {button('backup', t('backup.create'))}
+        {button('restore', t('backup.restore'))}
+      </div>
+    </div>
   );
 }
 
@@ -283,7 +153,7 @@ function S3Dialog({ onClose }: { onClose: () => void }) {
 function LlmDialog({ saved, onClose, onSaved }: { saved: LlmSettings | null; onClose: () => void; onSaved: () => void }) {
   const { t } = useI18n();
   const app = useApp();
-  const user = libraryUser(app.user);
+  const user = app.libKey;
   const [form, setForm] = useState<LlmConfig>(() => ({
     provider: saved?.provider ?? 'openai',
     baseUrl: saved?.baseUrl ?? LLM_PROVIDERS[0].baseUrl,
@@ -390,7 +260,7 @@ interface HistoryRow {
 function useHistoryRows(): HistoryRow[] {
   const { t } = useI18n();
   const app = useApp();
-  const user = libraryUser(app.user);
+  const user = app.libKey;
   const [books, setBooks] = useState<LibraryBook[]>([]);
   useEffect(() => {
     if (!canOpenLocalBooks()) return;

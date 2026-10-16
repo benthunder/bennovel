@@ -5,7 +5,6 @@ import { ChevronLeftIcon, ChevronRightIcon, PencilIcon, XIcon } from '../compone
 import { Checkbox, SearchField, Spinner } from '../components/ui';
 import { useI18n } from '../i18n';
 import { AI_LANGS, AiFailure, aiErrorDetail } from '../lib/ai';
-import { libraryUser } from '../lib/localBook';
 import { useAsync } from '../lib/useAsync';
 import { useLayout } from '../lib/useLayout';
 import { useThrottledValue } from '../lib/useThrottledValue';
@@ -23,7 +22,7 @@ export function WikiScreen({ novelId, title }: { novelId: number; title: string 
   const { t, uiLang } = useI18n();
   const app = useApp();
   const lay = useLayout();
-  const user = libraryUser(app.user);
+  const user = app.libKey;
   const [rev, setRev] = useState(0);
   const q = useAsync(() => getWiki(user, novelId), [user, novelId, rev, app.aiRev]);
   const [query, setQuery] = useState('');
@@ -142,7 +141,7 @@ function EntrySheet({ novelId, wiki, entry, onClose, onChanged }: {
 }) {
   const { t, uiLang } = useI18n();
   const app = useApp();
-  const user = libraryUser(app.user);
+  const user = app.libKey;
   const [saved, setSaved] = useState(entry);
   const [kind, setKind] = useState<WikiKind>(entry?.kind ?? 'character');
   const [name, setName] = useState(entry?.name ?? '');
