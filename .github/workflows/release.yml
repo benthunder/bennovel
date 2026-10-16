@@ -134,8 +134,9 @@ jobs:
           done
           rm -rf tmp-pdfium
 
-      - name: Build APK
-        run: npx tauri android build --apk --target aarch64 --target armv7 --target x86_64
+      # The APK is for direct installs (GitHub Release); the AAB is what Google Play takes.
+      - name: Build APK + AAB
+        run: npx tauri android build --apk --aab --target aarch64 --target armv7 --target x86_64
 
       # Uses the release keystore from repo secrets when present. Without them the
       # APK is signed with a throwaway key: installable for testing, but a later
@@ -167,6 +168,17 @@ jobs:
             --ks-key-alias "$KEY_ALIAS" --key-pass "pass:$KEYSTORE_PASSWORD" \
             --out "out/BenNovel_${VERSION}_android.apk" aligned.apk
           "$BT/apksigner" verify "out/BenNovel_${VERSION}_android.apk"
+          # Play only accepts an AAB signed with the registered upload key, so skip it
+          # when building with the throwaway key.
+          if [ -n "${KEYSTORE_B64:-}" ]; then
+            AAB="$(find src-tauri/gen/android/app/build/outputs/bundle -name '*universal*release*.aab' | head -1)"
+            test -n "$AAB"
+            mkdir -p out-aab
+            jarsigner -keystore release.keystore -storepass "$KEYSTORE_PASSWORD" \
+              -keypass "$KEYSTORE_PASSWORD" -sigalg SHA256withRSA -digestalg SHA-256 \
+              -signedjar "out-aab/BenNovel_${VERSION}_android.aab" "$AAB" "$KEY_ALIAS"
+            jarsigner -verify "out-aab/BenNovel_${VERSION}_android.aab"
+          fi
           rm -f release.keystore
 
       - uses: actions/upload-artifact@v4
@@ -174,6 +186,13 @@ jobs:
           name: android
           path: out/*.apk
           if-no-files-found: error
+
+      # Upload this file to Play Console (it is not attached to the GitHub Release).
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-aab
+          path: out-aab/*.aab
+          if-no-files-found: ignore
 
   release:
     name: Publish GitHub Release
