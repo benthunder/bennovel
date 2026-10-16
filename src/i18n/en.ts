@@ -348,6 +348,8 @@ export const en = {
   'wiki.removed': 'Removed from the wiki.',
   'wiki.nameTaken': 'Another entry already has this name.',
   'wiki.failed': 'Could not save the wiki.',
+  'wiki.asOf': 'As known by {chapter}; nothing from later chapters.',
+  'wiki.noSummary': 'No description yet.',
   'reader.raw': 'Raw',
   'reader.rawSub': 'as imported',
   'reader.wiki': 'Wiki',

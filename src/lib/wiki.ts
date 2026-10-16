@@ -102,3 +102,6 @@ export function wikiSummary(e: WikiEntry, lang: string): { text: string; inLang:
 /** Whether an entry lacks a name or description in `lang` (it shows the raw ones then). */
 export const wikiMissingIn = (e: WikiEntry, lang: string) =>
   lang !== RAW && (!e.names[lang] || (Object.keys(e.summaries).length > 0 && !e.summaries[lang]));
+
+/** What the wiki knew by chapter `number` (reading order, from 1), for the reader. */
+export const getWikiAt = (user: string, novelId: number, number: number) => invoke<Wiki>('wiki_at', { user, novelId, number });

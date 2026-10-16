@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { ChapterSheet, useSectionName } from '../components/ChapterSheet';
 import { BookOpenIcon, ChevronLeftIcon, DownloadIcon, ListIcon, SlidersIcon, SparklesIcon } from '../components/Icons';
 import { ReaderChrome, ReaderStatusBar, useImmersive } from '../components/ReaderChrome';
 import { ReaderTools, type ToolsTab, type Translation } from '../components/ReaderTools';
 import { Spinner } from '../components/ui';
+import { WikiPopup, markWikiTerms, wikiTerms } from '../components/WikiPopup';
 import { applyReplaceRules, getBookRules, saveBookRules } from '../data/repository';
 import { CONTENT_LANGS, type ContentLang, type ReplaceRule } from '../data/types';
 import { useI18n } from '../i18n';
@@ -19,6 +20,7 @@ import { runOcr } from '../lib/ocr';
 import { load, save as store } from '../lib/storage';
 import { useAsync } from '../lib/useAsync';
 import { useLayout } from '../lib/useLayout';
+import { getWikiAt, type Wiki, type WikiEntry } from '../lib/wiki';
 import { READER_THEMES, useApp } from '../store/AppStore';
 
 const GAP_PX = { tight: 6, normal: 16, airy: 28 };
@@ -126,6 +128,8 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
   }
   if (marksQ.status === 'failed' && !marks) setMarks(new Map());
   const [original, setOriginal] = useState<ReadonlySet<number>>(new Set());
+  /** The wiki entry tapped in a chapter, with that chapter's view of the wiki. */
+  const [wikiPop, setWikiPop] = useState<{ wiki: Wiki; entry: WikiEntry; lang: string; at: number } | null>(null);
   const showOriginal = (i: number, on: boolean) => setOriginal(o => {
     const next = new Set(o);
     if (on) next.add(i); else next.delete(i);
@@ -404,6 +408,8 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
                 return v && place ? { user: place.user, novelId: place.novelId, lang: v.lang, style: styleOf(v.style), others: (marks?.get(i)?.length ?? 1) - 1 } : null;
               })()}
               original={original.has(i)} onShowOriginal={on => showOriginal(i, on)}
+              wiki={place ? { user: place.user, novelId: place.novelId, rev: app.aiRev } : null}
+              onWiki={(wiki, entry, l) => setWikiPop({ wiki, entry, lang: l, at: i })}
               onTranslate={place && (versionOf(i) || !rawIsView) ? () => {
                 const v = versionOf(i);
                 const c = v && !original.has(i) ? { lang: v.lang, style: styleOf(v.style), dict: ai?.dict ?? true } : lastChoice();
@@ -444,6 +450,13 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
         </div>
       )}
 
+      {wikiPop && place && (
+        <WikiPopup key={wikiPop.entry.uid} wiki={wikiPop.wiki} entry={wikiPop.entry} lang={wikiPop.lang}
+          chapter={sectionName(book.sections[wikiPop.at], wikiPop.at, total)}
+          onPick={e => setWikiPop(w => w && { ...w, entry: e })} onClose={() => setWikiPop(null)}
+          onOpenWiki={() => { setWikiPop(null); app.push({ s: 'bookWiki', novelId: place.novelId, title: book.title ?? t('book.untitled'), lang: wikiPop.lang }); }} />
+      )}
+
       {toc && <ChapterSheet sections={book.sections} current={index} marks={marks ?? undefined} onPick={jump} onClose={() => setToc(false)} />}
 
       {tools && (
@@ -472,7 +485,7 @@ type PartStyle = {
  * One part of the book in the long scroll: its heading, then its text. Marked `data-ready` once its content is in, so the reader knows the
  * height is real before adding the next part.
  */
-function BookPart({ bookId, index, meta, name, fix, st, color, onReady, marksReady, lang, rev, viewLang, ai, original, onShowOriginal, onTranslate }: {
+function BookPart({ bookId, index, meta, name, fix, st, color, onReady, marksReady, lang, rev, viewLang, ai, original, onShowOriginal, onTranslate, wiki, onWiki }: {
   bookId: number; index: number; meta: LocalSectionMeta | undefined; name: string;
   fix: (s: string) => string; st: PartStyle; color: string;
   onReady: (index: number) => void;
@@ -491,6 +504,9 @@ function BookPart({ bookId, index, meta, name, fix, st, color, onReady, marksRea
   onShowOriginal: (on: boolean) => void;
   /** Translates this chapter (again, when it has a version); library books only. */
   onTranslate?: () => void;
+  /** A library book's wiki: its names in this chapter are marked, as known by this chapter. */
+  wiki: { user: string; novelId: number; rev: number } | null;
+  onWiki: (wiki: Wiki, entry: WikiEntry, lang: string) => void;
 }) {
   const { t } = useI18n();
   const showAi = !!ai && !original;
@@ -506,6 +522,14 @@ function BookPart({ bookId, index, meta, name, fix, st, color, onReady, marksRea
   const ready = q.status !== 'loading';
   useEffect(() => { if (ready) onReady(index); }, [ready]);
   const isAi = q.status === 'ready' && q.data.isAi;
+  // The wiki as of this chapter (reading order from 1), so later chapters give nothing away.
+  const wikiQ = useAsync(() => (wiki ? getWikiAt(wiki.user, wiki.novelId, index + 1) : Promise.resolve(null)), [wiki?.user, wiki?.novelId, wiki?.rev, index]);
+  const wikiAt = wikiQ.status === 'ready' ? wikiQ.data : null;
+  // Names are found as the text shows them; the card speaks the reading language.
+  // (`isAi` can still be the last text's while a switch to another version loads.)
+  const termsLang = isAi && ai ? ai.lang : 'raw';
+  const cardLang = isAi && ai ? ai.lang : AI_LANGS.some(l => l.code === viewLang) ? viewLang : 'raw';
+  const terms = useMemo(() => wikiTerms(wikiAt, termsLang), [wikiAt, termsLang]);
   const langName = (l: string) => LANG_NATIVE[l] ?? l;
   // Read in another language than the book's, and this chapter has no version in it.
   const missing = !ai && viewLang !== lang;
@@ -556,7 +580,9 @@ function BookPart({ bookId, index, meta, name, fix, st, color, onReady, marksRea
             onError={e => { e.currentTarget.style.display = 'none'; }}
             style={{ display: 'block', maxWidth: '100%', height: 'auto', margin: `0 auto ${st.gap}px`, borderRadius: 4 }} />
         ) : (
-          <p key={i} style={{ margin: `0 0 ${st.gap}px`, fontSize: st.fontSize, lineHeight: st.lineH, textAlign: st.align, textWrap: 'pretty' }}>{fix(para)}</p>
+          <p key={i} style={{ margin: `0 0 ${st.gap}px`, fontSize: st.fontSize, lineHeight: st.lineH, textAlign: st.align, textWrap: 'pretty' }}>
+            {wikiAt ? markWikiTerms(fix(para), terms, e => onWiki(wikiAt, e, cardLang)) : fix(para)}
+          </p>
         );
       })}
     </section>

@@ -1,47 +1,23 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import { ask } from '@tauri-apps/plugin-dialog';
 import { Modal } from '../components/Modal';
+import { levelOf, relWords, useWikiT } from '../components/WikiPopup';
 import { ChevronLeftIcon, ChevronRightIcon, PencilIcon, SparklesIcon, XIcon } from '../components/Icons';
 import { Checkbox, SearchField, Spinner } from '../components/ui';
-import { messageIn, useI18n } from '../i18n';
-import type { MessageKey } from '../i18n/en';
+import { useI18n } from '../i18n';
 import { AI_LANGS, AiFailure, aiErrorDetail, getReadingLang } from '../lib/ai';
 import { useAsync } from '../lib/useAsync';
 import { useLayout } from '../lib/useLayout';
 import { useThrottledValue } from '../lib/useThrottledValue';
 import {
-  RAW, REL_TYPES, WIKI_KINDS, addWikiRelation, getWiki, getWikiMissing, isRelType, removeWikiEntry, removeWikiRelation, saveWikiEntry,
+  RAW, REL_TYPES, WIKI_KINDS, addWikiRelation, getWiki, getWikiMissing, removeWikiEntry, removeWikiRelation, saveWikiEntry,
   searchWiki, setWikiAuto, translateWiki, wikiLabel, wikiSummary,
-  type Wiki, type WikiEntry, type WikiKind, type WikiRelation
+  type Wiki, type WikiEntry, type WikiKind
 } from '../lib/wiki';
 import { useApp } from '../store/AppStore';
 
 /** The wiki's languages: the raw text, then the AI ones. */
 const WIKI_LANGS = [RAW, ...AI_LANGS.map(l => l.code as string)];
-
-/**
- * The words of the app in the wiki's language: relation types and such follow the
- * language picked here (the reading language), not the app's own.
- */
-function useWikiT(lang: string) {
-  const { t } = useI18n();
-  return (key: MessageKey) => messageIn(lang, key) ?? t(key);
-}
-
-/** How relation `r` reads from entry `uid`'s side ("master of", or "disciple of" from the other end). */
-function relWords(r: WikiRelation, uid: string, lang: string, wt: (k: MessageKey) => string) {
-  if (isRelType(r.kind)) return wt(`wiki.rel.${r.kind}${r.fromUid === uid ? '' : '.rev'}` as MessageKey);
-  return r.labels[lang] ?? Object.values(r.labels)[0] ?? r.kind;
-}
-
-/** The level a character is at: the one it reached last. */
-function levelOf(wiki: Wiki, uid: string) {
-  const byUid = new Map(wiki.entries.map(e => [e.uid, e]));
-  const reached = wiki.relations
-    .filter(r => r.kind === 'has_level' && r.fromUid === uid && byUid.get(r.toUid)?.kind === 'level')
-    .sort((a, b) => (b.firstChapter ?? 0) - (a.firstChapter ?? 0));
-  return reached.length ? byUid.get(reached[0].toUid) ?? null : null;
-}
 
 /**
  * The wiki of a book on this device: its characters, levels, places (as a map), factions,

@@ -53,6 +53,17 @@ async function nativeApp(page: Page) {
           case 'library_detail': return { book: imported, sections: [{ label: 'Chương 1', pages: null }, { label: 'Chương 2', pages: null }] };
           case 'llm_config_get': return { provider: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', embedModel: 'text-embedding-3-small', hasKey: true };
           case 'wiki_get': return wiki;
+          case 'library_open': return { book: { id: 9, format: 'txt', title: 'Võ Động Càn Khôn', sections: [{ label: 'Chương 1', pages: null }, { label: 'Chương 2', pages: null }], pageImages: false }, novelId: 1, lang: 'zh', index: 0, progress: 0 };
+          case 'book_section': return { index: args.index, paragraphs: ['林动 看着 道宗 的 人。', '动少 笑了。'] };
+          case 'wiki_at': {
+            // As of chapter 1: only what was met by then, with the description written then.
+            const n = Number(args.number);
+            const entries = wiki.entries.filter(e => (e.firstChapter ?? 0) <= n)
+              .map(e => (e.uid === 'a' ? { ...e, aliases: ['动少'], summaries: { vi: 'Thiếu niên Lâm gia (chương 1).' } } : e));
+            const ids = new Set(entries.map(e => e.uid));
+            const relations = wiki.relations.filter(r => (r.firstChapter ?? 0) <= n && ids.has(r.fromUid) && ids.has(r.toUid));
+            return { ...wiki, entries, relations };
+          }
           case 'wiki_search': return wiki.entries.filter(e => e.kind === 'faction');
           case 'wiki_set_auto': wiki.auto = Boolean(args.auto); return null;
           case 'wiki_missing': return args.lang === 'en' ? 7 : 0;
@@ -170,4 +181,31 @@ test('the wiki follows the reading language, with levels in order and places as 
   await expect(map.locator(':scope > li')).toHaveCount(1);
   await expect(map.locator(':scope > li > ul [data-entry="青阳镇"]')).toBeVisible();
   await page.screenshot({ path: `test-results/wiki-${info.project.name}-map.png` });
+});
+
+test('names in a chapter open the wiki as known by that chapter', async ({ page }, info) => {
+  await nativeApp(page);
+  await page.addInitScript(() => {
+    localStorage.setItem('bennovel.aiView.:1', JSON.stringify({ lang: 'vi', style: 'Natural', dict: true, view: 'vi' }));
+  });
+  await page.goto('/');
+  await page.getByText('Võ Động Càn Khôn').filter({ visible: true }).first().click();
+  await page.getByRole('button', { name: /Bắt đầu đọc|Đọc tiếp/ }).filter({ visible: true }).first().click();
+  const first = page.locator('[data-part="0"]');
+  // Names (and aliases) the wiki knew by chapter 1 are marked; 道宗 comes in chapter 40.
+  await expect(first.locator('[data-wiki-term="a"]')).toHaveCount(2);
+  await expect(first.locator('[data-wiki-term="c"]')).toHaveCount(0);
+  expect((await calls(page)).find(c => c.cmd === 'wiki_at')?.args).toMatchObject({ novelId: 1, number: 1 });
+  await first.locator('[data-wiki-term="a"]').first().click();
+  const card = page.getByRole('dialog', { name: 'Lâm Động' });
+  await expect(card.getByText('Thiếu niên Lâm gia (chương 1).')).toBeVisible();
+  await expect(card.getByText('Cảnh giới hiện tại: Thối Thể')).toBeVisible();
+  await expect(card.getByText('Thông tin tới Phần 1 / 2, không có gì từ các chương sau.')).toBeVisible();
+  // The later realm and the sect are not known yet.
+  await expect(card.getByText('Địa Nguyên cảnh')).toHaveCount(0);
+  await expect(card.getByText('Đạo Tông')).toHaveCount(0);
+  await page.waitForTimeout(500);
+  await page.screenshot({ path: `test-results/wiki-${info.project.name}-reader-card.png` });
+  await card.getByRole('button', { name: 'Wiki truyện' }).click();
+  await expect(page.getByRole('radio', { name: 'Tiếng Việt' })).toHaveAttribute('aria-checked', 'true');
 });

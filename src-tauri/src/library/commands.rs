@@ -1053,6 +1053,18 @@ pub async fn wiki_get<R: Runtime>(
     .await
 }
 
+/// What the wiki knew by chapter `number` (from 1), for the reader.
+#[tauri::command]
+pub async fn wiki_at<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+    number: i64,
+) -> Result<wiki::Wiki, AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || Ok(wiki::at_chapter(&db::open(&path)?, novel_id, number)?)).await
+}
+
 /// Entries matching `query` by name, then by meaning when an embedding model is set.
 #[tauri::command]
 pub async fn wiki_search<R: Runtime>(

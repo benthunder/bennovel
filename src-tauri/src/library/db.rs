@@ -372,6 +372,18 @@ alter table wiki_entries_new rename to wiki_entries;
 -- AI's own words, with `labels` holding them per language ({"vi": "nghĩa huynh"}).
 alter table wiki_relations add column labels text not null default '{}';
 "#,
+    r#"
+-- The description the AI wrote of an entry from each chapter, per language (see
+-- wiki.rs `at_chapter`): the reader shows an entry as it was known by the chapter being
+-- read, without what comes later. Synced; a chapter's note is only ever added again.
+create table wiki_notes (
+  entry_uid text not null references wiki_entries (uid) on delete cascade,
+  lang      text not null,
+  chapter   integer not null,
+  summary   text not null,
+  primary key (entry_uid, lang, chapter)
+);
+"#,
 ];
 
 /// Epoch milliseconds now.

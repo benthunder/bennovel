@@ -350,6 +350,8 @@ export const vi: Record<MessageKey, string> = {
   'wiki.removed': 'Đã xoá khỏi wiki.',
   'wiki.nameTaken': 'Đã có mục khác dùng tên này.',
   'wiki.failed': 'Không lưu được wiki.',
+  'wiki.asOf': 'Thông tin tới {chapter}, không có gì từ các chương sau.',
+  'wiki.noSummary': 'Chưa có mô tả.',
   'reader.raw': 'Raw',
   'reader.rawSub': 'bản gốc khi nhập',
   'reader.wiki': 'Wiki',

@@ -587,8 +587,31 @@ struct AiRelation {
 
 /// Adds what the AI found about an entry: a new entry, or the new facts of a known one.
 /// The user's own entries only gain aliases and missing names; a removed one is left
-/// alone. Returns the entry's uid when there is one to relate.
+/// alone. Returns the entry's uid when there is one to relate. A description written
+/// from a chapter is also kept as of that chapter (`wiki_notes`), so the reader can show
+/// what was known by then.
 fn upsert_ai(
+    conn: &Connection,
+    novel_id: i64,
+    lang: &str,
+    chapter: Option<i64>,
+    item: AiEntry,
+) -> rusqlite::Result<Option<String>> {
+    let summary = item.summary.trim().to_string();
+    let uid = upsert_ai_entry(conn, novel_id, lang, chapter, item)?;
+    if let (Some(uid), Some(chapter)) = (&uid, chapter) {
+        let kept = by_uid(conn, uid)?.and_then(|e| e.summaries.get(lang).cloned());
+        if !summary.is_empty() && kept.as_deref() == Some(summary.as_str()) {
+            conn.execute(
+                "insert or replace into wiki_notes (entry_uid, lang, chapter, summary) values (?1, ?2, ?3, ?4)",
+                params![uid, lang, chapter, summary],
+            )?;
+        }
+    }
+    Ok(uid)
+}
+
+fn upsert_ai_entry(
     conn: &Connection,
     novel_id: i64,
     lang: &str,
@@ -1246,6 +1269,54 @@ pub fn learn_quietly(
     }
 }
 
+/* ---------- As of a chapter ---------- */
+
+/// What the wiki knew by chapter `number` (reading order, from 1): the entries and
+/// relations met by then, each entry's description as it was written then (when the
+/// AI kept one per chapter; an entry it never wrote about keeps its own words).
+pub fn at_chapter(conn: &Connection, novel_id: i64, number: i64) -> rusqlite::Result<Wiki> {
+    let known = |first: Option<i64>| first.is_none_or(|c| c <= number);
+    let mut notes = conn.prepare(
+        "select lang, summary, chapter <= ?2 from wiki_notes where entry_uid = ?1 order by chapter",
+    )?;
+    let mut found = Vec::new();
+    for mut e in entries(conn, novel_id)?
+        .into_iter()
+        .filter(|e| known(e.first_chapter))
+    {
+        let rows: Vec<(String, String, bool)> = notes
+            .query_map(params![e.uid, number], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        if !rows.is_empty() {
+            e.summaries = rows
+                .into_iter()
+                .filter(|(_, _, by_then)| *by_then)
+                .map(|(lang, text, _)| (lang, text))
+                .collect();
+        }
+        found.push(e);
+    }
+    let uids: std::collections::HashSet<&str> = found.iter().map(|e| e.uid.as_str()).collect();
+    let relations = relations(conn, novel_id)?
+        .into_iter()
+        .filter(|r| {
+            known(r.first_chapter)
+                && uids.contains(r.from_uid.as_str())
+                && uids.contains(r.to_uid.as_str())
+        })
+        .collect();
+    let (auto, last_error) = book_state(conn, novel_id)?;
+    Ok(Wiki {
+        entries: found,
+        relations,
+        auto,
+        last_error,
+        by_meaning: false,
+    })
+}
+
 /* ---------- Translating the wiki ---------- */
 
 /// The language the book is written in: the one the LLM found, else the import's guess.
@@ -1448,6 +1519,10 @@ pub fn merge_attached(tx: &rusqlite::Transaction) -> rusqlite::Result<()> {
           on conflict (uid) do update set kind = excluded.kind, labels = excluded.labels,
             note = excluded.note, deleted = excluded.deleted, updated_at = excluded.updated_at
           where excluded.updated_at > wiki_relations.updated_at;
+
+        insert or ignore into main.wiki_notes (entry_uid, lang, chapter, summary)
+          select n.entry_uid, n.lang, n.chapter, n.summary from r.wiki_notes n
+          where exists (select 1 from main.wiki_entries e where e.uid = n.entry_uid);
         ",
     )
 }
@@ -1902,5 +1977,79 @@ mod tests {
         assert_eq!((e.len(), r.len()), (0, 0));
         assert_eq!(translate_missing(&conn, &llm, novel, "en").unwrap(), 0);
         assert_eq!(llm.0.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn the_reader_sees_the_wiki_as_of_its_chapter() {
+        let (conn, novel) = book("at");
+        let ai = |name: &str, kind: &str, summary: &str| AiEntry {
+            name: name.into(),
+            kind: kind.into(),
+            translated: String::new(),
+            aliases: vec![],
+            summary: summary.into(),
+            rank: None,
+        };
+        upsert_ai(
+            &conn,
+            novel,
+            "vi",
+            Some(1),
+            ai("林动", "character", "Thiếu niên."),
+        )
+        .unwrap();
+        upsert_ai(
+            &conn,
+            novel,
+            "vi",
+            Some(5),
+            ai("林动", "character", "Đệ tử Đạo Tông."),
+        )
+        .unwrap();
+        upsert_ai(
+            &conn,
+            novel,
+            "vi",
+            Some(5),
+            ai("道宗", "faction", "Tông môn."),
+        )
+        .unwrap();
+        let rel = AiRelation {
+            from: "林动".into(),
+            to: "道宗".into(),
+            relation: "member_of".into(),
+            note: String::new(),
+        };
+        relate_ai(&conn, novel, "vi", Some(5), &rel)
+            .unwrap()
+            .unwrap();
+        // A user's entry without a chapter is always known, with its own words.
+        save(
+            &conn,
+            novel,
+            EntryInput {
+                uid: None,
+                kind: "place".into(),
+                name: "青阳镇".into(),
+                names: BTreeMap::new(),
+                aliases: vec![],
+                summaries: BTreeMap::from([("vi".into(), "Thị trấn.".into())]),
+                rank: None,
+            },
+        )
+        .unwrap();
+
+        let early = at_chapter(&conn, novel, 3).unwrap();
+        let names: Vec<&str> = early.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["林动", "青阳镇"]);
+        assert_eq!(early.entries[0].summaries["vi"], "Thiếu niên.");
+        assert_eq!(early.entries[1].summaries["vi"], "Thị trấn.");
+        assert!(early.relations.is_empty());
+
+        let later = at_chapter(&conn, novel, 5).unwrap();
+        assert_eq!(later.entries.len(), 3);
+        let lin = later.entries.iter().find(|e| e.name == "林动").unwrap();
+        assert_eq!(lin.summaries["vi"], "Đệ tử Đạo Tông.");
+        assert_eq!(later.relations.len(), 1);
     }
 }
