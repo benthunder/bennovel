@@ -63,6 +63,20 @@ export async function aiTranslateChapter(user: string, novelId: number, index: n
   }
 }
 
+/** How far a chapter translated now is: parts back from the LLM of all its parts. */
+export interface AiChapterProgress { novelId: number; index: number; done: number; total: number }
+
+/** Listens to `aiTranslateChapter`'s progress; returns the way to stop listening. */
+export async function onAiChapterProgress(cb: (p: AiChapterProgress) => void): Promise<() => void> {
+  try {
+    const { listen } = await import('@tauri-apps/api/event');
+    return await listen<AiChapterProgress>('ai-chapter-progress', e => cb(e.payload));
+  } catch (e) {
+    console.warn(e);
+    return () => {};
+  }
+}
+
 export const getAiChapter = (user: string, novelId: number, index: number, lang: AiLang, style: TranslateStyle) =>
   invoke<AiChapter | null>('ai_chapter', { user, novelId, index, lang, style: styleArg(style) });
 
@@ -111,6 +125,7 @@ export class AiFailure extends Error {
 export function aiErrorKey(text: string): MessageKey {
   if (text.startsWith('llm-not-set')) return 'ai.err.notSet';
   if (text.startsWith('llm-auth')) return 'ai.err.auth';
+  if (text.startsWith('llm-timeout')) return 'ai.err.timeout';
   if (text.startsWith('llm-network')) return 'ai.err.network';
   if (/^llm-http 404/.test(text)) return 'ai.err.model';
   if (/^llm-http 429/.test(text)) return 'ai.err.limit';

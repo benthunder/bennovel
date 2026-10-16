@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { useLayout } from '../lib/useLayout';
 import type { ReaderThemeStyle } from '../store/AppStore';
 
@@ -121,7 +121,8 @@ function useBattery() {
 }
 
 /** A small status line under the page, in the page's own colours: the time and the battery. */
-export function ReaderStatusBar({ theme }: { theme: ReaderThemeStyle }) {
+/** The clock and battery under the text; `children` (work going on, such as a chapter being translated) sits between them. */
+export function ReaderStatusBar({ theme, children }: { theme: ReaderThemeStyle; children?: ReactNode }) {
   const lay = useLayout();
   const now = useClock();
   const battery = useBattery();
@@ -134,9 +135,10 @@ export function ReaderStatusBar({ theme }: { theme: ReaderThemeStyle }) {
         background: theme.bg, color: `color-mix(in srgb, ${theme.fg} 62%, transparent)`, fontSize: 11, fontWeight: 600, lineHeight: '16px',
         fontVariantNumeric: 'tabular-nums', userSelect: 'none'
       }}>
-      <time dateTime={now.toISOString()}>{now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
+      <time dateTime={now.toISOString()} style={{ flex: 'none' }}>{now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
+      {children && <div style={{ flex: '1 1 auto', minWidth: 0, display: 'flex', justifyContent: 'center' }}>{children}</div>}
       {pct !== null && (
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }} aria-label={`${pct}%`}>
+        <span style={{ flex: 'none', display: 'inline-flex', alignItems: 'center', gap: 5 }} aria-label={`${pct}%`}>
           {battery!.charging && <svg width="7" height="10" viewBox="0 0 7 10" aria-hidden="true"><path d="M4.5 0 0 5.5h3L2.5 10 7 4.5H4z" fill="currentColor" /></svg>}
           {pct}%
           <svg width="20" height="10" viewBox="0 0 20 10" aria-hidden="true">

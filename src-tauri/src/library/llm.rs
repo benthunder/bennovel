@@ -19,6 +19,10 @@ pub enum AiError {
     /// The API could not be reached.
     #[error("llm-network: {0}")]
     Network(String),
+    /// The API took longer than the read timeout to answer. Not tried again: the
+    /// next try would most likely wait as long.
+    #[error("llm-timeout")]
+    Timeout,
     /// Any other answer than a reply (bad model name, rate limit…).
     #[error("llm-http {0}: {1}")]
     Http(u16, String),
@@ -205,8 +209,9 @@ impl OpenAi {
             // reached directly, not through the system proxy.
             .try_proxy_from_env(!is_local(&config.base_url))
             .timeout_connect(Duration::from_secs(20))
-            // A long chapter can take the model a few minutes to write.
-            .timeout_read(Duration::from_secs(600))
+            // One request is a part of a chapter (about 3,500 characters); a slow
+            // local model can take a few minutes to write it, but not more.
+            .timeout_read(Duration::from_secs(300))
             .timeout_write(Duration::from_secs(60))
             .build();
         Self { config, agent }
@@ -218,6 +223,35 @@ impl OpenAi {
 
     /// POSTs `body` to `{base_url}/{path}` and returns the JSON answer.
     fn post_to(&self, path: &str, body: &serde_json::Value) -> Result<serde_json::Value, AiError> {
+        let text = self.send(path, body)?.into_string().map_err(io_error)?;
+        serde_json::from_str(&text).map_err(|e| AiError::Other(e.to_string()))
+    }
+
+    /// A chat request with `"stream": true`: the text comes in pieces as the model
+    /// writes it, so a slow model keeps the connection busy and a gateway in between
+    /// (Cloudflare cuts a silent request after about 100 s, some proxies after a few
+    /// minutes) does not drop it; the read timeout counts from the last piece. A
+    /// server that answers in one JSON anyway is read as such.
+    fn post_stream(&self, body: &serde_json::Value) -> Result<String, AiError> {
+        let mut body = body.clone();
+        body["stream"] = serde_json::Value::Bool(true);
+        let res = self.send("chat/completions", &body)?;
+        if !res.content_type().contains("event-stream") {
+            let text = res.into_string().map_err(io_error)?;
+            let data: serde_json::Value =
+                serde_json::from_str(&text).map_err(|e| AiError::Other(e.to_string()))?;
+            return reply_text(&data).ok_or(AiError::Empty);
+        }
+        let text = read_stream(std::io::BufReader::new(res.into_reader()))?;
+        let text = text.trim();
+        if text.is_empty() {
+            return Err(AiError::Empty);
+        }
+        Ok(text.to_string())
+    }
+
+    /// POSTs `body` to `{base_url}/{path}`; an answer other than 2xx is an error.
+    fn send(&self, path: &str, body: &serde_json::Value) -> Result<ureq::Response, AiError> {
         let url = format!("{}/{path}", normalize_base(&self.config.base_url));
         let mut req = self
             .agent
@@ -226,22 +260,25 @@ impl OpenAi {
         if !self.config.api_key.is_empty() {
             req = req.set("Authorization", &format!("Bearer {}", self.config.api_key));
         }
-        let res = match req.send_string(&body.to_string()) {
-            Ok(r) => r,
+        match req.send_string(&body.to_string()) {
+            Ok(r) => Ok(r),
             Err(ureq::Error::Status(code, r)) => {
                 let text = r.into_string().unwrap_or_default();
                 let msg = error_message(&text);
-                return Err(match code {
+                Err(match code {
                     401 | 403 => AiError::Auth(msg),
                     _ => AiError::Http(code, msg),
-                });
+                })
             }
-            Err(ureq::Error::Transport(t)) => return Err(AiError::Network(t.to_string())),
-        };
-        let text = res
-            .into_string()
-            .map_err(|e| AiError::Network(e.to_string()))?;
-        serde_json::from_str(&text).map_err(|e| AiError::Other(e.to_string()))
+            Err(ureq::Error::Transport(t)) => {
+                let msg = t.to_string();
+                Err(if is_timeout(&msg) {
+                    AiError::Timeout
+                } else {
+                    AiError::Network(msg)
+                })
+            }
+        }
     }
 
     /// `send`, tried twice more when the server is busy or rate limits.
@@ -271,7 +308,7 @@ impl Chat for OpenAi {
             "temperature": 0.3,
         });
         // Rate limits and busy servers pass; try twice more before giving up.
-        self.retry(|| self.post(&body))
+        self.retry(|| self.post_stream(&body))
     }
 
     fn model(&self) -> &str {
@@ -312,6 +349,57 @@ impl Chat for OpenAi {
         }
         Ok(vectors)
     }
+}
+
+/// A read that failed while the answer came in.
+fn io_error(e: std::io::Error) -> AiError {
+    match e.kind() {
+        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock => AiError::Timeout,
+        _ => AiError::Network(e.to_string()),
+    }
+}
+
+/// The text of a streamed chat answer (server-sent events): every
+/// `choices[0].delta.content` until `data: [DONE]` or the end. The model's thinking
+/// (`reasoning_content`) is left out; an `error` sent mid-stream fails it.
+fn read_stream(reader: impl std::io::BufRead) -> Result<String, AiError> {
+    let mut text = String::new();
+    for line in reader.lines() {
+        let line = line.map_err(io_error)?;
+        let Some(data) = line.strip_prefix("data:").map(str::trim) else {
+            continue;
+        };
+        if data == "[DONE]" {
+            break;
+        }
+        let Ok(event) = serde_json::from_str::<serde_json::Value>(data) else {
+            continue;
+        };
+        if let Some(e) = event.get("error") {
+            let msg = e
+                .get("message")
+                .and_then(|m| m.as_str())
+                .map(String::from)
+                .unwrap_or_else(|| e.to_string());
+            return Err(AiError::Other(msg));
+        }
+        if let Some(piece) = event
+            .get("choices")
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("delta"))
+            .and_then(|d| d.get("content"))
+            .and_then(|c| c.as_str())
+        {
+            text.push_str(piece);
+        }
+    }
+    Ok(text)
+}
+
+/// Whether a transport error is the read or write timeout running out.
+fn is_timeout(msg: &str) -> bool {
+    let msg = msg.to_ascii_lowercase();
+    msg.contains("timed out") || msg.contains("timeout")
 }
 
 /// `data[].embedding` of an embeddings reply, in `index` order.
@@ -431,6 +519,15 @@ mod tests {
         status: &'static str,
         body: &'static str,
     ) -> (String, std::thread::JoinHandle<String>) {
+        serve_typed(status, "application/json", body)
+    }
+
+    /// `serve` with its own Content-Type.
+    fn serve_typed(
+        status: &'static str,
+        content_type: &'static str,
+        body: &'static str,
+    ) -> (String, std::thread::JoinHandle<String>) {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/v1", listener.local_addr().unwrap());
@@ -456,7 +553,7 @@ mod tests {
                     }
                 }
             }
-            write!(s, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            write!(s, "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
             String::from_utf8_lossy(&req).into_owned()
         });
         (url, handle)
@@ -529,6 +626,37 @@ mod tests {
         assert_eq!(msg["tool_calls"][0]["function"]["name"], "wiki_search");
         let req = server.join().unwrap();
         assert!(req.contains(r#""tools":[{"#));
+    }
+
+    #[test]
+    fn streams_the_reply() {
+        let (url, server) = serve_typed(
+            "200 OK",
+            "text/event-stream",
+            "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"reasoning_content\":\"hmm\"}}]}\n\n: keep-alive\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"Xin \"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"chào\"}}]}\n\ndata: [DONE]\n\n",
+        );
+        let reply = OpenAi::new(config(url)).chat("Translate", "Hello").unwrap();
+        assert_eq!(reply, "Xin chào");
+        let req = server.join().unwrap();
+        assert!(req.contains(r#""stream":true"#));
+    }
+
+    #[test]
+    fn an_error_in_the_stream_fails_the_reply() {
+        let r = read_stream(std::io::Cursor::new(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Xin\"}}]}\n\ndata: {\"error\":{\"message\":\"upstream gone\"}}\n\n",
+        ));
+        match r {
+            Err(AiError::Other(m)) => assert_eq!(m, "upstream gone"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn timeouts_are_told_apart() {
+        assert!(is_timeout("http://localhost:11434/v1/chat/completions: Network Error: timed out reading response"));
+        assert!(!is_timeout("Dns Failed: resolve dns name 'api.example.com:443'"));
+        assert_eq!(AiError::Timeout.to_string(), "llm-timeout");
     }
 
     #[test]
