@@ -8,11 +8,10 @@ import { TranslateFields, defaultTranslation, type Translation } from '../compon
 import { Spinner } from '../components/ui';
 import { useI18n, useT } from '../i18n';
 import {
-  AI_LANGS, AiFailure, aiTranslateBook, cancelAiTranslation, getAiMarks, getAiProgress, getAiVersions, getLlmSettings, styleOf,
-  type AiChoice, type AiLang, type AiMark, type AiProgress, type AiVersion
+  AI_LANGS, AiFailure, aiTranslateBook, aiViewKey, cancelAiTranslation, getAiMarks, getAiProgress, getAiVersions, getLlmSettings, getReadingLang, styleOf,
+  type AiChoice, type AiLang, type AiView, type AiMark, type AiProgress, type AiVersion
 } from '../lib/ai';
 import { save as store } from '../lib/storage';
-import { aiViewKey } from './LocalBookScreen';
 import { deleteLibraryBook, getLibraryDetail, localCover, openLibraryBook, updateLibraryBook } from '../lib/localBook';
 import { useAsync } from '../lib/useAsync';
 import { getWiki } from '../lib/wiki';
@@ -195,7 +194,7 @@ function WikiButton({ novelId, title }: { novelId: number; title: string }) {
   const q = useAsync(() => getWiki(user, novelId), [user, novelId, app.aiRev]);
   const n = q.status === 'ready' ? q.data?.entries.length ?? null : null;
   return (
-    <button className="btn btn-secondary btn-block" style={{ gap: 8, marginTop: 8 }} onClick={() => app.push({ s: 'bookWiki', novelId, title })}>
+    <button className="btn btn-secondary btn-block" style={{ gap: 8, marginTop: 8 }} onClick={() => app.push({ s: 'bookWiki', novelId, title, lang: getReadingLang(user, novelId) })}>
       <BookOpenIcon size={16} />{t('wiki.open')}
       {n != null && n > 0 && <span className="muted" style={{ fontSize: 12, fontWeight: 600 }}>· {t('wiki.count', { n })}</span>}
     </button>
@@ -257,7 +256,7 @@ function AiBox({ novelId, lang, onRead }: { novelId: number; lang: string; onRea
     setProgress((await getAiProgress(user, novelId).catch(() => null)) ?? []);
   };
   const readVersion = (v: AiVersion) => {
-    store(aiViewKey(user, novelId), { lang: v.lang, style: styleOf(v.style), dict: true } satisfies AiChoice);
+    store(aiViewKey(user, novelId), { lang: v.lang, style: styleOf(v.style), dict: true, view: v.lang } satisfies AiView);
     onRead();
   };
 

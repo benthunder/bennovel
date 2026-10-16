@@ -21,7 +21,7 @@ function renderRoute(r: Route) {
     case 'profile': return <ProfileScreen />;
     case 'reader': return <ReaderScreen id={r.id} ch={r.ch} lang={r.lang} />;
     case 'bookDetail': return <BookDetailScreen novelId={r.novelId} />;
-    case 'bookWiki': return <WikiScreen novelId={r.novelId} title={r.title} />;
+    case 'bookWiki': return <WikiScreen novelId={r.novelId} title={r.title} lang={r.lang} />;
     case 'book': return <LocalBookScreen book={r.book} place={r.place} path={r.path} />;
   }
 }
