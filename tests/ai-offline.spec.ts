@@ -156,12 +156,12 @@ test('each chapter is marked, translated again and switched to its original', as
   await expect(first.getByText('Original', { exact: true })).toBeVisible();
   await first.getByRole('button', { name: 'Show AI version' }).click();
   await expect(first.getByText('Lời của phần 1 (2).')).toBeVisible();
-  // English is the raw text's own language: the originals again, nothing to translate.
+  // English is the raw text's own language, still an AI version to make: the AI rewrites its bad sentences.
   await page.getByRole('button', { name: 'Reading language' }).click();
   await page.getByRole('menuitemradio', { name: /EN · English/ }).click();
   await expect(first.getByText('Words of section 1.', { exact: true })).toBeVisible();
-  await expect(first.locator('[data-ai-mark]')).toHaveCount(0);
-  await expect(page.locator('[data-part="1"]').getByRole('button', { name: /Translate/ })).toHaveCount(0);
+  await expect(first.getByText('No English version yet')).toBeVisible();
+  await expect(page.locator('[data-part="1"]').getByRole('button', { name: 'Rewrite in English with AI' })).toBeVisible();
   // So is Raw, and it stays picked for the book.
   await page.getByRole('button', { name: 'Reading language' }).click();
   await page.getByRole('menuitemradio', { name: /Raw/ }).click();

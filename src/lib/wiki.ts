@@ -38,7 +38,10 @@ export interface WikiEntry {
   summaries: Record<string, string>;
   /** A level's place in its ladder, lowest first. */
   rank: number | null;
+  /** The chapter it was first met in, in reading order from 1. */
   firstChapter: number | null;
+  /** That chapter's own number as the book shows it ("Chương 629"), when it has one. */
+  firstChapterShown?: number | null;
   source: 'ai' | 'user';
   updatedAt: number;
 }
@@ -49,7 +52,7 @@ export interface WikiRelation {
   kind: string;
   /** A free relation's words per language. */
   labels: Record<string, string>;
-  note: string; firstChapter: number | null;
+  note: string; firstChapter: number | null; firstChapterShown?: number | null;
 }
 
 export interface Wiki { entries: WikiEntry[]; relations: WikiRelation[]; auto: boolean; lastError: string | null; byMeaning: boolean }
@@ -93,11 +96,16 @@ export async function translateWiki(user: string, novelId: number, lang: string)
 export const wikiLabel = (e: WikiEntry, lang: string) => (lang === RAW ? e.name : e.names[lang] || e.name);
 
 /** The description to show in `lang` and whether it is in that language (else raw, else any). */
-export function wikiSummary(e: WikiEntry, lang: string): { text: string; inLang: boolean } {
-  if (e.summaries[lang]) return { text: e.summaries[lang], inLang: true };
-  const text = e.summaries[RAW] ?? Object.values(e.summaries)[0] ?? '';
-  return { text, inLang: !text };
+export function wikiSummary(e: WikiEntry, lang: string): { text: string; inLang: boolean; from: string } {
+  if (e.summaries[lang]) return { text: e.summaries[lang], inLang: true, from: lang };
+  const from = e.summaries[RAW] ? RAW : Object.keys(e.summaries)[0] ?? RAW;
+  const text = e.summaries[from] ?? '';
+  return { text, inLang: !text, from };
 }
+
+/** The chapter an entry or relation was first met in, as the book numbers it. */
+export const wikiChapter = (x: { firstChapter: number | null; firstChapterShown?: number | null }) =>
+  x.firstChapterShown ?? x.firstChapter;
 
 /** Whether an entry lacks a name or description in `lang` (it shows the raw ones then). */
 export const wikiMissingIn = (e: WikiEntry, lang: string) =>

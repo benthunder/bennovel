@@ -57,7 +57,7 @@ pub const REL_TYPES: &[&str] = &[
 /// The key of the descriptions written in the book's own language.
 pub const RAW: &str = "raw";
 /// Entries or relations put in one request of `translate_missing`.
-const TRANSLATE_BATCH: usize = 25;
+const TRANSLATE_BATCH: usize = 10;
 /// Tool-call rounds allowed for one chapter.
 const MAX_ROUNDS: usize = 12;
 /// Entries put in a translation prompt at most.
@@ -88,7 +88,10 @@ pub struct Entry {
     pub summaries: BTreeMap<String, String>,
     /// A level's place in its ladder, lowest first.
     pub rank: Option<i64>,
+    /// The chapter it was first met in, in reading order from 1.
     pub first_chapter: Option<i64>,
+    /// That chapter's own number as the book shows it ("Chương 629"), when it has one.
+    pub first_chapter_shown: Option<f64>,
     /// "ai" or "user" (edited by the user).
     pub source: String,
     pub updated_at: i64,
@@ -106,6 +109,7 @@ pub struct Relation {
     pub labels: BTreeMap<String, String>,
     pub note: String,
     pub first_chapter: Option<i64>,
+    pub first_chapter_shown: Option<f64>,
 }
 
 /// An entry as the app sends it: a new one without `uid`.
@@ -140,9 +144,10 @@ pub struct Wiki {
 }
 
 const ENTRY_COLS: &str =
-    "e.uid, e.kind, e.name, e.names, e.aliases, e.summaries, e.first_chapter, e.source, e.updated_at, e.rank";
+    "e.uid, e.kind, e.name, e.names, e.aliases, e.summaries, e.first_chapter, e.source, e.updated_at, e.rank,
+     (select c.display_number from chapters c where c.novel_id = e.novel_id and c.number = e.first_chapter)";
 /// Columns after `ENTRY_COLS` start here.
-const AFTER: usize = 10;
+const AFTER: usize = 11;
 
 fn entry_row(r: &Row) -> rusqlite::Result<Entry> {
     let names: String = r.get(3)?;
@@ -159,6 +164,7 @@ fn entry_row(r: &Row) -> rusqlite::Result<Entry> {
         source: r.get(7)?,
         updated_at: r.get(8)?,
         rank: r.get(9)?,
+        first_chapter_shown: r.get(10)?,
     })
 }
 
@@ -211,7 +217,9 @@ pub fn entries(conn: &Connection, novel_id: i64) -> rusqlite::Result<Vec<Entry>>
 
 pub fn relations(conn: &Connection, novel_id: i64) -> rusqlite::Result<Vec<Relation>> {
     let mut stmt = conn.prepare(
-        "select r.uid, r.from_uid, r.to_uid, r.kind, r.note, r.first_chapter, r.labels from wiki_relations r
+        "select r.uid, r.from_uid, r.to_uid, r.kind, r.note, r.first_chapter, r.labels,
+           (select c.display_number from chapters c where c.novel_id = r.novel_id and c.number = r.first_chapter)
+         from wiki_relations r
          join wiki_entries a on a.uid = r.from_uid join wiki_entries b on b.uid = r.to_uid
          where r.novel_id = ?1 and r.deleted = 0 and a.deleted = 0 and b.deleted = 0
          order by r.id",
@@ -226,6 +234,7 @@ pub fn relations(conn: &Connection, novel_id: i64) -> rusqlite::Result<Vec<Relat
             labels: serde_json::from_str(&labels).unwrap_or_default(),
             note: r.get(4)?,
             first_chapter: r.get(5)?,
+            first_chapter_shown: r.get(7)?,
         })
     })?;
     rows.collect()
@@ -1366,6 +1375,7 @@ struct Translated {
 
 #[derive(Debug, Deserialize)]
 struct TranslatedEntry {
+    #[serde(deserialize_with = "loose_id")]
     id: usize,
     #[serde(default)]
     name: String,
@@ -1375,14 +1385,26 @@ struct TranslatedEntry {
 
 #[derive(Debug, Deserialize)]
 struct TranslatedRelation {
+    #[serde(deserialize_with = "loose_id")]
     id: usize,
     #[serde(default)]
     label: String,
 }
 
+/// An id as models write it: 3 or "3".
+fn loose_id<'de, D: serde::Deserializer<'de>>(d: D) -> Result<usize, D::Error> {
+    match Value::deserialize(d)? {
+        Value::Number(n) => n.as_u64().map(|n| n as usize),
+        Value::String(s) => s.trim().parse().ok(),
+        _ => None,
+    }
+    .ok_or_else(|| serde::de::Error::custom("id"))
+}
+
 /// Fills in what `lang` is missing (see `missing`) with the LLM, a batch at a time.
 /// Only adds: a name or description already in `lang` stays as it is. Returns how many
-/// entries and relations changed.
+/// entries and relations changed. A reply that can't be read is an error when nothing
+/// at all could be filled in, so the user hears of it instead of seeing nothing change.
 pub fn translate_missing(
     conn: &Connection,
     llm: &dyn Chat,
@@ -1398,6 +1420,7 @@ pub fn translate_missing(
         super::translate::lang_name(target)
     );
     let mut changed = 0;
+    let mut unreadable: Option<String> = None;
     for batch in entries.chunks(TRANSLATE_BATCH) {
         let items: Vec<Value> = batch
             .iter()
@@ -1418,7 +1441,10 @@ pub fn translate_missing(
             })
             .collect();
         let reply = llm.chat(&system, &json!({ "entries": items }).to_string())?;
-        let answer = parse_object::<Translated>(&reply).unwrap_or_default();
+        let Some(answer) = parse_object::<Translated>(&reply) else {
+            unreadable = Some(reply);
+            continue;
+        };
         for t in answer.entries {
             let Some(e) = batch.get(t.id) else { continue };
             let mut names = e.names.clone();
@@ -1449,7 +1475,10 @@ pub fn translate_missing(
             .map(|(i, r)| json!({ "id": i, "label": "?", "words_now": r.labels.values().next().unwrap_or(&r.kind) }))
             .collect();
         let reply = llm.chat(&system, &json!({ "relations": items }).to_string())?;
-        let answer = parse_object::<Translated>(&reply).unwrap_or_default();
+        let Some(answer) = parse_object::<Translated>(&reply) else {
+            unreadable = Some(reply);
+            continue;
+        };
         for t in answer.relations {
             let (Some(r), label) = (batch.get(t.id), t.label.trim()) else {
                 continue;
@@ -1470,7 +1499,13 @@ pub fn translate_missing(
         // Search by meaning finds the new words too; it is a help, not a must.
         let _ = reindex(conn, llm, novel_id);
     }
-    Ok(changed)
+    match unreadable {
+        Some(reply) if changed == 0 => Err(AiError::Other(format!(
+            "unreadable reply: {}",
+            reply.chars().take(200).collect::<String>()
+        ))),
+        _ => Ok(changed),
+    }
 }
 
 /// The JSON object anywhere in a model's reply.
@@ -1648,6 +1683,23 @@ mod tests {
         assert_eq!(lin.names.get("vi").map(String::as_str), Some("Lâm Động"));
         assert_eq!(lin.first_chapter, Some(1));
         assert_eq!(w.relations.len(), 1);
+        // The book's own chapter number shows, not the reading order.
+        conn.execute(
+            "update chapters set display_number = 629 where novel_id = ?1 and number = 1",
+            [novel],
+        )
+        .unwrap();
+        let shown = load(&conn, novel, true).unwrap();
+        assert_eq!(
+            shown
+                .entries
+                .iter()
+                .find(|e| e.name == "林动")
+                .unwrap()
+                .first_chapter_shown,
+            Some(629.0)
+        );
+        assert_eq!(shown.relations[0].first_chapter_shown, Some(629.0));
         assert_eq!(w.relations[0].kind, "đệ tử của");
         // The tool answers went back to the model, the missing entry with an error.
         let seen = llm.seen.lock().unwrap();
@@ -1915,7 +1967,7 @@ mod tests {
                 Ok(if user.contains("\"relations\"") {
                     r#"{"relations":[{"id":0,"label":"godfather"}]}"#.into()
                 } else {
-                    r#"{"entries":[{"id":0,"name":"Lin Dong","summary":"The hero."},{"id":1,"name":"Yan City"}]}"#.into()
+                    r#"{"entries":[{"id":"0","name":"Lin Dong","summary":"The hero."},{"id":1,"name":"Yan City"}]}"#.into()
                 })
             }
             fn model(&self) -> &str {
@@ -1977,6 +2029,20 @@ mod tests {
         assert_eq!((e.len(), r.len()), (0, 0));
         assert_eq!(translate_missing(&conn, &llm, novel, "en").unwrap(), 0);
         assert_eq!(llm.0.lock().unwrap().len(), 2);
+        // A reply that is no JSON fills nothing in, and says so.
+        struct Chatty;
+        impl Chat for Chatty {
+            fn chat(&self, _: &str, _: &str) -> Result<String, AiError> {
+                Ok("Sure! Here are the names.".into())
+            }
+            fn model(&self) -> &str {
+                "t"
+            }
+        }
+        assert!(matches!(
+            translate_missing(&conn, &Chatty, novel, "vi"),
+            Err(AiError::Other(_))
+        ));
     }
 
     #[test]
