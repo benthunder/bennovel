@@ -24,10 +24,18 @@ async function nativeApp(page: Page, { llm = true } = {}) {
     // Chapter index → how many times it was translated.
     const done = new Map<number, number>();
     let next = 1;
+    // Callbacks by id, and the event each listener is for, so progress can be sent.
+    const callbacks = new Map<number, (e: unknown) => void>();
+    const listeners: { event: string; handler: number }[] = [];
+    const emit = (event: string, payload: unknown) =>
+      listeners.filter(l => l.event === event).forEach(l => callbacks.get(l.handler)?.({ event, id: l.handler, payload }));
+    // Set `__hold` to keep a chapter translating until `__release()`.
+    let release: () => void = () => undefined;
+    w.__release = () => release();
     w.isTauri = true;
     w.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => undefined };
     w.__TAURI_INTERNALS__ = {
-      transformCallback: () => next++,
+      transformCallback: (cb: (e: unknown) => void) => { const id = next++; callbacks.set(id, cb); return id; },
       unregisterCallback: () => undefined,
       convertFileSrc: (p: string, proto: string) => `${proto}://localhost/${p}`,
       invoke: async (cmd: string, args: Record<string, unknown>) => {
@@ -44,8 +52,16 @@ async function nativeApp(page: Page, { llm = true } = {}) {
             settings = c && { provider: c.provider, baseUrl: c.baseUrl, model: c.model, hasKey: false };
             return null;
           }
+          case 'plugin:event|listen': {
+            listeners.push({ event: String(args.event), handler: Number(args.handler) });
+            return listeners.length;
+          }
           case 'ai_translate_chapter': {
-            await new Promise(r => setTimeout(r, 300));
+            emit('ai-chapter-progress', { novelId: args.novelId, index: args.index, done: 0, total: 3 });
+            await new Promise(r => setTimeout(r, 150));
+            emit('ai-chapter-progress', { novelId: args.novelId, index: args.index, done: 1, total: 3 });
+            if (w.__hold) await new Promise<void>(r => { release = r; });
+            await new Promise(r => setTimeout(r, 150));
             const i = Number(args.index);
             done.set(i, (done.get(i) ?? 0) + 1);
             return { title: 'Phần một', paragraphs: [`Lời của phần ${i + 1} (${done.get(i)}).`], mode: 'translate', model: 'gpt-4o-mini' };
@@ -116,7 +132,7 @@ test('each chapter is marked, translated again and switched to its original', as
   await expect(page.getByRole('radio', { name: 'English' })).toHaveCount(1);
   await expect(page.getByRole('radio', { name: /中文|한국어/ })).toHaveCount(0);
   await page.locator('button.btn-primary', { hasText: 'Translate this chapter' }).click();
-  await expect(page.getByText('Translating chapter…')).toBeVisible();
+  await expect(page.getByTestId('reader-status')).toContainText('Translating Part 1 of 2…');
   await expect(first.getByText('Lời của phần 1 (1).')).toBeVisible();
   await expect(first.getByText('AI · Tiếng Việt · Natural')).toBeVisible();
   const tr = (await calls(page)).find(c => c.cmd === 'ai_translate_chapter');
@@ -137,6 +153,28 @@ test('each chapter is marked, translated again and switched to its original', as
   const sheet = page.getByRole('dialog');
   await expect(sheet.locator('[data-ai-tag]')).toHaveCount(1);
   await expect(sheet.getByRole('button').filter({ has: page.locator('[data-ai-tag]') })).toContainText('Part one');
+});
+
+test('a chapter translates in the status bar while the reader goes on', async ({ page }) => {
+  await nativeApp(page);
+  await page.addInitScript(() => { (window as unknown as { __hold: boolean }).__hold = true; });
+  await page.goto('/');
+  await page.getByText('Device Diary').filter({ visible: true }).first().click();
+  await page.getByRole('button', { name: /Continue/ }).filter({ visible: true }).first().click();
+  const first = page.locator('[data-part="0"]');
+  await expect(first.getByText('Words of section 1.', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'EN', exact: true }).click();
+  await page.locator('button.btn-primary', { hasText: 'Translate this chapter' }).click();
+  const status = page.getByTestId('reader-status');
+  await expect(status).toContainText('Translating Part 1 of 2… · 1/3 parts');
+  // Nothing covers the text: the chapter stays readable and its buttons work.
+  await expect(first.getByText('Words of section 1.', { exact: true })).toBeVisible();
+  await first.getByRole('button', { name: 'Translate this chapter' }).click();
+  await expect(page.getByText('Another chapter is being translated. Wait for it to finish.')).toBeVisible();
+  await page.evaluate(() => (window as unknown as { __release: () => void }).__release());
+  await expect(page.getByText('The AI version of Part 1 of 2 is ready.')).toBeVisible();
+  await expect(first.getByText('Lời của phần 1 (1).')).toBeVisible();
+  await expect(status.getByRole('status')).toHaveCount(0);
 });
 
 test('the whole book goes to the background queue from its page', async ({ page }) => {

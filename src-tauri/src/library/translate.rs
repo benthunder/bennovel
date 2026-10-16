@@ -22,7 +22,10 @@
 //!   rewrite is never rewritten again. The graph has no loop and a step limit too.
 //! - learn: the LLM reads the chapter into the wiki with tool calls (wiki.rs), when
 //!   the book's wiki is updated by translating; a failure there is kept for the wiki
-//!   screen and does not fail the translation.
+//!   screen and does not fail the translation. A chapter translated from the reader
+//!   learns in the background, so the reader gets the text as soon as it is saved.
+//!
+//! A chapter goes to the LLM in parts of about `CHUNK_CHARS`, `PARALLEL` at a time.
 
 use super::llm::{AiError, Chat};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -42,6 +45,19 @@ const CHUNK_CHARS: usize = 3500;
 const DETECT_WORDS: usize = 50;
 /// Supersteps allowed: the six nodes, run once each.
 const MAX_STEPS: usize = 8;
+/// Parts of a chapter sent to the LLM at the same time.
+const PARALLEL: usize = 3;
+
+/// Called with (parts done, parts in all) as a chapter's parts come back.
+pub type OnProgress = Arc<dyn Fn(usize, usize) + Send + Sync>;
+
+/// How a run reports and finishes; the default suits the background queue.
+#[derive(Default, Clone)]
+pub struct Hooks {
+    pub progress: Option<OnProgress>,
+    /// Learn the wiki on another thread after the save instead of before returning.
+    pub learn_in_background: bool,
+}
 
 /// What to do with one chapter.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,6 +122,16 @@ impl State for Flow {
 /// Runs the graph for one chapter and saves the result. `conn` must be a library
 /// file on disk (the save node opens it again).
 pub fn run(conn: &Connection, llm: Arc<dyn Chat>, req: Request) -> Result<Translated, AiError> {
+    run_with(conn, llm, req, Hooks::default())
+}
+
+/// `run`, reporting progress and learning the wiki as `hooks` say.
+pub fn run_with(
+    conn: &Connection,
+    llm: Arc<dyn Chat>,
+    req: Request,
+    hooks: Hooks,
+) -> Result<Translated, AiError> {
     check_request(&req)?;
     let (title, content) = source_text(conn, req.chapter_id)?;
     let (known_lang, sample, guess_lang) = detect_input(conn, req.novel_id)?;
@@ -131,7 +157,7 @@ pub fn run(conn: &Connection, llm: Arc<dyn Chat>, req: Request) -> Result<Transl
     };
     let failed: Arc<Mutex<Option<AiError>>> = Arc::default();
     let model = llm.model().to_string();
-    let mut app = graph(llm, failed.clone())
+    let mut app = graph(llm, failed.clone(), hooks)
         .compile(None)
         .map_err(|e| AiError::Other(e.to_string()))?;
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -159,7 +185,11 @@ pub fn run(conn: &Connection, llm: Arc<dyn Chat>, req: Request) -> Result<Transl
 
 /// The nodes and edges. A node's AiError goes in `failed` (the graph only carries
 /// its own error type), so the caller gets it back as it was.
-fn graph(llm: Arc<dyn Chat>, failed: Arc<Mutex<Option<AiError>>>) -> StateGraph<Flow> {
+fn graph(
+    llm: Arc<dyn Chat>,
+    failed: Arc<Mutex<Option<AiError>>>,
+    hooks: Hooks,
+) -> StateGraph<Flow> {
     // Runs a node's work and turns an AiError into a graph error, keeping it.
     fn step(
         failed: &Arc<Mutex<Option<AiError>>>,
@@ -219,9 +249,9 @@ fn graph(llm: Arc<dyn Chat>, failed: Arc<Mutex<Option<AiError>>>) -> StateGraph<
         });
     }
     {
-        let (llm, failed) = (llm.clone(), failed.clone());
+        let (llm, failed, progress) = (llm.clone(), failed.clone(), hooks.progress.clone());
         g.add_node("translate", move |mut f: Flow, _: &Config| {
-            let (llm, failed) = (llm.clone(), failed.clone());
+            let (llm, failed, progress) = (llm.clone(), failed.clone(), progress.clone());
             async move {
                 if f.mode != Some(Mode::Translate) {
                     return Ok(f);
@@ -234,16 +264,19 @@ fn graph(llm: Arc<dyn Chat>, failed: Arc<Mutex<Option<AiError>>>) -> StateGraph<
                         &f.terms,
                         &f.wiki,
                     );
-                    f.out = run_chunks(llm.as_ref(), &system, &f.paragraphs)?;
-                    f.out_title = if f.title.trim().is_empty() {
-                        String::new()
-                    } else {
-                        clean(&llm.chat(&title_prompt(&f.req.lang), &f.title)?)
-                            .lines()
-                            .next()
-                            .unwrap_or_default()
-                            .to_string()
-                    };
+                    let title = (!f.title.trim().is_empty())
+                        .then(|| (title_prompt(&f.req.lang), f.title.clone()));
+                    let (out, title) = run_chunks(
+                        llm.as_ref(),
+                        &system,
+                        &f.paragraphs,
+                        title,
+                        progress.as_deref(),
+                    )?;
+                    f.out = out;
+                    f.out_title = title
+                        .map(|t| clean(&t).lines().next().unwrap_or_default().to_string())
+                        .unwrap_or_default();
                     Ok(f)
                 })();
                 step(&failed, r)
@@ -251,16 +284,18 @@ fn graph(llm: Arc<dyn Chat>, failed: Arc<Mutex<Option<AiError>>>) -> StateGraph<
         });
     }
     {
-        let (llm, failed) = (llm.clone(), failed.clone());
+        let (llm, failed, progress) = (llm.clone(), failed.clone(), hooks.progress.clone());
         g.add_node("rewrite", move |mut f: Flow, _: &Config| {
-            let (llm, failed) = (llm.clone(), failed.clone());
+            let (llm, failed, progress) = (llm.clone(), failed.clone(), progress.clone());
             async move {
                 if f.mode != Some(Mode::Rewrite) {
                     return Ok(f);
                 }
                 let r = (|| {
                     let system = rewrite_prompt(&f.req.lang, &f.req.style, &f.wiki);
-                    f.out = run_chunks(llm.as_ref(), &system, &f.paragraphs)?;
+                    f.out =
+                        run_chunks(llm.as_ref(), &system, &f.paragraphs, None, progress.as_deref())?
+                            .0;
                     // Same language: the chapter keeps its title.
                     f.out_title = f.title.clone();
                     Ok(f)
@@ -289,23 +324,20 @@ fn graph(llm: Arc<dyn Chat>, failed: Arc<Mutex<Option<AiError>>>) -> StateGraph<
         });
     }
     {
-        let (llm, failed) = (llm.clone(), failed.clone());
+        let (llm, failed, background) = (llm.clone(), failed.clone(), hooks.learn_in_background);
         g.add_node("learn", move |f: Flow, _: &Config| {
             let (llm, failed) = (llm.clone(), failed.clone());
             async move {
-                let r = (|| {
-                    let conn = super::db::open(std::path::Path::new(&f.db))?;
-                    super::wiki::learn_quietly(
-                        &conn,
-                        llm.as_ref(),
-                        f.req.novel_id,
-                        f.req.chapter_id,
-                        &f.req.lang,
-                        &f.paragraphs.join("\n\n"),
-                        &f.out.join("\n\n"),
-                    )?;
-                    Ok(f)
-                })();
+                if background {
+                    let later = f.clone();
+                    std::thread::spawn(move || {
+                        if let Err(e) = learn(&later, llm.as_ref()) {
+                            eprintln!("wiki learn: {e}");
+                        }
+                    });
+                    return Ok(f);
+                }
+                let r = learn(&f, llm.as_ref()).map(|_| f);
                 step(&failed, r)
             }
         });
@@ -318,6 +350,21 @@ fn graph(llm: Arc<dyn Chat>, failed: Arc<Mutex<Option<AiError>>>) -> StateGraph<
     g.add_edge("save", "learn");
     g.set_finish_point("learn");
     g
+}
+
+/// The learn node's work: the chapter into the book's wiki (wiki.rs).
+fn learn(f: &Flow, llm: &dyn Chat) -> Result<(), AiError> {
+    let conn = super::db::open(std::path::Path::new(&f.db))?;
+    super::wiki::learn_quietly(
+        &conn,
+        llm,
+        f.req.novel_id,
+        f.req.chapter_id,
+        &f.req.lang,
+        &f.paragraphs.join("\n\n"),
+        &f.out.join("\n\n"),
+    )?;
+    Ok(())
 }
 
 fn check_request(req: &Request) -> Result<(), AiError> {
@@ -529,36 +576,107 @@ fn glossary(
     rows.collect()
 }
 
-/// Sends the text paragraphs in chunks of about `CHUNK_CHARS`; pictures stay where they are.
-fn run_chunks(llm: &dyn Chat, system: &str, paragraphs: &[String]) -> Result<Vec<String>, AiError> {
-    let mut out = Vec::with_capacity(paragraphs.len());
+/// Sends the text paragraphs in parts of about `CHUNK_CHARS`, `PARALLEL` at a time,
+/// and puts the replies back in order; pictures stay where they are. `title` (a
+/// system prompt and the title) is asked alongside the parts. The first error stops
+/// what has not started yet and is returned.
+fn run_chunks(
+    llm: &dyn Chat,
+    system: &str,
+    paragraphs: &[String],
+    title: Option<(String, String)>,
+    progress: Option<&(dyn Fn(usize, usize) + Send + Sync)>,
+) -> Result<(Vec<String>, Option<String>), AiError> {
+    enum Piece<'a> {
+        Picture(&'a str),
+        Text(String),
+    }
+    let mut pieces = Vec::new();
     let mut chunk: Vec<&str> = Vec::new();
     let mut size = 0;
-    let flush = |chunk: &mut Vec<&str>, out: &mut Vec<String>| -> Result<(), AiError> {
-        if chunk.is_empty() {
-            return Ok(());
-        }
-        let reply = llm.chat(system, &chunk.join("\n\n"))?;
-        out.extend(split_paragraphs(&clean(&reply)));
-        chunk.clear();
-        Ok(())
-    };
     for p in paragraphs {
         if p.starts_with(IMAGE_MARK) {
-            flush(&mut chunk, &mut out)?;
+            if !chunk.is_empty() {
+                pieces.push(Piece::Text(chunk.join("\n\n")));
+                chunk.clear();
+            }
             size = 0;
-            out.push(p.clone());
+            pieces.push(Piece::Picture(p));
             continue;
         }
         if size > 0 && size + p.len() > CHUNK_CHARS {
-            flush(&mut chunk, &mut out)?;
+            pieces.push(Piece::Text(chunk.join("\n\n")));
+            chunk.clear();
             size = 0;
         }
         size += p.len();
         chunk.push(p);
     }
-    flush(&mut chunk, &mut out)?;
-    Ok(out)
+    if !chunk.is_empty() {
+        pieces.push(Piece::Text(chunk.join("\n\n")));
+    }
+
+    // The requests: each text part, then the title.
+    let mut asks: Vec<(&str, &str)> = pieces
+        .iter()
+        .filter_map(|p| match p {
+            Piece::Text(t) => Some((system, t.as_str())),
+            Piece::Picture(_) => None,
+        })
+        .collect();
+    let parts = asks.len();
+    if let Some((prompt, text)) = &title {
+        asks.push((prompt.as_str(), text.as_str()));
+    }
+    let total = asks.len();
+    let replies: Vec<Mutex<Option<String>>> = (0..total).map(|_| Mutex::new(None)).collect();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let done = std::sync::atomic::AtomicUsize::new(0);
+    let failed: Mutex<Option<AiError>> = Mutex::new(None);
+    if let Some(p) = progress {
+        p(0, total);
+    }
+    std::thread::scope(|s| {
+        for _ in 0..PARALLEL.min(total) {
+            s.spawn(|| loop {
+                if failed.lock().unwrap().is_some() {
+                    return;
+                }
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let Some((prompt, text)) = asks.get(i) else {
+                    return;
+                };
+                match llm.chat(prompt, text) {
+                    Ok(reply) => {
+                        *replies[i].lock().unwrap() = Some(reply);
+                        let n = done.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                        if let Some(p) = progress {
+                            p(n, total);
+                        }
+                    }
+                    Err(e) => {
+                        failed.lock().unwrap().get_or_insert(e);
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    if let Some(e) = failed.into_inner().unwrap() {
+        return Err(e);
+    }
+    let mut replies = replies
+        .into_iter()
+        .map(|r| r.into_inner().unwrap().unwrap_or_default());
+    let mut out = Vec::with_capacity(paragraphs.len());
+    for piece in &pieces {
+        match piece {
+            Piece::Picture(p) => out.push(p.to_string()),
+            Piece::Text(_) => out.extend(split_paragraphs(&clean(&replies.next().unwrap_or_default()))),
+        }
+    }
+    let title = (total > parts).then(|| replies.next().unwrap_or_default());
+    Ok((out, title))
 }
 
 /// A reply without the ``` fence some models put around it.
@@ -944,6 +1062,54 @@ pub(crate) mod tests {
             .query_row("select count(*) from wiki_chapters where chapter_id = 11", [], |r| r.get(0))
             .unwrap();
         assert_eq!(done, 1);
+    }
+
+    #[test]
+    fn long_chapters_go_in_parts_at_once_and_come_back_in_order() {
+        let paragraphs: Vec<String> = (0..12)
+            .map(|i| format!("p{i} {}", "x".repeat(1200)))
+            .chain(std::iter::once("\u{FFFC}pic".to_string()))
+            .chain(std::iter::once("last".to_string()))
+            .collect();
+        let llm = Fake::new("en");
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        let progress = move |done: usize, total: usize| log.lock().unwrap().push((done, total));
+        let (out, title) = run_chunks(
+            &llm,
+            "novel translator",
+            &paragraphs,
+            Some(("title".into(), "Chapter 1".into())),
+            Some(&progress),
+        )
+        .unwrap();
+        let want: Vec<String> = paragraphs
+            .iter()
+            .map(|p| if p.starts_with(IMAGE_MARK) { p.clone() } else { format!("[tr] {p}") })
+            .collect();
+        assert_eq!(out, want);
+        assert_eq!(title.as_deref(), Some("```\n[tr] Chapter 1\n```"));
+        // 12 long paragraphs make 6 parts, the last line a 7th, plus the title.
+        assert_eq!(llm.count(), 8);
+        assert_eq!(seen.lock().unwrap().last(), Some(&(8, 8)));
+    }
+
+    #[test]
+    fn a_failed_part_fails_the_chapter() {
+        struct Down;
+        impl Chat for Down {
+            fn chat(&self, _: &str, _: &str) -> Result<String, AiError> {
+                Err(AiError::Timeout)
+            }
+            fn model(&self) -> &str {
+                "down"
+            }
+        }
+        let paragraphs = vec!["a".to_string(), "b".to_string()];
+        assert!(matches!(
+            run_chunks(&Down, "x", &paragraphs, None, None),
+            Err(AiError::Timeout)
+        ));
     }
 
     #[test]

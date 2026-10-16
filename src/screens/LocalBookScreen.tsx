@@ -7,7 +7,7 @@ import { Spinner } from '../components/ui';
 import { applyReplaceRules, getBookRules, saveBookRules } from '../data/repository';
 import { CONTENT_LANGS, type ContentLang, type ReplaceRule } from '../data/types';
 import { useI18n } from '../i18n';
-import { AI_LANGS, AiFailure, aiErrorDetail, aiTranslateBook, aiTranslateChapter, getAiChapter, getAiMarks, styleOf, type AiChoice, type AiLang, type AiMark } from '../lib/ai';
+import { AI_LANGS, AiFailure, aiErrorDetail, aiTranslateBook, aiTranslateChapter, getAiChapter, getAiMarks, onAiChapterProgress, styleOf, type AiChoice, type AiLang, type AiMark } from '../lib/ai';
 import {
   bookImageUrl, closeLocalBook, getLocalSection, imageKey, importBookPath, openLibraryBook, saveLibraryProgress,
   type LibraryPlace, type LocalBook, type LocalSectionMeta
@@ -116,7 +116,11 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
     if (!list?.length) return null;
     return list.find(m => ai && m.lang === ai.lang && styleOf(m.style) === ai.style) ?? list[0];
   };
-  const [aiBusy, setAiBusy] = useState<'translate' | 'rewrite' | null>(null);
+  /** The chapter being translated (or rewritten) now, shown in the status bar while the reader goes on. */
+  const [aiJob, setAiJob] = useState<{ at: number; kind: 'translate' | 'rewrite'; done: number; total: number } | null>(null);
+  const aiRunning = useRef(false);
+  /** Bumped per chapter each time it gets a new AI text, so its part loads it again. */
+  const [aiRev, setAiRev] = useState<Record<number, number>>({});
   const aiLangName = (l: string) => AI_LANGS.find(x => x.code === l)?.native ?? l;
   const aiFail = (e: unknown) => {
     console.error(e);
@@ -135,18 +139,28 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
     const c = asChoice(tr);
     if (!c) return;
     if (!place) { app.showToast(t('ai.needsImport')); return; }
+    if (aiRunning.current) { app.showToast(t('ai.busyChapter')); return; }
+    aiRunning.current = true;
     if (lay.isPhone) setTools(null);
-    setAiBusy(c.lang === lang ? 'rewrite' : 'translate');
+    setAiJob({ at, kind: c.lang === lang ? 'rewrite' : 'translate', done: 0, total: 0 });
+    const novelId = place.novelId;
+    const stop = onAiChapterProgress(p => {
+      if (p.novelId === novelId && p.index === at) setAiJob(j => j && { ...j, done: p.done, total: p.total });
+    });
     try {
-      await aiTranslateChapter(place.user, place.novelId, at, c, true);
+      await aiTranslateChapter(place.user, novelId, at, c, true);
       setAi(c);
       showOriginal(at, false);
       setMarksRev(n => n + 1);
-      jump(at);
+      setAiRev(r => ({ ...r, [at]: (r[at] ?? 0) + 1 }));
+      // The reader went on meanwhile: the new version shows in place, without moving the page.
+      app.showToast(t('ai.chapterReady', { name: sectionName(book.sections[at], at, book.sections.length) }));
     } catch (e) {
       aiFail(e);
     } finally {
-      setAiBusy(null);
+      void stop.then(f => f());
+      aiRunning.current = false;
+      setAiJob(null);
     }
   };
 
@@ -353,7 +367,7 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
           {Array.from({ length: span[1] - span[0] + 1 }, (_, k) => span[0] + k).map(i => (
             <BookPart key={`${gen}-${i}`} bookId={book.id} index={i} meta={book.sections[i]} name={sectionName(book.sections[i], i, total)}
               fix={fix} st={partStyle} color={theme.fg} onReady={onPartReady}
-              marksReady={!!marks} lang={lang}
+              marksReady={!!marks} lang={lang} rev={aiRev[i] ?? 0}
               ai={(() => {
                 const v = versionOf(i);
                 return v && place ? { user: place.user, novelId: place.novelId, lang: v.lang, style: styleOf(v.style), others: (marks?.get(i)?.length ?? 1) - 1 } : null;
@@ -370,19 +384,18 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
           )}
         </div>
       </div>
-      <ReaderStatusBar theme={theme} />
+      <ReaderStatusBar theme={theme}>
+        {aiJob && (
+          <span role="status" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+            <Spinner size={11} />
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {t(aiJob.kind === 'rewrite' ? 'ai.rewritingName' : 'ai.translatingName', { name: sectionName(book.sections[aiJob.at], aiJob.at, total) })}
+              {aiJob.total > 0 && ` · ${t('ai.parts', { done: aiJob.done, total: aiJob.total })}`}
+            </span>
+          </span>
+        )}
+      </ReaderStatusBar>
 
-      {aiBusy && (
-        <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', background: 'color-mix(in srgb, var(--color-neutral-900) 35%, transparent)', zIndex: 30 }}>
-          <div role="status" style={{ background: 'var(--color-surface)', color: 'var(--color-text)', borderRadius: 30, padding: '22px 26px', display: 'flex', alignItems: 'center', gap: 14, boxShadow: 'var(--shadow-lg)', margin: 20 }}>
-            <Spinner size={24} width={3} />
-            <div>
-              <div className="display" style={{ fontSize: 17 }}>{t(aiBusy === 'rewrite' ? 'ai.rewriting' : 'reader.translating')}</div>
-              <div className="muted" style={{ fontSize: 12 }}>{t('ai.working')}</div>
-            </div>
-          </div>
-        </div>
-      )}
       </div>
 
       {toc && <ChapterSheet sections={book.sections} current={index} marks={marks ?? undefined} onPick={jump} onClose={() => setToc(false)} />}
@@ -413,7 +426,7 @@ type PartStyle = {
  * One part of the book in the long scroll: its heading, then its text. Marked `data-ready` once its content is in, so the reader knows the
  * height is real before adding the next part.
  */
-function BookPart({ bookId, index, meta, name, fix, st, color, onReady, marksReady, lang, ai, original, onShowOriginal, onTranslate }: {
+function BookPart({ bookId, index, meta, name, fix, st, color, onReady, marksReady, lang, rev, ai, original, onShowOriginal, onTranslate }: {
   bookId: number; index: number; meta: LocalSectionMeta | undefined; name: string;
   fix: (s: string) => string; st: PartStyle; color: string;
   onReady: (index: number) => void;
@@ -421,6 +434,8 @@ function BookPart({ bookId, index, meta, name, fix, st, color, onReady, marksRea
   marksReady: boolean;
   /** The book's language: a version in it is a rewrite. */
   lang: string;
+  /** Goes up when this chapter got a new AI text. */
+  rev: number;
   /** This chapter's AI version to show (`others`: how many more it has); null when it has none. */
   ai: { user: string; novelId: number; lang: AiLang; style: AiChoice['style']; others: number } | null;
   /** The reader asked for the original of this chapter. */
@@ -437,7 +452,7 @@ function BookPart({ bookId, index, meta, name, fix, st, color, onReady, marksRea
     const own = showAi ? await getAiChapter(ai.user, ai.novelId, index, ai.lang, ai.style) : null;
     if (own) return { paragraphs: own.paragraphs, title: own.title || null, isAi: true };
     return { ...(await getLocalSection(bookId, index)), title: null, isAi: false };
-  }, [bookId, index, aiKey, marksReady]);
+  }, [bookId, index, aiKey, marksReady, rev]);
   // "Chương 12" above the chapter's own title; a chapter without one shows "Chương 12" once.
   const heading = (q.status === 'ready' && q.data.title) || (meta?.label ?? name);
   const ready = q.status !== 'loading';
