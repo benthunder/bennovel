@@ -11,7 +11,7 @@ import { useLayout } from '../lib/useLayout';
 import { useThrottledValue } from '../lib/useThrottledValue';
 import {
   RAW, REL_TYPES, WIKI_KINDS, addWikiRelation, getWiki, getWikiMissing, removeWikiEntry, removeWikiRelation, saveWikiEntry,
-  searchWiki, setWikiAuto, translateWiki, wikiLabel, wikiSummary,
+  searchWiki, setWikiAuto, translateWiki, wikiChapter, wikiLabel, wikiSummary,
   type Wiki, type WikiEntry, type WikiKind
 } from '../lib/wiki';
 import { useApp } from '../store/AppStore';
@@ -95,7 +95,7 @@ export function WikiScreen({ novelId, title, lang: startLang }: { novelId: numbe
           </span>
           {sum.text && (
             <span style={{ fontSize: 13, color: 'var(--color-neutral-800)', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
-              {lang !== RAW && !sum.inLang && <span className="tag tag-neutral" style={{ fontSize: 10, marginRight: 6 }}>{t('wiki.rawTag')}</span>}
+              {lang !== RAW && !sum.inLang && <span className="tag tag-neutral" style={{ fontSize: 10, marginRight: 6 }}>{sum.from === RAW ? t('wiki.rawTag') : sum.from.toUpperCase()}</span>}
               {sum.text}
             </span>
           )}
@@ -104,7 +104,7 @@ export function WikiScreen({ novelId, title, lang: startLang }: { novelId: numbe
             {e.kind === 'level' && e.rank != null && <span className="tag tag-accent-2" style={{ fontSize: 11 }}>{t('wiki.rankN', { n: e.rank })}</span>}
             {level && <span className="tag tag-accent-2" style={{ fontSize: 11 }}>{wikiLabel(level, lang)}</span>}
             {rels > 0 && <span className="tag tag-accent-2" style={{ fontSize: 11 }}>{t('wiki.relCount', { n: rels })}</span>}
-            {e.firstChapter != null && <span className="muted" style={{ fontSize: 11 }}>{t('wiki.fromChapter', { n: e.firstChapter })}</span>}
+            {e.firstChapter != null && <span className="muted" style={{ fontSize: 11 }}>{t('wiki.fromChapter', { n: wikiChapter(e)! })}</span>}
           </span>
           {extra}
         </span>
@@ -362,7 +362,7 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
         <div className="dialog-title" style={{ fontSize: 22 }}>{saved ? wikiLabel(saved, lang) : t('wiki.newTitle')}</div>
         {saved && (
           <div className="muted" style={{ fontSize: 12, marginTop: -8 }}>
-            {[saved.firstChapter != null && t('wiki.fromChapter', { n: saved.firstChapter }), saved.source === 'user' && t('wiki.byYou')].filter(Boolean).join(' · ')}
+            {[saved.firstChapter != null && t('wiki.fromChapter', { n: wikiChapter(saved)! }), saved.source === 'user' && t('wiki.byYou')].filter(Boolean).join(' · ')}
           </div>
         )}
         {level && (

@@ -1124,7 +1124,11 @@ pub async fn wiki_relate<R: Runtime>(
 ) -> Result<String, AiError> {
     let path = db_path(&app, &user)?;
     ai_blocking(move || {
-        wiki::add_relation(&db::open(&path)?, novel_id, &from_uid, &to_uid, &kind, &lang, &note)
+        let conn = db::open(&path)?;
+        let uid = wiki::add_relation(&conn, novel_id, &from_uid, &to_uid, &kind, &lang, &note)?;
+        // Both ends are found by the new link too.
+        reindex_quietly(&conn, novel_id);
+        Ok(uid)
     })
     .await
 }
