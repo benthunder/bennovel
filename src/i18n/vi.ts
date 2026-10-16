@@ -229,6 +229,7 @@ export const vi: Record<MessageKey, string> = {
   'book.part': 'Phần {n} / {total}',
   'book.pages': 'Trang {from}–{to}',
   'book.loading': 'Đang tải…',
+  'book.loadFailed': 'Không tải được chương này.',
   'book.empty': 'Phần này không có chữ.',
   'book.translateSoon': 'Dịch AI cho sách nhập sẽ có sớm.',
   'bookDetail.onDevice': 'Sách trên máy',

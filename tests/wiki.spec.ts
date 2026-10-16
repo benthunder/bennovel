@@ -54,7 +54,9 @@ async function nativeApp(page: Page) {
           case 'llm_config_get': return { provider: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', embedModel: 'text-embedding-3-small', hasKey: true };
           case 'wiki_get': return wiki;
           case 'library_open': return { book: { id: 9, format: 'txt', title: 'Võ Động Càn Khôn', sections: [{ label: 'Chương 1', pages: null }, { label: 'Chương 2', pages: null }], pageImages: false }, novelId: 1, lang: 'zh', index: 0, progress: 0 };
-          case 'book_section': return { index: args.index, paragraphs: ['林动 看着 道宗 的 人。', '动少 笑了。'] };
+          case 'book_section':
+            if (Number(w.__sectionFails) > 0) { w.__sectionFails = Number(w.__sectionFails) - 1; throw 'book 9 is not open'; }
+            return { index: args.index, paragraphs: ['林动 看着 道宗 的 人。', '动少 笑了。'] };
           case 'wiki_at': {
             // As of chapter 1: only what was met by then, with the description written then.
             const n = Number(args.number);
@@ -208,4 +210,24 @@ test('names in a chapter open the wiki as known by that chapter', async ({ page 
   await page.screenshot({ path: `test-results/wiki-${info.project.name}-reader-card.png` });
   await card.getByRole('button', { name: 'Wiki truyện' }).click();
   await expect(page.getByRole('radio', { name: 'Tiếng Việt' })).toHaveAttribute('aria-checked', 'true');
+});
+
+test('a chapter that fails to load says so in words and loads again', async ({ page }) => {
+  await nativeApp(page);
+  await page.goto('/');
+  await page.getByText('Võ Động Càn Khôn').filter({ visible: true }).first().click();
+  await page.getByRole('button', { name: /Bắt đầu đọc|Đọc tiếp/ }).filter({ visible: true }).first().click();
+  await expect(page.locator('[data-part="0"]')).toContainText('动少 笑了。');
+  // The wiki opens over the reader, which closes its book; back in the reader the
+  // native side opens it again. Here the first load still fails.
+  await page.getByRole('button', { name: 'Wiki', exact: true }).click();
+  await expect(page.locator('[data-part="0"]')).toHaveCount(0);
+  await page.evaluate(() => { (window as unknown as Record<string, unknown>).__sectionFails = 1; });
+  await page.getByRole('button', { name: 'Quay lại' }).filter({ visible: true }).first().click();
+  const first = page.locator('[data-part="0"]');
+  await expect(first.getByRole('alert')).toContainText('Không tải được chương này.');
+  await expect(page.getByText('is not open')).toHaveCount(0);
+  await first.getByRole('button', { name: 'Thử lại' }).click();
+  await expect(first).toContainText('动少 笑了。');
+  expect((await calls(page)).filter(c => c.cmd === 'book_close').length).toBeGreaterThan(0);
 });
