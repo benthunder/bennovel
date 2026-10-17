@@ -514,12 +514,14 @@ function BookPart({ bookId, index, meta, name, fix, st, color, onReady, marksRea
   const { t } = useI18n();
   const showAi = !!ai && !original;
   const aiKey = showAi ? `${ai.lang}.${ai.style}` : '';
+  // Goes up when the reader asks to load a failed part again.
+  const [retry, setRetry] = useState(0);
   const q = useAsync(async () => {
     if (!marksReady) return new Promise<never>(() => {});
     const own = showAi ? await getAiChapter(ai.user, ai.novelId, index, ai.lang, ai.style) : null;
     if (own) return { paragraphs: own.paragraphs, title: own.title || null, isAi: true };
     return { ...(await getLocalSection(bookId, index)), title: null, isAi: false };
-  }, [bookId, index, aiKey, marksReady, rev]);
+  }, [bookId, index, aiKey, marksReady, rev, retry]);
   // "Chương 12" above the chapter's own title; a chapter without one shows "Chương 12" once.
   const heading = (q.status === 'ready' && q.data.title) || (meta?.label ?? name);
   const ready = q.status !== 'loading';
@@ -547,7 +549,16 @@ function BookPart({ bookId, index, meta, name, fix, st, color, onReady, marksRea
       {q.status === 'loading' && (
         <div role="status" style={{ display: 'flex', alignItems: 'center', gap: 10, opacity: .75 }}><Spinner size={16} />{t('book.loading')}</div>
       )}
-      {q.status === 'failed' && <p role="alert">{String(q.error)}</p>}
+      {/* The reason goes to the console; the page never shows an error string in place of the text. */}
+      {q.status === 'failed' && (
+        <div role="alert" style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', opacity: .8 }}>
+          <span>{t('book.loadFailed')}</span>
+          <button onClick={() => setRetry(n => n + 1)}
+            style={{ border: 'none', background: 'none', padding: 0, font: 'inherit', fontWeight: 700, textDecoration: 'underline', color: 'inherit', cursor: 'pointer' }}>
+            {t('load.retry')}
+          </button>
+        </div>
+      )}
       {q.status === 'ready' && (onTranslate || ai) && (
         <div data-ai-mark={isAi ? `${ai!.lang}.${ai!.style}` : 'original'}
           style={{ display: 'flex', alignItems: 'center', gap: '6px 12px', flexWrap: 'wrap', fontSize: 12, marginBottom: 14 }}>

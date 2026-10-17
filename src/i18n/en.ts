@@ -227,6 +227,7 @@ export const en = {
   'book.part': 'Part {n} of {total}',
   'book.pages': 'Pages {from}–{to}',
   'book.loading': 'Loading…',
+  'book.loadFailed': 'Could not load this chapter.',
   'book.empty': 'This part has no text.',
   'book.translateSoon': 'AI translation for imported books is coming soon.',
   'bookDetail.onDevice': 'On this device',

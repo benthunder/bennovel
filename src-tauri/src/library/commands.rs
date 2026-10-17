@@ -1,6 +1,6 @@
 use super::folder::{self, FolderBook, Opener};
 use super::{db, DbBook, LibraryBook};
-use crate::book::commands::{open_picked, pdfium_dirs, Books};
+use crate::book::commands::{open_picked, pdfium_dirs, Books, Reopen};
 use crate::book::{detect, open_source, BookError, BookFormat, BookInfo, BookSource, OpenCtx, SectionMeta};
 use serde::Serialize;
 use std::path::PathBuf;
@@ -317,6 +317,14 @@ pub async fn library_open<R: Runtime>(
     novel_id: i64,
 ) -> Result<OpenedLibraryBook, BookError> {
     let path = db_path(&app, &user)?;
+    let reopen: Reopen = {
+        let (app, path) = (app.clone(), path.clone());
+        Box::new(move || {
+            let original = open_original(&app, &path, novel_id);
+            let (format, source) = DbBook::open(&path, novel_id, original)?;
+            Ok((format, Box::new(source) as Box<dyn BookSource>))
+        })
+    };
     let app2 = app.clone();
     let (format, source, lang, last) = blocking(move || {
         let original = open_original(&app2, &path, novel_id);
@@ -327,7 +335,7 @@ pub async fn library_open<R: Runtime>(
         Ok((format, source, lang, last))
     })
     .await?;
-    let book = books.add(format, Box::new(source));
+    let book = books.add(format, Box::new(source), reopen);
     let (index, progress) = last
         .filter(|l| l.index < book.sections.len())
         .map_or((0, 0.0), |l| (l.index, l.progress));
