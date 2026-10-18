@@ -50,4 +50,3 @@ export function SearchField({ value, onChange, placeholder }: { value: string; o
   );
 }
 
-export const formatReads = (k: number) => (k >= 1000 ? `${(k / 1000).toFixed(1)}M` : `${k}K`);

@@ -1,6 +1,6 @@
 import { defineConfig, devices } from '@playwright/test';
 
-// End-to-end tests run the Vite dev server against the real Supabase project in .env.
+// End-to-end tests run the Vite dev server against the on-device library (no server).
 export default defineConfig({
   testDir: 'tests',
   timeout: 30_000,
