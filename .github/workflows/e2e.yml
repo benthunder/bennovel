@@ -1,6 +1,6 @@
 name: E2E
 
-# Runs the Playwright tests against the live Supabase project in .env.
+# Runs the Playwright tests against the on-device library (no server).
 on:
   pull_request:
   push:

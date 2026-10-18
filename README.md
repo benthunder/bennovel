@@ -45,30 +45,6 @@ src/
 src-tauri/     Tauri v2 shell (Rust)
 ```
 
-## Database (Supabase)
-
-The schema lives in `supabase/migrations`, sample data in `supabase/seed.sql` (generated from `src/data/mock.ts`).
-
-```bash
-npx supabase start       # local Postgres + Auth + API (needs Docker)
-npx supabase db reset    # re-run all migrations and the seed
-npx supabase db push     # apply migrations to the linked remote project
-```
-
-| Table | What it holds | Who can read / write |
-| --- | --- | --- |
-| `languages`, `categories`, `authors` | Lookups | Everyone reads |
-| `novels`, `novel_translations` | Novel info; title and blurb per language | Everyone reads published novels |
-| `collections`, `collection_items` | Home shelves (trending, new, completed, picks) | Everyone reads |
-| `chapters`, `chapter_translations` | Chapters; text per language (original, human or AI, one AI version per style) | Everyone reads released chapters with a published text |
-| `glossary_entries` | Per-novel names and terms per language, fed to the AI translator | Everyone reads |
-| `profiles` | Display name, UI language, default reading language, reader settings; created on sign-up | Owner reads and updates |
-| `favorites` | The heart button / Library grid | Owner only |
-| `reading_history` | One row per novel: last chapter, language, scroll position | Owner only |
-| `translation_jobs` | Queue for the AI translation pipeline | Signed-in users read; created via `request_translation()`, moved along by the worker |
-
-Catalog writes, chapter imports and the translation worker use the service role key, which bypasses RLS. The worker claims work with `claim_translation_job()`.
-
 ## Offline book files
 
 In the native app, Library → **Open a book file** opens a book from the device (`src-tauri/src/book`).
@@ -104,19 +80,17 @@ Pictures of extracted formats are saved next to the extracted text in the cache 
 ### On-device library (SQLite)
 
 Library → **Import a book** copies a book file into a SQLite database on the device, one file per user
-(`<app data>/library/<email or guest>.sqlite3`, code in `src-tauri/src/library`). The tables are the
-novel part of the Supabase schema (`languages`, `authors`, `novels`, `novel_translations`, `chapters`,
-`chapter_translations`, `glossary_entries`, `reading_history`, `replace_rules`), so imported books can be
-synced or uploaded later without reshaping them.
+(`<app data>/library/<email or guest>.sqlite3`, code in `src-tauri/src/library`). The tables
+(`languages`, `authors`, `novels`, `novel_translations`, `chapters`, `chapter_translations`,
+`glossary_entries`, `reading_history`, `replace_rules`) hold everything the app needs; there is no server.
 
 - The import reads the file one section at a time; each section becomes a chapter with its original text
-  (paragraphs separated by a blank line, as in Supabase), all in one transaction.
+  (paragraphs separated by a blank line), all in one transaction.
 - The language is guessed from the text (Hangul → ko, Chinese → zh, Vietnamese letters → vi, else en) and
   the author is "Unknown" until it can be edited.
 - Reading a library book loads chapters from SQLite through the same in-memory window as a book file, and
-  `reading_history` keeps the part and scroll position. The Library shows imported books as covers, like
-  online novels, and the navigation's **Continue** reopens whichever was read last, an online chapter or an
-  imported book, at the place you stopped.
+  `reading_history` keeps the part and scroll position. The navigation's **Continue** reopens whichever
+  imported book was read last, at the place you stopped.
 - Imported books open in the same reader as online novels, with the reading settings and the replace list
   (kept on the device per book and language). AI translation of imported books comes with the translate pipeline.
 - Pictures are copied into a local-only `chapter_images` table. For PDF and DjVu a copy of the file is kept in

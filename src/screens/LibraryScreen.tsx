@@ -1,12 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { EditBookDialog } from '../components/EditBookDialog';
 import { ask } from '@tauri-apps/plugin-dialog';
-import { CoverGrid, Spinner } from '../components/ui';
+import { Spinner } from '../components/ui';
 import { NovelCover } from '../components/NovelCover';
-import { OfflineNote } from '../components/OfflineNote';
-import { useCatalog } from '../data/useCatalog';
 import { EyeIcon, FilePlusIcon, FolderOpenIcon, PencilIcon, XIcon } from '../components/Icons';
-import { getNovels } from '../data/repository';
 import { useT } from '../i18n';
 import { useApp } from '../store/AppStore';
 import { useLayout } from '../lib/useLayout';
@@ -20,11 +17,6 @@ export function LibraryScreen() {
   const t = useT();
   const app = useApp();
   const lay = useLayout();
-  const favs = getNovels(app.favs);
-  /** Online novels downloaded to this device, newest first. */
-  const downloaded = app.downloads.list.flatMap(d => d.data ?? []);
-  // Saved before this device kept snapshots: those show once the catalog loads.
-  const missing = useCatalog().status === 'offline' && favs.length < app.favs.length;
 
   const openFile = async () => {
     try {
@@ -40,18 +32,7 @@ export function LibraryScreen() {
     <div className="screen screen--tabbed" style={{ paddingTop: lay.topPlus, paddingLeft: lay.px, paddingRight: lay.px }}>
       <div className="kicker">{t('library.kicker')}</div>
       <h2 style={{ margin: '0 0 4px', fontSize: lay.libH }}>{t('library.title')}</h2>
-      <div className="muted" style={{ fontSize: 13, marginBottom: 18 }}>
-        {favs.length === 1 ? t('library.countOne') : t('library.count', { n: favs.length })}
-      </div>
       {canOpenLocalBooks() && <DeviceBooks onOpenFile={openFile} />}
-      {downloaded.length > 0 && (
-        <section style={{ marginBottom: 26 }}>
-          <h3 style={{ margin: '0 0 10px', fontSize: 18 }}>{t('library.downloaded')}</h3>
-          <CoverGrid novels={downloaded} onOpen={app.openDetail} cols={lay.libCols} gap={lay.libGap} fs={lay.libFs} />
-        </section>
-      )}
-      <CoverGrid novels={favs} onOpen={app.openDetail} cols={lay.libCols} gap={lay.libGap} fs={lay.libFs} />
-      {missing && <div style={{ marginTop: 8 }}><OfflineNote /></div>}
     </div>
   );
 }
@@ -107,7 +88,9 @@ function DeviceBooks({ onOpenFile }: { onOpenFile: () => void }) {
 
   return (
     <section style={{ marginBottom: 26 }}>
-      <h3 style={{ margin: '0 0 10px', fontSize: 18 }}>{t('library.device')}</h3>
+      <div className="muted" style={{ fontSize: 13, marginBottom: 18 }}>
+        {books?.length === 1 ? t('library.countOne') : t('library.count', { n: books?.length ?? 0 })}
+      </div>
       <div className="import-actions">
         <button className="import-action import-action--primary" disabled={!!importing} onClick={() => runImport(importLocalBook)}>
           <span className="import-action__icon"><FilePlusIcon size={19} /></span>{t('library.import')}
@@ -135,7 +118,6 @@ function DeviceBooks({ onOpenFile }: { onOpenFile: () => void }) {
         <p className="muted import-hint" style={{ marginBottom: 14 }}>{t(canPickFolder() ? 'library.importHint' : 'library.importHintMobile')}</p>
       )}
       {books?.length === 0 && <p className="muted" style={{ fontSize: 13, margin: 0 }}>{t('library.deviceEmpty')}</p>}
-      {/* Shown like the online novels, opening a details page; Continue in the navigation resumes the one read last. */}
       <div className="cover-grid" style={{ gridTemplateColumns: lay.libCols, gap: lay.libGap }}>
         {books?.map(b => (
           <div key={b.novelId} style={{ position: 'relative', minWidth: 0 }}>
