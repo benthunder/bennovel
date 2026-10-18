@@ -1,8 +1,7 @@
 //! Backups of the library: the library file is exported as a gzipped snapshot, and a
 //! backup brought back is merged into it row by row, so nothing made since is lost
 //! (the file goes where the user picks). The merge rules:
-//! - favourites: the later of "added" and "removed" wins (a tie keeps it);
-//! - history and progress: the most recent read wins; a removal newer than the read wins;
+//! - history and progress: the most recent read wins;
 //! - imported books: matched by `book_key`; a book missing here is copied whole
 //!   (chapters, pictures…), newer details (title, author) win, a deleted book stays deleted;
 //! - replace rules: per novel and language, the list changed last wins.
@@ -67,9 +66,7 @@ fn snapshot(
                 }
             }
             None => {
-                // Downloaded novels, the LLM settings (with their API key) and the AI
-                // queue stay on this device.
-                super::offline::strip(&copy)?;
+                // The LLM settings (with their API key) and the AI queue stay on this device.
                 super::translate::strip(&copy)?;
             }
         }
@@ -185,7 +182,6 @@ fn merge_with(
                     .optional()?;
             }
             let gone = merge_attached(&tx)?;
-            super::reading::bump_rev(&tx)?;
             tx.commit()?;
             Ok::<_, SyncError>(gone)
         })();
@@ -204,36 +200,6 @@ fn merge_attached(tx: &Transaction) -> Result<Vec<i64>, SyncError> {
           on conflict (kind, key) do update set deleted_at = max(deleted_at, excluded.deleted_at);
 
         insert or ignore into main.languages select * from r.languages;
-
-        -- Snapshots of online novels; a real one replaces a placeholder.
-        insert into main.online_novels (id, data, updated_at)
-          select id, data, updated_at from r.online_novels where true
-          on conflict (id) do update set data = excluded.data, updated_at = excluded.updated_at
-          where online_novels.data = 'null' and excluded.data <> 'null';
-
-        -- Favourites from the other device go after the ones here.
-        insert into main.online_favorites (novel_id, position, added_at)
-          select f.novel_id, f.position + 1 + (select coalesce(max(position), -1) from main.online_favorites), f.added_at
-          from r.online_favorites f where true
-          on conflict (novel_id) do update set added_at = max(added_at, excluded.added_at);
-        delete from main.online_favorites where exists (
-          select 1 from main.tombstones t
-          where t.kind = 'fav' and t.key = cast(online_favorites.novel_id as text)
-            and t.deleted_at > online_favorites.added_at);
-
-        insert into main.online_history (novel_id, chapter_number, last_read_at)
-          select novel_id, chapter_number, last_read_at from r.online_history where true
-          on conflict (novel_id) do update set
-            chapter_number = excluded.chapter_number, last_read_at = excluded.last_read_at
-          where excluded.last_read_at > online_history.last_read_at;
-        delete from main.online_history where exists (
-          select 1 from main.tombstones t
-          where t.kind = 'history' and t.key = cast(online_history.novel_id as text)
-            and t.deleted_at >= online_history.last_read_at);
-
-        delete from main.online_novels
-          where id not in (select novel_id from main.online_favorites)
-            and id not in (select novel_id from main.online_history);
 
         insert into main.rule_lists (scope, key, lang, rules, updated_at)
           select scope, key, lang, rules, updated_at from r.rule_lists where true
@@ -284,13 +250,6 @@ fn merge_attached(tx: &Transaction) -> Result<Vec<i64>, SyncError> {
     }
 
     super::wiki::merge_attached(tx)?;
-
-    // Downloaded online novels: only a backup carries them (sync leaves them out).
-    tx.execute_batch(
-        "insert or ignore into main.offline_novels select * from r.offline_novels;
-         insert or ignore into main.offline_chapters select * from r.offline_chapters;
-         insert or ignore into main.offline_glossary select * from r.offline_glossary;",
-    )?;
 
     // Books deleted on another device.
     let gone: Vec<i64> = tx
@@ -410,7 +369,6 @@ fn copy_details(tx: &Transaction, rid: i64, lid: i64) -> rusqlite::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::reading::{self, HistoryEntry, ReadingState, Snapshot};
     use super::*;
     use crate::book::image::Image;
     use crate::book::{BookError, BookFormat, BookSource, Section, SectionMeta};
@@ -456,104 +414,6 @@ mod tests {
     fn send(from: &Connection, from_path: &Path, to: &mut Connection, to_path: &Path) {
         let bytes = export(from, &from_path.with_extension("out")).unwrap();
         merge(to, &bytes, &to_path.with_extension("in")).unwrap();
-    }
-
-    fn state(conn: &Connection) -> ReadingState {
-        reading::load(conn).unwrap().unwrap_or_default()
-    }
-
-    fn save(conn: &mut Connection, favs: Vec<i64>, history: Vec<HistoryEntry>) {
-        // Each change gets its own millisecond, as on real devices.
-        std::thread::sleep(std::time::Duration::from_millis(3));
-        let rev = state(conn).rev;
-        let novels = favs
-            .iter()
-            .chain(history.iter().map(|h| &h.id))
-            .map(|&id| Snapshot {
-                id,
-                data: serde_json::json!({ "id": id }),
-            })
-            .collect();
-        assert!(reading::save(
-            conn,
-            &ReadingState {
-                favs,
-                history,
-                novels,
-                rev
-            }
-        )
-        .unwrap());
-    }
-
-    fn h(id: i64, ch: i64, at: i64) -> HistoryEntry {
-        HistoryEntry { id, ch, at }
-    }
-
-    #[test]
-    fn merges_favourites_and_history_both_ways() {
-        let (mut a, pa) = device("fav-a");
-        let (mut b, pb) = device("fav-b");
-        save(&mut a, vec![1, 2], vec![h(1, 5, 100)]);
-        send(&a, &pa, &mut b, &pb);
-        assert_eq!(state(&b).favs, vec![1, 2]);
-
-        // A drops 2 and reads on; B adds 3 and reads 1 further, later.
-        save(&mut a, vec![1], vec![h(1, 6, 200)]);
-        save(&mut b, vec![1, 2, 3], vec![h(1, 9, 300), h(4, 1, 150)]);
-        send(&a, &pa, &mut b, &pb);
-        send(&b, &pb, &mut a, &pa);
-        for conn in [&a, &b] {
-            let s = state(conn);
-            let mut favs = s.favs.clone();
-            favs.sort();
-            assert_eq!(favs, vec![1, 3]);
-            assert_eq!(s.history, vec![h(1, 9, 300), h(4, 1, 150)]);
-        }
-    }
-
-    #[test]
-    fn downloads_stay_on_the_device() {
-        use super::super::offline;
-        let (mut a, pa) = device("dl-a");
-        let (mut b, pb) = device("dl-b");
-        let started = offline::start(&a, 9, &serde_json::json!({ "id": 9 }), 1).unwrap();
-        offline::add(
-            &mut a,
-            9,
-            &[offline::ChapterRow {
-                number: 1,
-                lang: "en".into(),
-                source: "original".into(),
-                title: "One".into(),
-                content: "Text.".into(),
-                words: 1,
-            }],
-        )
-        .unwrap();
-        offline::finish(&mut a, 9, started).unwrap();
-        send(&a, &pa, &mut b, &pb);
-        assert!(offline::list(&b).unwrap().is_empty());
-        // Merging a snapshot back doesn't drop A's own download either.
-        send(&b, &pb, &mut a, &pa);
-        assert_eq!(offline::list(&a).unwrap().len(), 1);
-    }
-
-    #[test]
-    fn a_save_from_before_the_sync_is_refused() {
-        let (mut a, pa) = device("rev-a");
-        let (mut b, pb) = device("rev-b");
-        save(&mut a, vec![7], vec![]);
-        let stale = state(&b).rev;
-        send(&a, &pa, &mut b, &pb);
-        let refused = ReadingState {
-            favs: vec![],
-            history: vec![],
-            novels: vec![],
-            rev: stale,
-        };
-        assert!(!reading::save(&mut b, &refused).unwrap());
-        assert_eq!(state(&b).favs, vec![7]);
     }
 
     #[test]
@@ -697,7 +557,6 @@ mod tests {
         let id =
             super::super::import(&mut a, BookFormat::Txt, &mut Book, "thu.txt", |_, _| {}).unwrap();
         ai_text(&a, id, 2, "Bản dịch 2");
-        super::super::offline::start(&a, 9, &serde_json::json!({ "id": 9 }), 1).unwrap();
         super::super::llm::save(
             &a,
             Some(&super::super::llm::Config {
@@ -716,17 +575,15 @@ mod tests {
 
         // Deleted, and the deletion synced: a plain sync doesn't bring it back…
         super::super::delete(&a, id).unwrap();
-        super::super::offline::delete(&a, 9).unwrap();
         send(&a, &pa, &mut b, &pb);
         assert!(super::super::list(&b).unwrap().is_empty());
-        // …the backup does, translation and download included.
+        // …the backup does, translation included.
         let restored =
             restore_from(&mut a, std::fs::File::open(&backup).unwrap(), &pa.with_extension("in")).unwrap();
         assert_eq!(super::super::list(&a).unwrap().len(), 1);
         // The app's settings come back to be applied.
         assert_eq!(restored.settings.as_deref(), Some(r#"{"uiLang":"vi"}"#));
         assert_eq!(ai_texts(&a), vec!["Bản dịch 2"]);
-        assert_eq!(super::super::offline::list(&a).unwrap().len(), 1);
         // And it stays when synced with the device that saw the deletion.
         send(&b, &pb, &mut a, &pa);
         assert_eq!(super::super::list(&a).unwrap().len(), 1);

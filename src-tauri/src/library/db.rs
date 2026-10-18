@@ -384,6 +384,18 @@ create table wiki_notes (
   primary key (entry_uid, lang, chapter)
 );
 "#,
+    r#"
+-- The online-novel feature (browsing and reading novels from a server) and its
+-- download-for-offline companion were removed: the tables they used are no longer
+-- read or written (see offline.rs, reading.rs). Imported books, history, replace
+-- rules and the wiki are untouched.
+drop table online_history;
+drop table online_favorites;
+drop table online_novels;
+drop table offline_glossary;
+drop table offline_chapters;
+drop table offline_novels;
+"#,
 ];
 
 /// Epoch milliseconds now.
