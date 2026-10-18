@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { load, save } from './storage';
 
 /*
@@ -36,9 +37,8 @@ function applySettings(json: string | null): boolean {
 
 /** Asks where to save and writes a backup there; false when cancelled. */
 export async function createBackup(user: string): Promise<boolean> {
-  const { save } = await import('@tauri-apps/plugin-dialog');
   const day = new Date().toISOString().slice(0, 10);
-  const path = await save({ defaultPath: `bennovel-backup-${day}.bnbackup`, filters: [{ name: 'BenNovel backup', extensions: ['bnbackup'] }] });
+  const path = await saveDialog({ defaultPath: `bennovel-backup-${day}.bnbackup`, filters: [{ name: 'BenNovel backup', extensions: ['bnbackup'] }] });
   if (!path) return false;
   await invoke<number>('library_backup', { user, path, settings: appSettings() });
   return true;
@@ -50,9 +50,8 @@ export async function createBackup(user: string): Promise<boolean> {
  * app should start again to use them), true otherwise.
  */
 export async function restoreBackup(user: string): Promise<boolean | 'settings'> {
-  const { open } = await import('@tauri-apps/plugin-dialog');
   const android = /android/i.test(navigator.userAgent);
-  const path = await open({ multiple: false, filters: android ? undefined : [{ name: 'BenNovel backup', extensions: ['bnbackup'] }] });
+  const path = await openDialog({ multiple: false, filters: android ? undefined : [{ name: 'BenNovel backup', extensions: ['bnbackup'] }] });
   if (!path) return false;
   const settings = await invoke<string | null>('library_restore', { user, path });
   return applySettings(settings) ? 'settings' : true;

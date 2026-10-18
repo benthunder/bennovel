@@ -1,39 +1,21 @@
 import { useState } from 'react';
-import { getContentLangs } from '../data/repository';
-import type { ContentLang } from '../data/types';
+import { CONTENT_LANG_INFO, type ContentLang } from '../data/types';
 import { useT } from '../i18n';
-import { useApp, type LangDialog as Dialog } from '../store/AppStore';
+import { useApp } from '../store/AppStore';
 import { Modal } from './Modal';
-import { Checkbox } from './ui';
 
 type Pick = ContentLang | 'ask';
 
-/**
- * Reading-language picker. Three modes:
- * - chapter: first chapter opened with no saved language — pick, optionally save, then open it
- * - reader: switch the language of the open chapter
- * - settings: change (or clear) the language saved on this device
- */
-export function LangDialog({ dialog }: { dialog: Dialog }) {
+/** Default reading-language setting, for books whose language isn't known. */
+export function LangDialog({ onClose }: { onClose: () => void }) {
   const t = useT();
   const app = useApp();
-  const readerLang = app.top.s === 'reader' ? app.top.lang : null;
-  const [pick, setPick] = useState<Pick>(
-    dialog.mode === 'settings' ? app.contentLang ?? 'ask' : dialog.mode === 'reader' ? readerLang ?? 'en' : 'en'
-  );
-  const [remember, setRemember] = useState(true);
-  const close = () => app.setLangDialog(null);
+  const [pick, setPick] = useState<Pick>(app.contentLang ?? 'ask');
 
   const confirm = () => {
-    if (dialog.mode === 'settings') {
-      app.setContentLang(pick === 'ask' ? null : pick);
-      app.showToast(t(pick === 'ask' ? 'lang.askToast' : 'lang.savedToast'));
-    } else if (pick !== 'ask') {
-      if (remember) app.setContentLang(pick);
-      if (dialog.mode === 'reader') app.setReaderLang(pick);
-      else app.goReader(dialog.id, dialog.ch, pick);
-    }
-    close();
+    app.setContentLang(pick === 'ask' ? null : pick);
+    app.showToast(t(pick === 'ask' ? 'lang.askToast' : 'lang.savedToast'));
+    onClose();
   };
 
   const row = (value: Pick, content: React.ReactNode) => (
@@ -44,30 +26,23 @@ export function LangDialog({ dialog }: { dialog: Dialog }) {
     </label>
   );
 
-  const title = dialog.mode === 'settings' ? t('lang.titleSettings') : dialog.mode === 'reader' ? t('lang.titleReader') : t('lang.titleChapter');
-
   return (
-    <Modal onClose={close}>
-      <div className="dialog dialog--sheet" role="dialog" aria-modal="true" aria-label={title} onClick={e => e.stopPropagation()}>
-        <div className="dialog-title" style={{ fontSize: 22 }}>{title}</div>
-        <div className="dialog-body" style={{ marginTop: -6 }}>{dialog.mode === 'settings' ? t('lang.bodySettings') : t('lang.bodyChapter')}</div>
+    <Modal onClose={onClose}>
+      <div className="dialog dialog--sheet" role="dialog" aria-modal="true" aria-label={t('lang.titleSettings')} onClick={e => e.stopPropagation()}>
+        <div className="dialog-title" style={{ fontSize: 22 }}>{t('lang.titleSettings')}</div>
+        <div className="dialog-body" style={{ marginTop: -6 }}>{t('lang.bodySettings')}</div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {getContentLangs().map(l => row(l.code, (
+          {CONTENT_LANG_INFO.map(l => row(l.code, (
             <span style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.3 }}>
               <span style={{ fontWeight: 700, fontSize: 15 }}>{l.native}</span>
               <span className="muted" style={{ fontSize: 12 }}>{l.name}</span>
             </span>
           )))}
-          {dialog.mode === 'settings' && row('ask', <span style={{ fontWeight: 700, fontSize: 15 }}>{t('lang.askEveryTime')}</span>)}
+          {row('ask', <span style={{ fontWeight: 700, fontSize: 15 }}>{t('lang.askEveryTime')}</span>)}
         </div>
-        {dialog.mode !== 'settings' && (
-          <Checkbox checked={remember} onChange={() => setRemember(r => !r)} size={22} style={{ fontSize: 13 }}>{t('lang.remember')}</Checkbox>
-        )}
         <div className="dialog-actions">
-          <button className="btn btn-secondary" style={{ height: 44, padding: '0 18px' }} onClick={close}>{t('common.cancel')}</button>
-          <button className="btn btn-primary" style={{ height: 44, padding: '0 22px' }} onClick={confirm}>
-            {dialog.mode === 'chapter' ? t('lang.startReading') : t('common.save')}
-          </button>
+          <button className="btn btn-secondary" style={{ height: 44, padding: '0 18px' }} onClick={onClose}>{t('common.cancel')}</button>
+          <button className="btn btn-primary" style={{ height: 44, padding: '0 22px' }} onClick={confirm}>{t('common.save')}</button>
         </div>
       </div>
     </Modal>
