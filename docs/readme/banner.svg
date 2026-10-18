@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 320" width="1200" height="320" role="img" aria-labelledby="title desc">
+  <title id="title">BenNovel</title>
+  <desc id="desc">BenNovel — an offline novel reader with AI translation, import and a dictionary</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f9f4ed"/>
+      <stop offset="1" stop-color="#f5ead8"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.8" cy="0.15" r="0.9">
+      <stop offset="0" stop-color="#ffe1d0" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="#ffe1d0" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1200" height="320" rx="28" fill="url(#bg)"/>
+  <rect width="1200" height="320" rx="28" fill="url(#glow)"/>
+  <rect x="1" y="1" width="1198" height="318" rx="27" fill="none" stroke="#e1d4ba" stroke-width="2"/>
+
+  <!-- open book mark -->
+  <g transform="translate(70,96)">
+    <path d="M0 18 C 28 2, 58 2, 64 18 L 64 118 C 58 104, 28 104, 0 118 Z" fill="#c67139"/>
+    <path d="M128 18 C 100 2, 70 2, 64 18 L 64 118 C 70 104, 100 104, 128 118 Z" fill="#8c491a"/>
+    <path d="M12 26 C 32 16, 50 16, 58 26" stroke="#fff2eb" stroke-width="4" fill="none" stroke-linecap="round"/>
+    <path d="M12 46 C 32 36, 50 36, 58 46" stroke="#fff2eb" stroke-width="4" fill="none" stroke-linecap="round" opacity="0.8"/>
+    <path d="M70 26 C 90 16, 108 16, 116 26" stroke="#ffe1d0" stroke-width="4" fill="none" stroke-linecap="round"/>
+    <path d="M70 46 C 90 36, 108 36, 116 46" stroke="#ffe1d0" stroke-width="4" fill="none" stroke-linecap="round" opacity="0.8"/>
+  </g>
+
+  <text x="232" y="150" font-family="Georgia, 'Noto Serif', serif" font-size="56" font-weight="700" fill="#201e1d">BenNovel</text>
+  <text x="234" y="184" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="20" fill="#56633f">Your books, your languages, your device.</text>
+
+  <!-- feature chips -->
+  <g font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="18" font-weight="700" fill="#201e1d">
+    <!-- AI Translate -->
+    <g transform="translate(232,214)">
+      <rect width="246" height="56" rx="28" fill="#ffffff" stroke="#e1d4ba" stroke-width="1.5"/>
+      <g transform="translate(20,14)" stroke="#c67139" stroke-width="2.3" fill="none" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M14 2 L16.6 9.2 24 12 16.6 14.8 14 22 11.4 14.8 4 12 11.4 9.2 Z" fill="#c67139" stroke="none"/>
+        <path d="M24.5 17 L25.6 20 28.5 21 25.6 22 24.5 25 23.4 22 20.5 21 23.4 20 Z" fill="#f6a06b" stroke="none"/>
+      </g>
+      <text x="56" y="36">AI Translate</text>
+    </g>
+    <!-- Import -->
+    <g transform="translate(498,214)">
+      <rect width="198" height="56" rx="28" fill="#ffffff" stroke="#e1d4ba" stroke-width="1.5"/>
+      <g transform="translate(20,13)" stroke="#56633f" stroke-width="2.3" fill="none" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M14 2 L14 18 M7 11 L14 18 L21 11"/>
+        <path d="M3 24 L25 24"/>
+      </g>
+      <text x="56" y="36">Import</text>
+    </g>
+    <!-- Dictionary -->
+    <g transform="translate(716,214)">
+      <rect width="220" height="56" rx="28" fill="#ffffff" stroke="#e1d4ba" stroke-width="1.5"/>
+      <g transform="translate(20,12)" stroke="#8c491a" stroke-width="2.3" fill="none" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 4 C 8 1, 16 1, 16 6 L 16 25 C 16 20, 8 20, 3 23 Z"/>
+        <path d="M29 4 C 24 1, 16 1, 16 6 L 16 25 C 16 20, 24 20, 29 23 Z"/>
+      </g>
+      <text x="56" y="36">Dictionary</text>
+    </g>
+  </g>
+</svg>

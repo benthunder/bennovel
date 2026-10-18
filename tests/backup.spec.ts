@@ -48,7 +48,7 @@ test('the app opens on the library, with no Home, Category or sign-in', async ({
   await boot(page);
   await nativeApp(page);
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'Favourites' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'On your device' })).toBeVisible();
   for (const name of [/^Library/, /^Profile$/]) {
     await expect(page.getByRole('button', { name }).filter({ visible: true }).first()).toBeVisible();
   }

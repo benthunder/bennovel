@@ -1,8 +1,54 @@
-# BenNovel
+<p align="center">
+  <img src="docs/readme/banner.svg" alt="BenNovel" width="100%">
+</p>
 
-A novel-reading app built with **Tauri v2** (desktop + iOS/Android) and **React + Vite + TypeScript**. It implements the Claude Design handoff in `project/BenNovel App.dc.html`. The design brief is in `chats/` and the original handoff notes are in `HANDOFF.md`.
+<p align="center">
+  <a href="#english">English</a> · <a href="#tiếng-việt">Tiếng Việt</a>
+</p>
 
-## Running it
+<a id="english"></a>
+## English
+
+**BenNovel** is an offline-first novel reader built with **Tauri v2** (desktop + Android/iOS) and **React + TypeScript**. There is no account and no server: you import your own book files, and everything — the text, your reading history, your AI translations, your dictionary lookups — lives in one SQLite file on your device.
+
+### ✨ Popular features
+
+| | |
+| --- | --- |
+| 🧠 **AI Translate** | Translate or rewrite a chapter — or queue the whole book in the background — with **your own** LLM key (OpenAI, Gemini, DeepSeek, OpenRouter, Claude, or any OpenAI-compatible endpoint, including a local Ollama/LM Studio). Pick a target language, a style (Literal, Natural, Literary, Casual), and whether to apply the book's glossary. The key never leaves your device. |
+| 📥 **Import** | Bring in EPUB, PDF, DjVu, TXT, CHM, MOBI, AZW3, PRC, FB2, DOCX, ODT, RTF, HTML/MHTML and Markdown — a single file, or a whole folder (each file becomes a chapter, ordered the way you'd expect). Scanned PDF/DjVu pages are read with on-device OCR (Tesseract) so they become real, searchable, translatable text. |
+| 📖 **Dictionary & reading tools** | A quick word lookup in the reader (today: a small sample dictionary; full AI lookup is wired up next), plus a per-book, per-language **glossary** and **find → replace** list, font/theme/spacing controls, and a book **wiki** (below). |
+
+### 🧵 How AI Translate learns as it goes (RAG)
+
+The more of a book the AI translates, the better it gets at the book's own names — because it builds and reads back its own notes as it goes:
+
+<p align="center"><img src="docs/readme/rag-pipeline.svg" alt="AI Translate pipeline: detect, recall, translate or rewrite, save, learn" width="100%"></p>
+
+Each chapter is a run through a small [LangGraph](https://github.com/langchain-ai/langgraph) graph (the Rust port, [`rust-langgraph`](https://crates.io/crates/rust-langgraph), in [`translate.rs`](src-tauri/src/library/translate.rs)):
+
+1. **detect** — names the book's language and picks translate vs. rewrite.
+2. **recall** — pulls the wiki entries this chapter is likely to need: by name/alias, and by **meaning**, via vector similarity search ([`sqlite-vec`](https://github.com/asg017/sqlite-vec)) over embeddings from your own embedding model.
+3. **translate / rewrite** — the chapter, with that context in the prompt.
+4. **save** — the result is stored; it's never used as input to a later translation.
+5. **learn** — the model reads the chapter it just produced back through tool calls (`wiki_search`, `wiki_upsert`, `wiki_relate`) and grows the book's **wiki**: characters, places, factions, items, terms and how they relate — in every language, kept in sync.
+
+That wiki is what **recall** reads next chapter — a small retrieval-augmented loop, local to your device, with no glossary to write by hand. See [`wiki.rs`](src-tauri/src/library/wiki.rs) for the full mechanics (what the user edits, the AI only adds to; what's removed, stays removed).
+
+### 🛠 Stack
+
+| Layer | What's in it |
+| --- | --- |
+| UI | React 19, TypeScript, Vite, hand-rolled stack-based router (no react-router) |
+| Shell | Tauri v2 — one codebase to desktop (Linux/macOS/Windows) and mobile (Android/iOS) |
+| Storage | `rusqlite` (bundled SQLite), one file per device under the user's app data — no server |
+| Retrieval / AI memory | `sqlite-vec` for vector search over the book's wiki; embeddings from the same LLM API you set for translation |
+| AI pipeline | `rust-langgraph` (LangGraph for Rust), talking to any OpenAI-compatible chat + embeddings API over `ureq` |
+| Book formats | `epub`, `pdfium-render` (PDF), `djvu-rs`, `libchm`, `zip` + `quick-xml` (DOCX/ODT/FB2/EPUB), `encoding_rs` (legacy encodings) |
+| OCR | Tesseract.js (`tesseract.js`), bundled and run entirely on-device |
+| i18n | Interface in English and Vietnamese (`src/i18n/`); content languages EN/VI/ZH/KO |
+
+### Running it
 
 ```bash
 npm install
@@ -17,35 +63,88 @@ npm run tauri ios init && npm run tauri ios dev
 
 On Linux, Tauri also needs the system WebKit packages: `libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev`.
 
-## What's in it
+---
 
-| Screen | Notes |
+<a id="tiếng-việt"></a>
+## Tiếng Việt
+
+**BenNovel** là app đọc truyện hoạt động offline, xây bằng **Tauri v2** (desktop + Android/iOS) và **React + TypeScript**. Không tài khoản, không máy chủ: bạn tự nhập file truyện của mình vào, và mọi thứ — nội dung truyện, lịch sử đọc, bản dịch AI, tra từ điển — đều nằm trong 1 file SQLite ngay trên máy bạn.
+
+### ✨ Tính năng nổi bật
+
+| | |
 | --- | --- |
-| Login / Register | Fits on one screen with no scrolling. Google, Facebook and iCloud sit in one row, plus an email login/register form with field checks. You can skip and browse as a guest. Auth is simulated. |
-| Home | A "Most popular" slider that you can swipe and that autoplays (it pauses for 6s after you touch it), four collection shelves, and a throttled search (400 ms). |
-| Detail | Novel info, favourite button, chapter list, "More in {category}" and "More by {author}". |
-| Reading language | The first chapter you open asks which language to read in. The pick is saved on the device (`localStorage`), so later chapters open straight in it. You can change it from Detail, the Reader (EN/VI/ES pill) or Profile. |
-| Category / Author / Collection | Throttled search, genre chips (when browsing all), a status filter and sorting (Popular / Newest / Top rated). |
-| Reader | No bottom menu. The tools sheet has a **Reading** tab (font size, background, line spacing, paragraph gap, margins, alignment; saved on the device) and an **AI tools** tab (dictionary, novel glossary, AI Translate with a target language, a style and an "Apply dictionary" checkbox). |
-| Library / Profile | Favourites grid, reading history with Resume, user card, log in / log out, default reading language and app language. |
-| Bottom nav | Home · Category · raised **Continue** (opens your last chapter) · Library · Profile. |
+| 🧠 **Dịch AI** | Dịch hoặc viết lại một chương — hoặc xếp hàng dịch cả truyện chạy nền — bằng **API key của chính bạn** (OpenAI, Gemini, DeepSeek, OpenRouter, Claude, hoặc bất kỳ endpoint tương thích OpenAI nào, kể cả Ollama/LM Studio chạy tại chỗ). Chọn ngôn ngữ đích, văn phong (Sát nghĩa, Tự nhiên, Văn chương, Đời thường), và có áp dụng bảng thuật ngữ hay không. API key không bao giờ rời khỏi máy bạn. |
+| 📥 **Nhập sách** | Nhập EPUB, PDF, DjVu, TXT, CHM, MOBI, AZW3, PRC, FB2, DOCX, ODT, RTF, HTML/MHTML và Markdown — một file, hoặc cả thư mục (mỗi file thành một chương, xếp đúng thứ tự). Trang PDF/DjVu dạng ảnh scan được nhận dạng chữ ngay trên máy (OCR bằng Tesseract) để thành văn bản thật, tìm được và dịch được. |
+| 📖 **Từ điển & công cụ đọc** | Tra nhanh một từ ngay trong màn hình đọc (hiện tại: một từ điển mẫu nhỏ; tra cứu AI đầy đủ đang được nối sẵn), cùng **bảng thuật ngữ** và danh sách **tìm → thay** riêng cho từng truyện/ngôn ngữ, tùy chỉnh font/giao diện/giãn dòng, và **wiki truyện** (xem bên dưới). |
 
-The interface is in English and Vietnamese (`src/i18n/`). It follows the device language at first, and you can switch it in Profile or with the EN/VI button on Login. The font is **Be Vietnam Pro**, bundled through `@fontsource`, so Vietnamese diacritics render correctly offline.
+### 🧵 Dịch AI "tự học" khi đọc tới đâu, nhớ tới đó (RAG)
 
-## Structure
+Truyện càng được dịch nhiều, AI càng dịch tên riêng của truyện đó chuẩn hơn — vì nó tự ghi chú lại và tự đọc lại chú thích của chính mình:
+
+<p align="center"><img src="docs/readme/rag-pipeline.svg" alt="Luồng dịch AI: detect, recall, translate/rewrite, save, learn" width="100%"></p>
+
+Mỗi chương đi qua một đồ thị [LangGraph](https://github.com/langchain-ai/langgraph) nhỏ (bản port sang Rust, [`rust-langgraph`](https://crates.io/crates/rust-langgraph), trong [`translate.rs`](src-tauri/src/library/translate.rs)):
+
+1. **detect** — nhận diện ngôn ngữ gốc của truyện, chọn dịch hay viết lại.
+2. **recall** — lấy ra các mục trong wiki mà chương này nhiều khả năng cần: theo tên/biệt danh, và theo **ngữ nghĩa**, bằng tìm kiếm vector tương đồng ([`sqlite-vec`](https://github.com/asg017/sqlite-vec)) trên embedding từ chính model embedding bạn đã cấu hình.
+3. **translate / rewrite** — dịch chương, với phần ngữ cảnh đó đưa vào prompt.
+4. **save** — lưu kết quả; kết quả này không bao giờ được dùng làm đầu vào cho lần dịch sau.
+5. **learn** — model đọc lại chính chương vừa dịch xong, qua các tool call (`wiki_search`, `wiki_upsert`, `wiki_relate`), rồi bồi đắp thêm cho **wiki** của truyện: nhân vật, địa danh, phe phái, vật phẩm, thuật ngữ và quan hệ giữa chúng — đồng bộ ở mọi ngôn ngữ.
+
+Wiki đó chính là thứ **recall** sẽ đọc lại ở chương kế tiếp — một vòng lặp truy xuất-tăng-cường (RAG) nhỏ gọn, chạy ngay trên máy bạn, không cần tự tay viết bảng thuật ngữ. Xem chi tiết cơ chế trong [`wiki.rs`](src-tauri/src/library/wiki.rs) (mục nào bạn đã sửa tay, AI chỉ được bổ sung thêm; mục nào bạn đã xoá, sẽ không bị thêm lại).
+
+### 🛠 Công nghệ sử dụng
+
+| Lớp | Gồm những gì |
+| --- | --- |
+| Giao diện | React 19, TypeScript, Vite, router tự viết dạng stack (không dùng react-router) |
+| Vỏ ứng dụng | Tauri v2 — một codebase cho desktop (Linux/macOS/Windows) và mobile (Android/iOS) |
+| Lưu trữ | `rusqlite` (SQLite đóng gói sẵn), mỗi máy một file trong thư mục dữ liệu app — không có server |
+| Truy xuất / bộ nhớ AI | `sqlite-vec` để tìm kiếm vector trên wiki truyện; embedding lấy từ chính API LLM bạn đã cấu hình để dịch |
+| Pipeline AI | `rust-langgraph` (LangGraph viết lại bằng Rust), gọi bất kỳ API chat + embeddings tương thích OpenAI nào qua `ureq` |
+| Định dạng sách | `epub`, `pdfium-render` (PDF), `djvu-rs`, `libchm`, `zip` + `quick-xml` (DOCX/ODT/FB2/EPUB), `encoding_rs` (bảng mã cũ) |
+| OCR | Tesseract.js (`tesseract.js`), đóng gói sẵn và chạy hoàn toàn trên máy |
+| Đa ngôn ngữ | Giao diện tiếng Anh và tiếng Việt (`src/i18n/`); ngôn ngữ nội dung EN/VI/ZH/KO |
+
+### Chạy thử
+
+```bash
+npm install
+npm run dev            # chỉ phần frontend, mở ở http://localhost:1420
+npm run tauri dev      # cửa sổ app desktop
+npm run tauri build    # tạo installer cho desktop
+
+# mobile (cần cài sẵn Android Studio / Xcode cho Tauri)
+npm run tauri android init && npm run tauri android dev
+npm run tauri ios init && npm run tauri ios dev
+```
+
+Trên Linux, Tauri cần thêm các gói hệ thống: `libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev`.
+
+---
+
+## Developer reference
+
+*(kept in English, next to the code it documents)*
+
+### Structure
 
 ```
 src/
-  data/        mock.ts (sample data), repository.ts (the data seam), types.ts
-  store/       AppStore.tsx: navigation stack, auth, favourites, history, saved language, reader prefs
+  data/        mock.ts (the built-in dictionary sample), repository.ts (book replace rules), types.ts
+  store/       AppStore.tsx: navigation stack, reading language, reader prefs, the on-device library
   i18n/        en.ts, vi.ts, the provider and t()
   components/  NovelCover, BottomNav, LangDialog, ReaderTools, shared UI
-  screens/     Login, Home, Detail, List, Library, Profile, Reader
+  screens/     LibraryScreen, ProfileScreen, BookDetailScreen, LocalBookScreen (reader), WikiScreen
   styles/      organic.css (the Organic design system tokens) + app.css
-src-tauri/     Tauri v2 shell (Rust)
+src-tauri/     Tauri v2 shell (Rust): book/ (format readers), library/ (the on-device SQLite library,
+               AI translate pipeline, wiki/RAG, sync & backup)
 ```
 
-## Offline book files
+The interface is in English and Vietnamese (`src/i18n/`). It follows the device language at first, and you can switch it in Profile. The font is **Be Vietnam Pro**, bundled through `@fontsource`, so Vietnamese diacritics render correctly offline.
+
+### Offline book files
 
 In the native app, Library → **Open a book file** opens a book from the device (`src-tauri/src/book`).
 Only the current section, the 2 after it and the 1 before it are kept in memory; the next ones are read in the
@@ -82,7 +181,7 @@ Pictures of extracted formats are saved next to the extracted text in the cache 
 Library → **Import a book** copies a book file into a SQLite database on the device, one file per user
 (`<app data>/library/<email or guest>.sqlite3`, code in `src-tauri/src/library`). The tables
 (`languages`, `authors`, `novels`, `novel_translations`, `chapters`, `chapter_translations`,
-`glossary_entries`, `reading_history`, `replace_rules`) hold everything the app needs; there is no server.
+`glossary_entries`, `reading_history`, `replace_rules`, `wiki_*`) hold everything the app needs; there is no server.
 
 - The import reads the file one section at a time; each section becomes a chapter with its original text
   (paragraphs separated by a blank line), all in one transaction.
@@ -91,8 +190,6 @@ Library → **Import a book** copies a book file into a SQLite database on the d
 - Reading a library book loads chapters from SQLite through the same in-memory window as a book file, and
   `reading_history` keeps the part and scroll position. The navigation's **Continue** reopens whichever
   imported book was read last, at the place you stopped.
-- Imported books open in the same reader as online novels, with the reading settings and the replace list
-  (kept on the device per book and language). AI translation of imported books comes with the translate pipeline.
 - Pictures are copied into a local-only `chapter_images` table. For PDF and DjVu a copy of the file is kept in
   `<user>.files/` next to the database, so pages can still be drawn as pictures.
 - **Open without saving** still reads a file directly without importing it.
@@ -100,19 +197,14 @@ Library → **Import a book** copies a book file into a SQLite database on the d
   the format from the file's first bytes.
 - The app registers for the book types (`bundle.fileAssociations` in `tauri.conf.json`), so "Open with
   BenNovel" or tapping a book in a file manager opens it in the reader (`src-tauri/src/opened.rs`).
+- **Backup & restore** (Profile) writes the whole library to one gzipped file and merges a backup back in
+  row by row, so nothing made since is lost (`src-tauri/src/library/sync.rs`).
 
 PDF text comes from [Pdfium](https://github.com/bblanchon/pdfium-binaries), loaded at runtime from next to
 the app, its resources folder (`pdfium/`) or the system. The release workflow ships it with the Linux and
 Android builds. To run the PDF test: `PDFIUM_DIR=/path/to/pdfium/lib cargo test` in `src-tauri`.
 
-## Simulated for now
-
-- **Data**: everything comes from `src/data/mock.ts` through `src/data/repository.ts`. To connect a backend (for example a NestJS + Postgres API), you only replace that file.
-- **Auth**: social and email logins are faked with a 750 ms delay.
-- **AI Translate / Dictionary**: faked. Only EN/VI/ES sample text exists, and every novel shows the same sample chapter.
-- **Covers**: typographic placeholders until real cover art is available.
-
-## Releases (Linux + Android)
+### Releases (Linux + Android)
 
 `.github/workflows/release.yml` builds a Linux AppImage/.deb and an Android APK.
 Push a version tag (matching `version` in `src-tauri/tauri.conf.json`) to publish a GitHub Release:
