@@ -3,8 +3,8 @@ import { GlobeIcon, LanguagesIcon, SparklesIcon } from '../components/Icons';
 import { Modal } from '../components/Modal';
 import { NovelCover } from '../components/NovelCover';
 import { UiLangDialog, uiLangLabel } from '../components/UiLangDialog';
-import { CoverGrid, Segmented, Spinner } from '../components/ui';
-import { findNovel, getContentLangs, getNovels } from '../data/repository';
+import { Spinner } from '../components/ui';
+import { CONTENT_LANG_INFO } from '../data/types';
 import { relativeTime, useI18n } from '../i18n';
 import { AiFailure, LLM_PROVIDERS, aiErrorDetail, getLlmSettings, setLlmConfig, type LlmConfig, type LlmSettings } from '../lib/ai';
 import { useAsync } from '../lib/useAsync';
@@ -18,57 +18,47 @@ export function ProfileScreen() {
   const { t, uiLang } = useI18n();
   const app = useApp();
   const lay = useLayout();
-  const [tab, setTab] = useState<'history' | 'favs'>('history');
-  const [uiLangOpen, setUiLangOpen] = useState(false);
   const [llmOpen, setLlmOpen] = useState(false);
   const [llmRev, setLlmRev] = useState(0);
   const llmQ = useAsync(() => (canOpenLocalBooks() ? getLlmSettings(app.libKey) : Promise.resolve(null)), [app.libKey, llmRev]);
   const llm = llmQ.status === 'ready' ? llmQ.data : null;
-  const langLabel = getContentLangs().find(l => l.code === app.contentLang)?.native ?? t('lang.askEach');
+  const [uiLangOpen, setUiLangOpen] = useState(false);
+  const langLabel = CONTENT_LANG_INFO.find(l => l.code === app.contentLang)?.native ?? t('lang.askEach');
   const rows = useHistoryRows();
 
   return (
     <div className="screen screen--tabbed" style={{ paddingTop: lay.topPlus, paddingLeft: lay.px, paddingRight: lay.px }}>
       <div style={{
         display: 'grid', gridTemplateColumns: lay.profCols, gap: lay.wide ? '18px 32px' : 18, alignItems: 'start',
-        gridTemplateAreas: lay.wide ? '"card tabs" "card content" "settings content" ". content"' : '"card" "tabs" "content" "settings"',
-        gridTemplateRows: lay.wide ? 'auto auto auto 1fr' : 'auto'
+        gridTemplateAreas: lay.wide ? '"card content" "settings content" ". content"' : '"card" "content" "settings"',
+        gridTemplateRows: lay.wide ? 'auto auto 1fr' : 'auto'
       }}>
         <div style={{ gridArea: 'card' }}>
           {canOpenLocalBooks() && <BackupCard />}
         </div>
 
-        <Segmented value={tab} onChange={setTab} style={{ gridArea: 'tabs' }} optStyle={{ padding: 10 }}
-          options={[{ label: t('profile.history'), value: 'history' }, { label: t('profile.favourites'), value: 'favs' }]} />
-
         <div style={{ gridArea: 'content', minWidth: 0 }}>
-          {tab === 'history' ? (
-            <div style={{ display: 'grid', gridTemplateColumns: lay.histCols, gap: '4px 12px', marginTop: -6 }}>
-              {rows.map(r => (
-                <button key={r.key} className="novel-row" style={{ alignItems: 'center', padding: 8, borderRadius: 22, minWidth: 0 }} onClick={r.open}>
-                  <NovelCover novel={r.cover} w={52} h={74} fs={9} />
-                  <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 5 }}>
-                    <span style={{ fontWeight: 700, fontSize: 14 }}>{r.title}</span>
-                    <span className="muted" style={{ fontSize: 12 }}>{r.where} · {r.place} · {relativeTime(t, r.at)}</span>
-                    <span style={{ height: 6, borderRadius: 999, background: 'var(--color-neutral-300)', overflow: 'hidden' }}>
-                      <span style={{ display: 'block', height: '100%', width: `${Math.max(4, Math.min(100, Math.round(r.pct * 100)))}%`, borderRadius: 999, background: 'var(--color-accent-2)' }} />
-                    </span>
+          <h3 style={{ margin: '0 0 10px', fontSize: 18 }}>{t('profile.history')}</h3>
+          <div style={{ display: 'grid', gridTemplateColumns: lay.histCols, gap: '4px 12px' }}>
+            {rows.map(r => (
+              <button key={r.key} className="novel-row" style={{ alignItems: 'center', padding: 8, borderRadius: 22, minWidth: 0 }} onClick={r.open}>
+                <NovelCover novel={r.cover} w={52} h={74} fs={9} />
+                <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 5 }}>
+                  <span style={{ fontWeight: 700, fontSize: 14 }}>{r.title}</span>
+                  <span className="muted" style={{ fontSize: 12 }}>{r.place} · {relativeTime(t, r.at)}</span>
+                  <span style={{ height: 6, borderRadius: 999, background: 'var(--color-neutral-300)', overflow: 'hidden' }}>
+                    <span style={{ display: 'block', height: '100%', width: `${Math.max(4, Math.min(100, Math.round(r.pct * 100)))}%`, borderRadius: 999, background: 'var(--color-accent-2)' }} />
                   </span>
-                  <span className="tag tag-accent">{t('profile.resume')}</span>
-                </button>
-              ))}
-              {rows.length === 0 && <div className="muted" style={{ fontSize: 13 }}>{t('profile.noHistory')}</div>}
-            </div>
-          ) : (
-            <div style={{ marginTop: -4 }}>
-              <CoverGrid novels={getNovels(app.favs)} onOpen={app.openDetail} showAuthor={false} cols={lay.libCols} gap="14px 12px" />
-              {app.favs.length === 0 && <div className="muted" style={{ fontSize: 13 }}>{t('profile.noFavs')}</div>}
-            </div>
-          )}
+                </span>
+                <span className="tag tag-accent">{t('profile.resume')}</span>
+              </button>
+            ))}
+            {rows.length === 0 && <div className="muted" style={{ fontSize: 13 }}>{t('profile.noHistory')}</div>}
+          </div>
         </div>
 
         <div style={{ gridArea: 'settings', borderRadius: 28, background: 'var(--color-surface)', padding: 6 }}>
-          <button className="menu-row" onClick={() => app.setLangDialog({ mode: 'settings' })}>
+          <button className="menu-row" onClick={app.openLangDialog}>
             <LanguagesIcon style={{ color: 'var(--color-accent-2-700)' }} />
             <span style={{ flex: 1, fontSize: 14, fontWeight: 600 }}>{t('profile.defaultLang')}</span>
             <span className="muted" style={{ fontSize: 13 }}>{langLabel} ›</span>
@@ -97,7 +87,7 @@ type BackupJob = 'backup' | 'restore';
 
 /**
  * A backup of the whole library in a file the user keeps (books with their AI
- * translations, history, favourites, downloads), and bringing one back.
+ * translations, history, replace rules, glossaries), and bringing one back.
  */
 function BackupCard() {
   const { t } = useI18n();
@@ -244,8 +234,6 @@ interface HistoryRow {
   key: string;
   title: string;
   cover: { title: string; cover: { bg: string; fg: string; deco: string } };
-  /** Online novel or a book on this device. */
-  where: string;
   /** Chapter or part reached. */
   place: string;
   pct: number;
@@ -253,10 +241,7 @@ interface HistoryRow {
   open: () => void;
 }
 
-/**
- * Reading history, newest first: online novels (chapters load from the server when
- * opened) and books imported on this device, which open offline.
- */
+/** Reading history of books imported on this device, newest first. */
 function useHistoryRows(): HistoryRow[] {
   const { t } = useI18n();
   const app = useApp();
@@ -269,15 +254,7 @@ function useHistoryRows(): HistoryRow[] {
     return () => { gone = true; };
   }, [user, app.libraryRev]);
 
-  const online = app.history.flatMap((h): HistoryRow[] => {
-    const n = findNovel(h.id);
-    if (!n) return [];
-    return [{
-      key: `online:${h.id}`, title: n.title, cover: n, where: t('profile.online'), place: t('common.chapter', { n: h.ch }),
-      pct: h.ch / Math.max(n.chapters, 1), at: h.at, open: () => app.openChapter(h.id, h.ch)
-    }];
-  });
-  const local = books.flatMap((b): HistoryRow[] => {
+  return books.flatMap((b): HistoryRow[] => {
     if (!b.lastRead) return [];
     const open = async () => {
       try {
@@ -289,10 +266,9 @@ function useHistoryRows(): HistoryRow[] {
       }
     };
     return [{
-      key: `local:${b.novelId}`, title: b.title, cover: { title: b.title, cover: localCover(b.title) }, where: t('library.device'),
+      key: `local:${b.novelId}`, title: b.title, cover: { title: b.title, cover: localCover(b.title) },
       place: t('book.part', { n: b.lastRead.index + 1, total: b.chapterCount }),
       pct: (b.lastRead.index + 1) / Math.max(b.chapterCount, 1), at: Date.parse(b.lastRead.lastReadAt) || 0, open
     }];
-  });
-  return [...online, ...local].sort((a, b) => b.at - a.at);
+  }).sort((a, b) => b.at - a.at);
 }

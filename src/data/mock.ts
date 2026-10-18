@@ -1,5 +1,4 @@
 // Reader tools that have no backend yet: the dictionary lookup and translation styles.
-// Everything else now comes from Supabase through ./repository.
 import type { DictEntry, TranslateStyle } from './types';
 
 export const DICTIONARY: Record<string, DictEntry> = {

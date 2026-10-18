@@ -13,18 +13,15 @@ import '@fontsource/be-vietnam-pro/latin-800.css';
 import './styles/organic.css';
 import './styles/app.css';
 import App from './App';
-import { CatalogProvider } from './data/useCatalog';
 import { I18nProvider } from './i18n';
 import { AppStoreProvider } from './store/AppStore';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <I18nProvider>
-      <CatalogProvider>
-        <AppStoreProvider>
-          <App />
-        </AppStoreProvider>
-      </CatalogProvider>
+      <AppStoreProvider>
+        <App />
+      </AppStoreProvider>
     </I18nProvider>
   </StrictMode>
 );

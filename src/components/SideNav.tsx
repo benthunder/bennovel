@@ -1,4 +1,3 @@
-import { findNovel } from '../data/repository';
 import { useT } from '../i18n';
 import { useApp, type Tab } from '../store/AppStore';
 import { BookOpenIcon, HeartIcon, PlayIcon, UserIcon } from './Icons';
@@ -34,19 +33,15 @@ export function NavRail() {
   );
 }
 
-/** Desktop: sidebar with labels, the library count and a Continue reading card. */
+/** Desktop: sidebar with labels and a Continue reading card. */
 export function Sidebar() {
   const t = useT();
   const app = useApp();
   const continueLast = useContinue();
-  const online = (app.last && findNovel(app.last.id)) ?? null;
-  // Whatever was read last: an imported book or an online novel.
   const local = app.lastLocal;
   const last = local
     ? { title: local.title, cover: localCover(local.title), sub: t('book.part', { n: local.index + 1, total: local.total }), pct: (local.index + 1) / Math.max(local.total, 1) }
-    : online && app.last
-      ? { title: online.title, cover: online.cover, sub: t('common.chapter', { n: app.last.ch }), pct: app.last.ch / online.chapters }
-      : null;
+    : null;
   const item = (tab: Tab, label: string, icon: React.ReactNode, extra?: React.ReactNode) => (
     <button className="side__item" aria-current={app.tab === tab ? 'page' : undefined} onClick={() => app.switchTab(tab)}>
       {icon}{label}{extra}
@@ -59,7 +54,7 @@ export function Sidebar() {
         <span className="side__logo"><BookOpenIcon size={19} /></span>
         <span className="display" style={{ fontSize: 21 }}>BenNovel</span>
       </div>
-      {item('library', t('nav.library'), <HeartIcon />, <span style={{ marginLeft: 'auto', fontSize: 12, opacity: .7 }}>{app.favs.length}</span>)}
+      {item('library', t('nav.library'), <HeartIcon />)}
       {item('profile', t('nav.profile'), <UserIcon />)}
       {last && (
         <div className="side__continue">

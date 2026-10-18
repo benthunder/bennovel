@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { DICTIONARY, DICT_SUGGEST, TRANSLATE_STYLES } from '../data/mock';
-import { getContentLangs } from '../data/repository';
-import { CONTENT_LANGS, type ContentLang, type ContentLangInfo, type DictEntry, type GlossaryTerm, type ReplaceRule, type TranslateStyle } from '../data/types';
+import { CONTENT_LANG_INFO, CONTENT_LANGS, type ContentLang, type ContentLangInfo, type DictEntry, type GlossaryTerm, type ReplaceRule, type TranslateStyle } from '../data/types';
 import { useI18n } from '../i18n';
 import { DEFAULT_READER_PREFS, READER_THEMES, useApp, type ReaderPrefs } from '../store/AppStore';
 import { BookIcon, SparklesIcon, XIcon } from './Icons';
@@ -123,7 +122,7 @@ function ReplaceTab({ lang, rules, onChange }: { lang: ContentLang; rules: Repla
   const { t } = useI18n();
   const [find, setFind] = useState('');
   const [replace, setReplace] = useState('');
-  const langName = getContentLangs().find(l => l.code === lang)?.native ?? lang;
+  const langName = CONTENT_LANG_INFO.find(l => l.code === lang)?.native ?? lang;
 
   const add = () => {
     const f = find.trim();
@@ -249,7 +248,7 @@ export const defaultTranslation = (current: ContentLang | null): Translation =>
   ({ lang: current === 'vi' ? 'en' : 'vi', style: 'Natural', dict: true });
 
 /** Target language, style and glossary switch for an AI translation. */
-export function TranslateFields({ value, onChange, glossaryCount, langs = getContentLangs() }: {
+export function TranslateFields({ value, onChange, glossaryCount, langs = CONTENT_LANG_INFO }: {
   value: Translation;
   onChange: (t: Translation) => void;
   glossaryCount: number;
