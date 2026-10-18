@@ -88,7 +88,7 @@ export function BookDetailScreen({ novelId }: { novelId: number }) {
     <button className={`btn btn-primary${lay.wide ? ' btn-block' : ''}`} disabled={opening || total === 0}
       style={{ height: 52, fontSize: 16, gap: 10, marginTop: lay.wide ? 16 : 0 }} onClick={() => read()}>
       {opening ? <Spinner size={16} /> : <PlayIcon size={16} />}
-      {last != null ? t('bookDetail.continue', { name: sectionName(sections[last], last, total) }) : t('detail.start')}
+      {last != null ? t('bookDetail.continue', { name: sectionName(sections[last], last, total) }) : t('bookDetail.start')}
     </button>
   );
 
@@ -121,7 +121,7 @@ export function BookDetailScreen({ novelId }: { novelId: number }) {
             </div>
           </div>
           <div style={{ display: 'flex', gap: 10, marginTop: 20 }}>
-            <Stat value={total} label={t('detail.chapters')} />
+            <Stat value={total} label={t('bookDetail.chapters')} />
             <Stat value={`${pct}%`} label={t('bookDetail.progress')} />
             <Stat value={b.format?.toUpperCase() ?? '—'} label={t('bookDetail.format')} />
           </div>
@@ -136,7 +136,7 @@ export function BookDetailScreen({ novelId }: { novelId: number }) {
           {!lay.wide && <WikiButton novelId={novelId} title={b.title} />}
 
           <div>
-            <h5 className="section-title" style={{ marginBottom: 6 }}>{t('detail.synopsis')}</h5>
+            <h5 className="section-title" style={{ marginBottom: 6 }}>{t('bookDetail.synopsis')}</h5>
             {b.description.trim()
               ? <p style={{ margin: 0, fontSize: lay.synFs, lineHeight: 1.6, color: 'var(--color-neutral-800)', textWrap: 'pretty', maxWidth: 680, whiteSpace: 'pre-line' }}>{b.description}</p>
               : <button className="text-link" style={{ fontSize: 14 }} onClick={() => setEditing(true)}>{t('bookDetail.addDescription')}</button>}
@@ -144,7 +144,7 @@ export function BookDetailScreen({ novelId }: { novelId: number }) {
           </div>
 
           <div>
-            <h5 className="section-title" style={{ marginBottom: 8 }}>{t('detail.chapters')}</h5>
+            <h5 className="section-title" style={{ marginBottom: 8 }}>{t('bookDetail.chapters')}</h5>
             <div style={{ display: 'grid', gridTemplateColumns: lay.chCols, gap: '2px 12px' }}>
               {shown.map((s, i) => {
                 const done = last != null && i <= last;
@@ -155,7 +155,7 @@ export function BookDetailScreen({ novelId }: { novelId: number }) {
                     <span style={{ flex: 1, minWidth: 0 }}>
                       <span style={{ display: 'block', fontSize: 14, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.label ?? name}</span>
                       <span className="muted" style={{ fontSize: 11 }}>
-                        {done ? t(i === last ? 'detail.lastRead' : 'detail.read') : s.label ? name : s.pages ? t('book.pages', { from: s.pages[0], to: s.pages[1] }) : ''}
+                        {done ? t(i === last ? 'bookDetail.lastRead' : 'bookDetail.read') : s.label ? name : s.pages ? t('book.pages', { from: s.pages[0], to: s.pages[1] }) : ''}
                       </span>
                     </span>
                     <AiTag marks={marks?.get(i)} />
@@ -166,7 +166,7 @@ export function BookDetailScreen({ novelId }: { novelId: number }) {
             </div>
             {total > shown.length && (
               <button className="btn btn-secondary btn-block" style={{ marginTop: 6 }} onClick={() => setToc(true)}>
-                {t('detail.showMore', { n: total })}
+                {t('bookDetail.showMore', { n: total })}
               </button>
             )}
           </div>
