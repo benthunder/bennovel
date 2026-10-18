@@ -1,16 +1,15 @@
 import { expect, test, type Page } from '@playwright/test';
 
-// The offline version: no accounts, no Home or Category, and backups to a file on
-// Profile. The native app (the library file, src-tauri/src/library) is stood in for,
-// so nothing real is saved. These tests never reach Supabase.
+// No accounts, no Home or Category: the app reads books imported on the device, and
+// backs them up to a file on Profile. The native app (the library file,
+// src-tauri/src/library) is stood in for, so nothing real is saved.
 
-/** English interface, no connection to the catalog. */
+/** English interface. */
 async function boot(page: Page) {
   // Set once, so settings a restore brings back survive the restart.
   await page.addInitScript(() => {
     if (!localStorage.getItem('bennovel.uiLang')) localStorage.setItem('bennovel.uiLang', JSON.stringify('en'));
   });
-  await page.route('**/rest/v1/**', route => route.abort());
 }
 
 /**
@@ -31,7 +30,6 @@ async function nativeApp(page: Page, settings: string | null = null) {
       invoke: async (cmd: string, args: Record<string, unknown>) => {
         calls.push({ cmd, args });
         switch (cmd) {
-          case 'reading_load': return { favs: [], history: [], novels: [], rev: 0 };
           case 'library_list': return [];
           case 'take_opened_files': return [];
           case 'plugin:dialog|save':
