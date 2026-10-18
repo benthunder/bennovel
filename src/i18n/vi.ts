@@ -20,7 +20,6 @@ export const vi: Record<MessageKey, string> = {
   'common.chapters': '{n} chương',
 
   // detail
-  'detail.favourite': 'Yêu thích',
   'detail.rating': 'Đánh giá',
   'detail.chapters': 'Chương',
   'detail.reads': 'Lượt đọc',
@@ -49,7 +48,6 @@ export const vi: Record<MessageKey, string> = {
   'download.chapter': 'Tải chương {n}',
   'download.chapterSaved': 'Chương {n} đã tải',
   'download.chapterDone': 'Đã tải chương {n}.',
-  'library.downloaded': 'Đã tải về',
 
   // list
   'list.kicker.category': 'Thể loại',
@@ -72,9 +70,9 @@ export const vi: Record<MessageKey, string> = {
 
   // library
   'library.kicker': 'Thư viện của bạn',
-  'library.title': 'Yêu thích',
-  'library.count': '{n} truyện đã lưu',
-  'library.countOne': '1 truyện đã lưu',
+  'library.title': 'Trên máy của bạn',
+  'library.count': '{n} truyện',
+  'library.countOne': '1 truyện',
   'library.device': 'Sách trên máy',
   'library.import': 'Nhập sách',
   'library.openOnce': 'Đọc không lưu',
@@ -99,10 +97,7 @@ export const vi: Record<MessageKey, string> = {
 
   // profile
   'profile.history': 'Lịch sử',
-  'profile.favourites': 'Yêu thích',
-  'profile.noFavs': 'Chưa có truyện yêu thích.',
   'profile.noHistory': 'Chưa đọc truyện nào.',
-  'profile.online': 'Online',
   'profile.resume': 'Đọc tiếp',
   'profile.defaultLang': 'Ngôn ngữ đọc mặc định',
   'time.justNow': 'Vừa xong',
@@ -212,7 +207,6 @@ export const vi: Record<MessageKey, string> = {
   'load.failed': 'Không kết nối được thư viện. Kiểm tra mạng rồi thử lại.',
   'load.offline': 'Bạn đang ngoại tuyến',
   'load.offlineBody': 'Truyện online sẽ hiện khi có kết nối mạng. Sách trên máy vẫn đọc được.',
-  'load.needsConnection': 'Cần có kết nối mạng.',
   'load.retry': 'Thử lại',
   'reader.loading': 'Đang tải chương…',
   'reader.missing': 'Chương này chưa có bản ở ngôn ngữ này.',

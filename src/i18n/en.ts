@@ -18,7 +18,6 @@ export const en = {
   'common.chapters': '{n} chapters',
 
   // detail
-  'detail.favourite': 'Favourite',
   'detail.rating': 'Rating',
   'detail.chapters': 'Chapters',
   'detail.reads': 'Reads',
@@ -47,7 +46,6 @@ export const en = {
   'download.chapter': 'Download chapter {n}',
   'download.chapterSaved': 'Chapter {n} is downloaded',
   'download.chapterDone': 'Downloaded chapter {n}.',
-  'library.downloaded': 'Downloaded',
 
   // list
   'list.kicker.category': 'Category',
@@ -70,9 +68,9 @@ export const en = {
 
   // library
   'library.kicker': 'Your library',
-  'library.title': 'Favourites',
-  'library.count': '{n} saved novels',
-  'library.countOne': '1 saved novel',
+  'library.title': 'On your device',
+  'library.count': '{n} books',
+  'library.countOne': '1 book',
   'library.device': 'On this device',
   'library.import': 'Import a book',
   'library.openOnce': 'Read without saving',
@@ -97,10 +95,7 @@ export const en = {
 
   // profile
   'profile.history': 'History',
-  'profile.favourites': 'Favourites',
-  'profile.noFavs': 'No favourites yet.',
   'profile.noHistory': 'Nothing read yet.',
-  'profile.online': 'Online',
   'profile.resume': 'Resume',
   'profile.defaultLang': 'Default reading language',
   'time.justNow': 'Just now',
@@ -210,7 +205,6 @@ export const en = {
   'load.failed': 'Could not reach the library. Check your connection and try again.',
   'load.offline': 'You are offline',
   'load.offlineBody': 'Online novels show up once you are connected. Books on this device still open.',
-  'load.needsConnection': 'This needs an internet connection.',
   'load.retry': 'Try again',
   'reader.loading': 'Loading chapter…',
   'reader.missing': 'This chapter is not available in this language yet.',
