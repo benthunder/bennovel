@@ -8,6 +8,39 @@
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      // Errors before React draws anything (a script that fails to load or run) would
+      // otherwise leave an empty page: show them, so they can be read on the device.
+      (function () {
+        var root = document.getElementById('root');
+        var shown = false;
+        function show(msg) {
+          if (shown || !root || root.childNodes.length) return;
+          shown = true;
+          var vi = /^vi/i.test(navigator.language) || /"vi"/.test(localStorage.getItem('bennovel.uiLang') || '');
+          var box = document.createElement('div');
+          box.setAttribute('role', 'alert');
+          box.style.cssText = 'padding:48px 20px;font:14px/1.5 system-ui,sans-serif;color:#3b2f22';
+          var h = document.createElement('h2');
+          h.textContent = vi ? 'BenNovel không khởi động được' : 'BenNovel could not start';
+          var pre = document.createElement('pre');
+          pre.style.cssText = 'white-space:pre-wrap;word-break:break-word;font-size:12px;background:rgba(0,0,0,.06);padding:12px;border-radius:12px';
+          pre.textContent = msg;
+          var btn = document.createElement('button');
+          btn.textContent = vi ? 'Thử lại' : 'Try again';
+          btn.onclick = function () { location.reload(); };
+          box.append(h, pre, btn);
+          root.append(box);
+        }
+        function text(e) { return e && (e.stack || e.message) || String(e); }
+        window.addEventListener('error', function (e) {
+          // A script or stylesheet that failed to load has no message, only its URL.
+          show(e.error ? text(e.error) : e.message || 'Failed to load ' + ((e.target && (e.target.src || e.target.href)) || 'a file'));
+        }, true);
+        window.addEventListener('unhandledrejection', function (e) { show(text(e.reason)); });
+        setTimeout(function () { show('Timed out: the app did not draw anything in 15 s.\n' + navigator.userAgent); }, 15000);
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

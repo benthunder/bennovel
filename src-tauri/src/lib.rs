@@ -41,15 +41,31 @@ pub fn run() {
             // Android: the WebView starts without view focus, so the first tap on a text
             // field only focuses the WebView itself and the keyboard stays hidden. Give it
             // focus up front so that first tap opens the keyboard.
+            // Also, after an update the WebView's cache can still hold the previous version's
+            // files, and the app then opens on an empty page until the cache is cleared.
+            // Clear it once per new version (books and settings are not in that cache).
             #[cfg(target_os = "android")]
             if let Some(window) = _app.get_webview_window("main") {
-                let _ = window.with_webview(|webview| {
+                let version = _app.package_info().version.to_string();
+                let marker = _app.path().app_data_dir().ok().map(|d| d.join("webview-version"));
+                let updated = marker
+                    .as_ref()
+                    .map_or(false, |m| std::fs::read_to_string(m).ok().as_deref() != Some(version.as_str()));
+                let _ = window.with_webview(move |webview| {
                     use jni::objects::JValue;
-                    webview.jni_handle().exec(|env, _, webview| {
+                    webview.jni_handle().exec(move |env, _, webview| {
+                        if updated {
+                            let _ = env.call_method(webview, "clearCache", "(Z)V", &[JValue::Bool(1)]);
+                            let _ = env.call_method(webview, "reload", "()V", &[]);
+                        }
                         let _ = env.call_method(webview, "setFocusableInTouchMode", "(Z)V", &[JValue::Bool(1)]);
                         let _ = env.call_method(webview, "requestFocus", "()Z", &[]);
                     });
                 });
+                if let (true, Some(m)) = (updated, marker) {
+                    let _ = m.parent().map(std::fs::create_dir_all);
+                    let _ = std::fs::write(m, version);
+                }
             }
             // Linux (and Windows dev builds) register the bennovel:// sign-in links at run time.
             #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
