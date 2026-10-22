@@ -75,6 +75,9 @@ pub struct Hooks {
     pub stage: Option<OnStage>,
     /// Learn the wiki on another thread after the save instead of before returning.
     pub learn_in_background: bool,
+    /// Leave the wiki facts the requests brought (kept by the save node) to the wiki
+    /// queue (queue.rs); learn here only when they brought none.
+    pub learn_found_later: bool,
 }
 
 /// What to do with one chapter.
@@ -373,12 +376,17 @@ fn graph(
     }
     {
         let (llm, failed, background) = (llm.clone(), failed.clone(), hooks.learn_in_background);
+        let later = hooks.learn_found_later;
         g.add_node("learn", move |f: Flow, _: &Config| {
             let (llm, failed) = (llm.clone(), failed.clone());
-            if !background {
+            let queued = later && super::wiki::has_found(&f.found);
+            if !background && !queued {
                 enter(Stage::Learn);
             }
             async move {
+                if queued {
+                    return Ok(f);
+                }
                 if background {
                     let later = f.clone();
                     std::thread::spawn(move || {
@@ -1131,23 +1139,47 @@ pub(crate) mod tests {
         assert_eq!(done, 1);
     }
 
+    /// Translates and adds the facts after the mark when the prompt asks for them.
+    struct Both(Fake);
+    impl Chat for Both {
+        fn chat(&self, system: &str, user: &str) -> Result<String, AiError> {
+            let reply = self.0.chat(system, user)?;
+            Ok(if system.contains(WIKI_MARK) {
+                format!("{reply}\n{WIKI_MARK}\n{{\"entries\": [{{\"name\": \"Lina\", \"kind\": \"character\", \"translated\": \"Lina\"}}], \"relations\": []}}")
+            } else {
+                reply
+            })
+        }
+        fn model(&self) -> &str {
+            "both-1"
+        }
+    }
+
+    #[test]
+    fn the_wiki_queue_learns_what_the_translation_queue_left() {
+        let (conn, novel) = book("later");
+        super::super::wiki::set_auto(&conn, novel, true).unwrap();
+        let llm = Arc::new(Both(Fake::new("en")));
+        let hooks = Hooks {
+            learn_found_later: true,
+            ..Default::default()
+        };
+        run_with(&conn, llm.clone(), req(11, "vi"), hooks).unwrap();
+        // The translation went on without learning.
+        assert!(super::super::wiki::entries(&conn, novel).unwrap().is_empty());
+        let before = llm.0.count();
+        assert_eq!(
+            super::super::wiki::learn_pending(&conn, llm.as_ref()).unwrap(),
+            vec![(novel, 1)]
+        );
+        assert_eq!(llm.0.count(), before);
+        assert_eq!(super::super::wiki::entries(&conn, novel).unwrap()[0].name, "Lina");
+        // Nothing is left for the next turn.
+        assert!(super::super::wiki::learn_pending(&conn, llm.as_ref()).unwrap().is_empty());
+    }
+
     #[test]
     fn the_wiki_learns_from_facts_the_translation_requests_bring() {
-        /// Translates and adds the facts after the mark when the prompt asks for them.
-        struct Both(Fake);
-        impl Chat for Both {
-            fn chat(&self, system: &str, user: &str) -> Result<String, AiError> {
-                let reply = self.0.chat(system, user)?;
-                Ok(if system.contains(WIKI_MARK) {
-                    format!("{reply}\n{WIKI_MARK}\n{{\"entries\": [{{\"name\": \"Lina\", \"kind\": \"character\", \"translated\": \"Lina\"}}], \"relations\": []}}")
-                } else {
-                    reply
-                })
-            }
-            fn model(&self) -> &str {
-                "both-1"
-            }
-        }
         let (conn, novel) = book("found");
         let llm = Arc::new(Both(Fake::new("en")));
         let names = || -> Vec<String> {

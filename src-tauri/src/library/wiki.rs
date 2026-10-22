@@ -1395,6 +1395,40 @@ pub fn learn(
     Ok(changes)
 }
 
+/// Whether any of the facts the translation requests brought reads as JSON.
+pub fn has_found(found: &[String]) -> bool {
+    found
+        .iter()
+        .any(|f| parse_object::<AiAnswer>(f).is_some())
+}
+
+/// The wiki queue's turn (queue.rs): every book whose wiki learns gets the facts kept
+/// for its chapters not read in yet. Returns (book, changes) for each book done; a
+/// book's failure is kept for its wiki screen.
+pub fn learn_pending(conn: &Connection, llm: &dyn Chat) -> rusqlite::Result<Vec<(i64, usize)>> {
+    let mut stmt = conn.prepare(
+        "select distinct c.novel_id from chapter_wiki_facts f join chapters c on c.id = f.chapter_id
+         where not exists (select 1 from wiki_chapters w where w.chapter_id = f.chapter_id)",
+    )?;
+    let books: Vec<i64> = stmt
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut done = Vec::new();
+    for novel_id in books {
+        if !auto(conn, novel_id)? {
+            continue;
+        }
+        match learn_kept(conn, Some(llm), novel_id) {
+            Ok(n) => {
+                set_error(conn, novel_id, None)?;
+                done.push((novel_id, n));
+            }
+            Err(e) => set_error(conn, novel_id, Some(&e.to_string()))?,
+        }
+    }
+    Ok(done)
+}
+
 /// Keeps what the translation requests found in a chapter, for when the wiki learns.
 pub fn keep_found(
     conn: &Connection,

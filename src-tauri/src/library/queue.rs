@@ -9,6 +9,10 @@
 //! starts its first chapter and when its last one is through.
 //! `ai-live` as the chapter being worked on moves through the graph's nodes (null once
 //! the worker stops), so the book's page can show the pipeline.
+//!
+//! The wiki has a queue of its own: the translation keeps each chapter's wiki facts and
+//! goes on to the next chapter, while a second task reads the kept facts into the wiki
+//! and embeds them (wiki.rs `learn_pending`), then sends `wiki-updated`.
 
 use super::db;
 use super::llm::{self, AiError};
@@ -260,6 +264,16 @@ pub struct Queue {
     ui_lang: Mutex<HashMap<PathBuf, String>>,
     /// The chapter being worked on, per library file.
     live: Mutex<HashMap<PathBuf, Live>>,
+    /// Wakes the wiki queue.
+    wiki_tx: mpsc::UnboundedSender<Wake>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WikiEvent {
+    user: String,
+    novel_id: i64,
+    changes: usize,
 }
 
 impl Queue {
@@ -267,13 +281,27 @@ impl Queue {
     /// woken, one chapter after another.
     pub fn start<R: Runtime>(app: AppHandle<R>) -> Self {
         let (tx, mut rx) = mpsc::unbounded_channel::<Wake>();
+        let (wiki_tx, mut wiki_rx) = mpsc::unbounded_channel::<Wake>();
+        let wiki_app = app.clone();
         tauri::async_runtime::spawn(async move {
             while let Some(wake) = rx.recv().await {
                 work(&app, &wake).await;
             }
         });
+        tauri::async_runtime::spawn(async move {
+            while let Some(wake) = wiki_rx.recv().await {
+                // Wakes for the same file that came meanwhile are one turn.
+                while let Ok(w) = wiki_rx.try_recv() {
+                    if w.db != wake.db {
+                        learn_wiki(&wiki_app, &w).await;
+                    }
+                }
+                learn_wiki(&wiki_app, &wake).await;
+            }
+        });
         Self {
             tx,
+            wiki_tx,
             ui_lang: Mutex::new(HashMap::new()),
             live: Mutex::new(HashMap::new()),
         }
@@ -284,12 +312,18 @@ impl Queue {
         self.live.lock().unwrap().get(db).cloned()
     }
 
-    /// Wakes the worker for this library file.
+    /// Wakes the worker for this library file, and the wiki queue for what is left.
     pub fn kick(&self, db: PathBuf, user: String, ui_lang: Option<String>) {
         if let Some(l) = ui_lang {
             self.ui_lang.lock().unwrap().insert(db.clone(), l);
         }
+        self.kick_wiki(db.clone(), user.clone());
         let _ = self.tx.send(Wake { db, user });
+    }
+
+    /// Wakes the wiki queue for this library file.
+    pub fn kick_wiki(&self, db: PathBuf, user: String) {
+        let _ = self.wiki_tx.send(Wake { db, user });
     }
 
     fn ui_lang(&self, db: &PathBuf) -> String {
@@ -338,6 +372,12 @@ async fn work<R: Runtime>(app: &AppHandle<R>, wake: &Wake) {
         match step {
             Ok(Step::Idle) => return,
             Ok(Step::Did(p, finished)) => {
+                {
+                    use tauri::Manager;
+                    if let Some(q) = app.try_state::<Queue>() {
+                        q.kick_wiki(wake.db.clone(), wake.user.clone());
+                    }
+                }
                 let _ = app.emit(
                     "ai-progress",
                     ProgressEvent {
@@ -373,6 +413,38 @@ async fn work<R: Runtime>(app: &AppHandle<R>, wake: &Wake) {
                 return;
             }
         }
+    }
+}
+
+/// The wiki queue's turn for a library file: the kept facts into the wiki.
+async fn learn_wiki<R: Runtime>(app: &AppHandle<R>, wake: &Wake) {
+    let db_file = wake.db.clone();
+    let done = tauri::async_runtime::spawn_blocking(move || {
+        let conn = db::open(&db_file)?;
+        let Some(config) = llm::load(&conn)? else {
+            return Ok(Vec::new());
+        };
+        Ok::<_, AiError>(super::wiki::learn_pending(
+            &conn,
+            &llm::OpenAi::new(config),
+        )?)
+    })
+    .await
+    .unwrap_or_else(|e| Err(AiError::Other(e.to_string())));
+    match done {
+        Ok(done) => {
+            for (novel_id, changes) in done.into_iter().filter(|d| d.1 > 0) {
+                let _ = app.emit(
+                    "wiki-updated",
+                    WikiEvent {
+                        user: wake.user.clone(),
+                        novel_id,
+                        changes,
+                    },
+                );
+            }
+        }
+        Err(e) => eprintln!("wiki queue: {e}"),
     }
 }
 
@@ -419,6 +491,7 @@ fn step(db_file: &std::path::Path, report: Report, started: Started) -> Result<S
             })
         }),
         learn_in_background: false,
+        learn_found_later: true,
     };
     let Some(config) = llm::load(&conn)? else {
         requeue(&conn, job.id)?;
