@@ -52,7 +52,7 @@ pub fn extract_mobi<R: Read + Seek>(
     let compression = be16(&r0, 0).unwrap_or(1);
     let text_records = be16(&r0, 8).unwrap_or(0) as usize;
     if be16(&r0, 12).unwrap_or(0) != 0 {
-        return Err(bad("this book is DRM-protected"));
+        return Err(BookError::Drm);
     }
     if compression == 17480 {
         return Err(bad("HUFF/CDIC compressed MOBI is not supported yet"));

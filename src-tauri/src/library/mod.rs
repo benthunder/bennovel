@@ -151,15 +151,11 @@ pub fn import(
         .ok()
         .and_then(|v| v.as_str().map(String::from));
 
+    let author = source.author().unwrap_or_default();
+    let description = source.description().unwrap_or_default();
+
     let tx = conn.transaction()?;
-    tx.execute(
-        "insert or ignore into authors (slug, name) values ('unknown', 'Unknown')",
-        [],
-    )?;
-    let author_id: i64 =
-        tx.query_row("select id from authors where slug = 'unknown'", [], |r| {
-            r.get(0)
-        })?;
+    let author_id = author_id(&tx, &author)?;
     tx.execute(
         "insert into novels (slug, author_id, original_lang, chapter_count, source_format, source_name, book_key)
          values (?1, ?2, ?3, ?4, ?5, ?6, lower(hex(randomblob(16))))",
@@ -167,8 +163,8 @@ pub fn import(
     )?;
     let novel_id = tx.last_insert_rowid();
     tx.execute(
-        "insert into novel_translations (novel_id, lang, title) values (?1, ?2, ?3)",
-        params![novel_id, lang, title],
+        "insert into novel_translations (novel_id, lang, title, description) values (?1, ?2, ?3, ?4)",
+        params![novel_id, lang, title, description],
     )?;
     {
         let mut chapter = tx.prepare(
@@ -330,6 +326,37 @@ pub fn save_progress(
     Ok(())
 }
 
+/// The id of author `name` (the shared "Unknown" row when empty), added if new.
+fn author_id(conn: &Connection, name: &str) -> rusqlite::Result<i64> {
+    let name = name.trim();
+    if name.is_empty() {
+        conn.execute(
+            "insert or ignore into authors (slug, name) values ('unknown', 'Unknown')",
+            [],
+        )?;
+        return conn.query_row("select id from authors where slug = 'unknown'", [], |r| {
+            r.get(0)
+        });
+    }
+    let found: Option<i64> = conn
+        .query_row(
+            "select id from authors where name = ?1 and slug <> 'unknown' order by id limit 1",
+            [name],
+            |r| r.get(0),
+        )
+        .optional()?;
+    match found {
+        Some(id) => Ok(id),
+        None => {
+            conn.execute(
+                "insert into authors (slug, name) values (?1, ?2)",
+                params![slug(name), name],
+            )?;
+            Ok(conn.last_insert_rowid())
+        }
+    }
+}
+
 /// Changes a book's title, author and description (in its original language).
 /// An empty author makes it "Unknown"; authors left with no books are dropped.
 pub fn update_details(
@@ -342,33 +369,7 @@ pub fn update_details(
     let title = title.trim();
     let author = author.trim();
     let tx = conn.transaction()?;
-    let author_id: i64 = if author.is_empty() {
-        tx.execute(
-            "insert or ignore into authors (slug, name) values ('unknown', 'Unknown')",
-            [],
-        )?;
-        tx.query_row("select id from authors where slug = 'unknown'", [], |r| {
-            r.get(0)
-        })?
-    } else {
-        let found: Option<i64> = tx
-            .query_row(
-                "select id from authors where name = ?1 and slug <> 'unknown' order by id limit 1",
-                [author],
-                |r| r.get(0),
-            )
-            .optional()?;
-        match found {
-            Some(id) => id,
-            None => {
-                tx.execute(
-                    "insert into authors (slug, name) values (?1, ?2)",
-                    params![slug(author), author],
-                )?;
-                tx.last_insert_rowid()
-            }
-        }
-    };
+    let author_id = author_id(&tx, author)?;
     tx.execute(
         "update novels set author_id = ?2, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
          where id = ?1",
@@ -727,6 +728,47 @@ mod tests {
             source.load(0).unwrap().paragraphs
         );
         std::fs::remove_file(file).unwrap();
+    }
+
+    struct WithDetails(Fake);
+
+    impl BookSource for WithDetails {
+        fn title(&self) -> Option<String> {
+            Some("Sách có tác giả".into())
+        }
+        fn author(&self) -> Option<String> {
+            Some("Nguyễn Du".into())
+        }
+        fn description(&self) -> Option<String> {
+            Some("Truyện thơ.".into())
+        }
+        fn sections(&self) -> Vec<SectionMeta> {
+            self.0.sections()
+        }
+        fn load(&mut self, index: usize) -> Result<Section, BookError> {
+            self.0.load(index)
+        }
+    }
+
+    #[test]
+    fn imports_author_and_description() {
+        let path = temp_db("details");
+        let mut conn = db::open(&path).unwrap();
+        let mut book = WithDetails(Fake(vec![(None, vec!["Trăm năm trong cõi người ta"])]));
+        let a = import(&mut conn, BookFormat::Epub, &mut book, "a.epub", |_, _| {}).unwrap();
+        let b = import(&mut conn, BookFormat::Epub, &mut book, "b.epub", |_, _| {}).unwrap();
+        let got = get(&conn, a).unwrap().unwrap();
+        assert_eq!(got.author.as_deref(), Some("Nguyễn Du"));
+        assert_eq!(got.description, "Truyện thơ.");
+        // The second book shares the author row.
+        let authors: i64 = conn
+            .query_row(
+                "select count(distinct author_id) from novels where id in (?1, ?2)",
+                [a, b],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(authors, 1);
     }
 
     #[test]

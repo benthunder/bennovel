@@ -46,6 +46,8 @@ pub enum BookError {
     Parse(String),
     #[error("PDF support is unavailable: {0}")]
     PdfUnavailable(String),
+    #[error("this book is DRM-protected")]
+    Drm,
     #[error("section {0} does not exist")]
     NoSection(usize),
     #[error("book {0} is not open")]
@@ -100,6 +102,16 @@ pub struct Section {
 /// Reads sections of one book straight from its file.
 pub trait BookSource: Send {
     fn title(&self) -> Option<String>;
+
+    /// Author(s) named by the book, comma-separated.
+    fn author(&self) -> Option<String> {
+        None
+    }
+
+    /// The book's blurb as plain text (paragraphs separated by blank lines).
+    fn description(&self) -> Option<String> {
+        None
+    }
     fn sections(&self) -> Vec<SectionMeta>;
     fn load(&mut self, index: usize) -> Result<Section, BookError>;
 
@@ -381,7 +393,18 @@ pub fn open_source(
     };
     let source: Box<dyn BookSource> = match format {
         BookFormat::Pdf => Box::new(pdf::PdfBook::open(file, &ctx.pdfium_dirs)?),
-        BookFormat::Epub => Box::new(epub::EpubBook::open(BufReader::new(file))?),
+        BookFormat::Epub => {
+            let copy = file.try_clone()?;
+            match epub::EpubBook::open(BufReader::new(file)) {
+                Ok(book) => Box::new(book),
+                // A package file that is not well-formed XML: retry with it repaired.
+                Err(e @ BookError::Parse(_)) => match epub::open_repaired(BufReader::new(copy)) {
+                    Ok(book) => Box::new(book),
+                    Err(_) => return Err(e),
+                },
+                Err(e) => return Err(e),
+            }
+        }
         BookFormat::Txt => Box::new(txt::TxtBook::open(file, title)?),
         BookFormat::Html => Box::new(html::extract_html(file, cache, title, base)?),
         BookFormat::Mht => Box::new(html::extract_mht(file, cache, title)?),
