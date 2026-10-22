@@ -32,6 +32,8 @@ pub enum Block {
     Heading(String),
     /// `src` of an `<img>` (or `href` of an SVG `<image>`), as written in the document.
     Image(String),
+    /// An element whose `id` (or `name`) is one of [`HtmlText::anchors`] starts here.
+    Anchor(String),
 }
 
 /// Paragraph texts of an (X)HTML document, ignoring markup, scripts and styles.
@@ -47,6 +49,7 @@ pub fn html_to_paragraphs(html: &str, image_key: impl Fn(&str) -> Option<String>
                 out.push(super::image::paragraph(&key));
             }
         }
+        Block::Anchor(_) => {}
     };
     parser.feed(html, &mut push);
     parser.finish(&mut push);
@@ -57,6 +60,8 @@ pub fn html_to_paragraphs(html: &str, image_key: impl Fn(&str) -> Option<String>
 /// inside a tag) and it emits paragraphs as soon as they end.
 #[derive(Default)]
 pub struct HtmlText {
+    /// Ids to report as [`Block::Anchor`] where their element starts.
+    pub anchors: std::collections::HashSet<String>,
     pending: String,
     cur: String,
     skip_until: Option<String>,
@@ -123,6 +128,13 @@ impl HtmlText {
         // Namespaced tags such as <svg:svg> count by their local name.
         let name = name.rsplit(':').next().unwrap_or("").to_string();
 
+        if !closing && !self.anchors.is_empty() {
+            let id = super::image::attr(tag, "id").or_else(|| super::image::attr(tag, "name"));
+            if let Some(id) = id.filter(|id| self.anchors.contains(id)) {
+                self.flush(out);
+                out(Block::Anchor(id));
+            }
+        }
         if !closing && matches!(name.as_str(), "img" | "image") {
             let src = if name == "img" {
                 // MOBI pictures are <img recindex="00001"> (record number), no src.
@@ -304,6 +316,7 @@ mod tests {
                 .map(|b| match b {
                     Block::Text(t) | Block::Heading(t) => t,
                     Block::Image(src) => super::super::image::paragraph(&src),
+                    Block::Anchor(id) => id,
                 })
                 .collect();
             assert_eq!(texts, whole, "split {size}");

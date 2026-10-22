@@ -12,7 +12,7 @@ import {
   type AiChoice, type AiLang, type AiView, type AiMark, type AiProgress, type AiVersion
 } from '../lib/ai';
 import { save as store } from '../lib/storage';
-import { deleteLibraryBook, getLibraryDetail, localCover, openLibraryBook, updateLibraryBook } from '../lib/localBook';
+import { deleteLibraryBook, getLibraryDetail, libraryCoverUrl, localCover, openLibraryBook, updateLibraryBook } from '../lib/localBook';
 import { useAsync } from '../lib/useAsync';
 import { getWiki } from '../lib/wiki';
 import { useLayout } from '../lib/useLayout';
@@ -109,8 +109,8 @@ export function BookDetailScreen({ novelId }: { novelId: number }) {
           </div>
           <div style={{ display: 'flex', flexDirection: lay.wide ? 'column' : 'row', gap: 18, alignItems: lay.wide ? 'stretch' : 'flex-end' }}>
             {lay.wide
-              ? <NovelCover novel={{ title: b.title, cover: localCover(b.title) }} w="100%" h="auto" fs={lay.dCoverFs} style={{ maxWidth: lay.dCoverMax, aspectRatio: 0.7, boxShadow: 'var(--shadow-md)' }} />
-              : <NovelCover novel={{ title: b.title, cover: localCover(b.title) }} w={124} h={178} fs={18} style={{ boxShadow: 'var(--shadow-md)' }} />}
+              ? <NovelCover novel={{ title: b.title, cover: localCover(b.title), image: libraryCoverUrl(user, b) }} w="100%" h="auto" fs={lay.dCoverFs} style={{ maxWidth: lay.dCoverMax, aspectRatio: 0.7, boxShadow: 'var(--shadow-md)' }} />
+              : <NovelCover novel={{ title: b.title, cover: localCover(b.title), image: libraryCoverUrl(user, b) }} w={124} h={178} fs={18} style={{ boxShadow: 'var(--shadow-md)' }} />}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 }}>
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                 <span className="tag tag-accent-2" style={{ fontSize: 11 }}>{t('bookDetail.onDevice')}</span>

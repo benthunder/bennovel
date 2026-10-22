@@ -11,6 +11,7 @@ pub mod commands;
 mod djvu;
 mod epub;
 mod extract;
+mod headings;
 mod html;
 pub mod image;
 mod markdown;
@@ -99,6 +100,21 @@ pub struct Section {
 /// Reads sections of one book straight from its file.
 pub trait BookSource: Send {
     fn title(&self) -> Option<String>;
+
+    /// Author(s) named by the book, comma-separated.
+    fn author(&self) -> Option<String> {
+        None
+    }
+
+    /// The book's blurb as plain text (paragraphs separated by blank lines).
+    fn description(&self) -> Option<String> {
+        None
+    }
+
+    /// The cover picture, when the book has one.
+    fn cover(&mut self) -> Option<image::Image> {
+        None
+    }
     fn sections(&self) -> Vec<SectionMeta>;
     fn load(&mut self, index: usize) -> Result<Section, BookError>;
 
@@ -380,7 +396,7 @@ pub fn open_source(
     };
     let source: Box<dyn BookSource> = match format {
         BookFormat::Pdf => Box::new(pdf::PdfBook::open(file, &ctx.pdfium_dirs)?),
-        BookFormat::Epub => Box::new(epub::EpubBook::open(BufReader::new(file))?),
+        BookFormat::Epub => epub::open_file(file, cache)?,
         BookFormat::Txt => Box::new(txt::TxtBook::open(file, title)?),
         BookFormat::Html => Box::new(html::extract_html(file, cache, title, base)?),
         BookFormat::Mht => Box::new(html::extract_mht(file, cache, title)?),

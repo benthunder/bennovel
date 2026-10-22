@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { GlobeIcon, LanguagesIcon, SparklesIcon } from '../components/Icons';
 import { Modal } from '../components/Modal';
-import { NovelCover } from '../components/NovelCover';
+import { NovelCover, type Cover } from '../components/NovelCover';
 import { UiLangDialog, uiLangLabel } from '../components/UiLangDialog';
 import { Spinner } from '../components/ui';
 import { CONTENT_LANG_INFO } from '../data/types';
@@ -12,7 +12,7 @@ import { createBackup, restoreBackup } from '../lib/backup';
 import { save } from '../lib/storage';
 import { useApp } from '../store/AppStore';
 import { useLayout } from '../lib/useLayout';
-import { canOpenLocalBooks, listLibrary, localCover, openLibraryBook, type LibraryBook } from '../lib/localBook';
+import { canOpenLocalBooks, libraryCoverUrl, listLibrary, localCover, openLibraryBook, type LibraryBook } from '../lib/localBook';
 
 export function ProfileScreen() {
   const { t, uiLang } = useI18n();
@@ -233,7 +233,7 @@ function LlmDialog({ saved, onClose, onSaved }: { saved: LlmSettings | null; onC
 interface HistoryRow {
   key: string;
   title: string;
-  cover: { title: string; cover: { bg: string; fg: string; deco: string } };
+  cover: Cover;
   /** Chapter or part reached. */
   place: string;
   pct: number;
@@ -266,7 +266,7 @@ function useHistoryRows(): HistoryRow[] {
       }
     };
     return [{
-      key: `local:${b.novelId}`, title: b.title, cover: { title: b.title, cover: localCover(b.title) },
+      key: `local:${b.novelId}`, title: b.title, cover: { title: b.title, cover: localCover(b.title), image: libraryCoverUrl(user, b) },
       place: t('book.part', { n: b.lastRead.index + 1, total: b.chapterCount }),
       pct: (b.lastRead.index + 1) / Math.max(b.chapterCount, 1), at: Date.parse(b.lastRead.lastReadAt) || 0, open
     }];
