@@ -46,12 +46,7 @@ pub fn run() {
                 let _ = window.with_webview(|webview| {
                     use jni::objects::JValue;
                     webview.jni_handle().exec(|env, _, webview| {
-                        let _ = env.call_method(
-                            webview,
-                            "setFocusableInTouchMode",
-                            "(Z)V",
-                            &[JValue::Bool(1)],
-                        );
+                        let _ = env.call_method(webview, "setFocusableInTouchMode", "(Z)V", &[JValue::Bool(1)]);
                         let _ = env.call_method(webview, "requestFocus", "()Z", &[]);
                     });
                 });
