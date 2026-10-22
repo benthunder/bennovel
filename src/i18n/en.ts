@@ -249,6 +249,7 @@ export const en = {
   'wiki.kind.term': 'Terms',
   'wiki.kind.other': 'Other',
   'wiki.kind.level': 'Levels',
+  'wiki.kind.skill': 'Skills',
   'wiki.empty': 'No entries yet. The wiki fills up as you translate with AI, or tap Add.',
   'wiki.noMatch': 'Nothing found.',
   'wiki.relCount': '{n} relations',
@@ -317,6 +318,8 @@ export const en = {
   'wiki.rel.owns.rev': 'owned by',
   'wiki.rel.has_level': 'at level',
   'wiki.rel.has_level.rev': 'reached by',
+  'wiki.rel.has_skill': 'knows',
+  'wiki.rel.has_skill.rev': 'known by',
 };
 
 export type MessageKey = keyof typeof en;

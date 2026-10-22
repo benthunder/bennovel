@@ -30,6 +30,7 @@ pub const KINDS: &[&str] = &[
     "faction",
     "item",
     "level",
+    "skill",
     "term",
     "other",
 ];
@@ -51,6 +52,7 @@ pub const REL_TYPES: &[&str] = &[
     "located_in",
     "owns",
     "has_level",
+    "has_skill",
 ];
 /// The key of the descriptions written in the book's own language.
 pub const RAW: &str = "raw";
@@ -874,7 +876,7 @@ fn tools(lang: &str) -> Value {
                     "properties": {
                         "from": { "type": "string" },
                         "to": { "type": "string" },
-                        "relation": { "type": "string", "description": format!("What `from` is to `to`: one of {} (located_in for a place or faction inside a bigger place, has_level for a character's current rank or realm). Only when none fits, a few words in {lang}.", REL_TYPES.join(", ")) },
+                        "relation": { "type": "string", "description": format!("What `from` is to `to`: one of {} (located_in for a place or faction inside a bigger place, has_level for a character's current rank or realm, has_skill for a technique or ability a character knows). Only when none fits, a few words in {lang}.", REL_TYPES.join(", ")) },
                         "note": { "type": "string" }
                     },
                     "required": ["from", "to", "relation"]
@@ -886,7 +888,7 @@ fn tools(lang: &str) -> Value {
 
 fn learn_rules(lang: &str) -> String {
     format!(
-        "You keep the wiki of a novel being translated into {}. From the chapter below, record the characters, places, factions or sects, important items, levels (ranks, cultivation realms, each with its rank number) and special terms (techniques…) that matter to the story, and the relationships: between characters, with factions, a character's current level, and which place lies in which (the map). Skip passers-by and common words. Use the name exactly as written in the original text, and the name the translation uses. Only add what the chapter shows; do not guess.",
+        "You keep the wiki of a novel being translated into {}. From the chapter below, record the characters, places, factions or sects, important items, levels (ranks, cultivation realms, each with its rank number), skills (techniques, martial arts, spells, abilities) and other special terms that matter to the story, and the relationships: between characters, with factions, a character's current level, the skills a character has, and which place lies in which (the map). Skip passers-by and common words. Use the name exactly as written in the original text, and the name the translation uses. Only add what the chapter shows; do not guess.",
         super::translate::lang_name(lang)
     )
 }
@@ -1926,6 +1928,11 @@ mod tests {
         let again = add_relation(&conn, novel, &b.uid, &a.uid, "godfather", "en", "").unwrap();
         assert_eq!(again, rels[2].uid);
         assert_eq!(relations(&conn, novel).unwrap().len(), 3);
+        // A skill is its own kind, linked to who knows it.
+        let fire = entry("焚决", "skill");
+        assert_eq!((fire.kind.as_str(), fire.rank), ("skill", None));
+        add_relation(&conn, novel, &b.uid, &fire.uid, "Has skill", "vi", "").unwrap();
+        assert_eq!(relations(&conn, novel).unwrap()[3].kind, "has_skill");
     }
 
     #[test]

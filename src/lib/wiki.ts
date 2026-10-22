@@ -7,7 +7,7 @@ import { AiFailure } from './ai';
  * translates; the user can edit it. Search goes by name, aliases and notes.
  */
 
-export const WIKI_KINDS = ['character', 'place', 'faction', 'item', 'level', 'term', 'other'] as const;
+export const WIKI_KINDS = ['character', 'place', 'faction', 'item', 'level', 'skill', 'term', 'other'] as const;
 export type WikiKind = (typeof WIKI_KINDS)[number];
 
 /**
@@ -17,7 +17,7 @@ export type WikiKind = (typeof WIKI_KINDS)[number];
  */
 export const REL_TYPES = [
   'master_of', 'disciple_of', 'parent_of', 'child_of', 'sibling_of', 'spouse_of', 'lover_of',
-  'friend_of', 'enemy_of', 'member_of', 'leader_of', 'located_in', 'owns', 'has_level'
+  'friend_of', 'enemy_of', 'member_of', 'leader_of', 'located_in', 'owns', 'has_level', 'has_skill'
 ] as const;
 export type RelType = (typeof REL_TYPES)[number];
 export const isRelType = (k: string): k is RelType => (REL_TYPES as readonly string[]).includes(k);

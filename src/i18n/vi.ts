@@ -251,6 +251,7 @@ export const vi: Record<MessageKey, string> = {
   'wiki.kind.term': 'Thuật ngữ',
   'wiki.kind.other': 'Khác',
   'wiki.kind.level': 'Cảnh giới',
+  'wiki.kind.skill': 'Công pháp, kỹ năng',
   'wiki.empty': 'Chưa có mục nào. Wiki tự đầy dần khi bạn dịch AI, hoặc bấm Thêm.',
   'wiki.noMatch': 'Không tìm thấy.',
   'wiki.relCount': '{n} quan hệ',
@@ -319,4 +320,6 @@ export const vi: Record<MessageKey, string> = {
   'wiki.rel.owns.rev': 'thuộc về',
   'wiki.rel.has_level': 'đạt cảnh giới',
   'wiki.rel.has_level.rev': 'người đạt',
+  'wiki.rel.has_skill': 'biết',
+  'wiki.rel.has_skill.rev': 'người biết',
 };

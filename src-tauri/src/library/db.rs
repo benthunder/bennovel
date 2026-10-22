@@ -453,6 +453,34 @@ create table cast_address (
 drop table wiki_vectors;
 alter table llm_config drop column embed_model;
 "#,
+    r#"
+-- Rebuilt to add the `skill` kind (techniques, martial arts, spells, abilities), linked
+-- to who has them by the `has_skill` relation. Same columns and rows as before.
+create table wiki_entries_new (
+  id            integer primary key,
+  uid           text not null unique,
+  novel_id      integer not null references novels (id) on delete cascade,
+  kind          text not null check (kind in ('character', 'place', 'faction', 'item', 'level', 'skill', 'term', 'other')),
+  name          text not null,
+  names         text not null default '{}',
+  aliases       text not null default '[]',
+  summary       text not null default '',
+  summaries     text not null default '{}',
+  rank          integer,
+  first_chapter integer,
+  source        text not null default 'ai' check (source in ('ai', 'user')),
+  deleted       integer not null default 0,
+  updated_at    integer not null,
+  unique (novel_id, name)
+);
+insert into wiki_entries_new (id, uid, novel_id, kind, name, names, aliases, summary, summaries,
+    rank, first_chapter, source, deleted, updated_at)
+  select id, uid, novel_id, kind, name, names, aliases, summary, summaries,
+    rank, first_chapter, source, deleted, updated_at
+  from wiki_entries;
+drop table wiki_entries;
+alter table wiki_entries_new rename to wiki_entries;
+"#,
 ];
 
 /// Epoch milliseconds now.
