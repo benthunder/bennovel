@@ -126,8 +126,9 @@ struct Flow {
     terms: Vec<(String, String)>,
     /// The wiki part of the prompt (recall).
     wiki: String,
-    /// The cast part: genders, ages and forms of address found before (cast.rs).
-    cast: String,
+    /// The cast the chapter names: genders, ages and forms of address found before
+    /// (cast.rs), put in each part's prompt.
+    cast: super::cast::Cast,
     title: String,
     paragraphs: Vec<String>,
     out_title: String,
@@ -162,7 +163,7 @@ pub fn run_with(
     check_request(&req)?;
     let (title, content) = source_text(conn, req.chapter_id)?;
     let (known_lang, sample, guess_lang) = detect_input(conn, req.novel_id)?;
-    let cast = super::cast::context(conn, req.novel_id, &content, &req.lang)?;
+    let cast = super::cast::load(conn, req.novel_id, &content, &req.lang)?;
     let terms = if req.glossary {
         glossary(conn, req.novel_id, &req.lang)?
     } else {
@@ -303,15 +304,15 @@ fn graph(
                     return Ok(f);
                 }
                 let r = (|| {
-                    let mut system = translate_prompt(
+                    let system = translate_prompt(
                         f.source_lang.as_deref().unwrap_or("auto"),
                         &f.req.lang,
                         &f.req.style,
                         &f.terms,
                         &f.wiki,
                     );
-                    system += &f.cast;
-                    system += &super::wiki::extract_prompt(&f.req.lang, WIKI_MARK);
+                    let extract = super::wiki::extract_prompt(&f.req.lang, WIKI_MARK);
+                    let system = |part: &str| format!("{system}{}{extract}", f.cast.prompt(part));
                     let title = (!f.title.trim().is_empty())
                         .then(|| (title_prompt(&f.req.lang), f.title.clone()));
                     let (out, title, found) = run_chunks(
@@ -345,9 +346,9 @@ fn graph(
                     return Ok(f);
                 }
                 let r = (|| {
-                    let mut system = rewrite_prompt(&f.req.lang, &f.req.style, &f.wiki);
-                    system += &f.cast;
-                    system += &super::wiki::extract_prompt(&f.req.lang, WIKI_MARK);
+                    let system = rewrite_prompt(&f.req.lang, &f.req.style, &f.wiki);
+                    let extract = super::wiki::extract_prompt(&f.req.lang, WIKI_MARK);
+                    let system = |part: &str| format!("{system}{}{extract}", f.cast.prompt(part));
                     let (out, _, found) =
                         run_chunks(llm.as_ref(), &system, &f.paragraphs, None, progress.as_deref())?;
                     (f.out, f.found) = (out, found);
@@ -647,13 +648,14 @@ fn glossary(
 type Parts = (Vec<String>, Option<String>, Vec<String>);
 
 /// Sends the text paragraphs in parts of about `CHUNK_CHARS`, `PARALLEL` at a time,
+/// each with the system prompt `system` makes for it,
 /// and puts the replies back in order; pictures stay where they are. `title` (a
 /// system prompt and the title) is asked alongside the parts. Whatever a part's reply
 /// has after `WIKI_MARK` comes back on its own, one per part. The first error stops
 /// what has not started yet and is returned.
 fn run_chunks(
     llm: &dyn Chat,
-    system: &str,
+    system: &(dyn Fn(&str) -> String + Sync),
     paragraphs: &[String],
     title: Option<(String, String)>,
     progress: Option<&(dyn Fn(usize, usize) + Send + Sync)>,
@@ -688,16 +690,16 @@ fn run_chunks(
     }
 
     // The requests: each text part, then the title.
-    let mut asks: Vec<(&str, &str)> = pieces
+    let mut asks: Vec<(String, &str)> = pieces
         .iter()
         .filter_map(|p| match p {
-            Piece::Text(t) => Some((system, t.as_str())),
+            Piece::Text(t) => Some((system(t), t.as_str())),
             Piece::Picture(_) => None,
         })
         .collect();
     let parts = asks.len();
     if let Some((prompt, text)) = &title {
-        asks.push((prompt.as_str(), text.as_str()));
+        asks.push((prompt.clone(), text.as_str()));
     }
     let total = asks.len();
     let replies: Vec<Mutex<Option<String>>> = (0..total).map(|_| Mutex::new(None)).collect();
@@ -1234,7 +1236,7 @@ pub(crate) mod tests {
         let progress = move |done: usize, total: usize| log.lock().unwrap().push((done, total));
         let (out, title, _) = run_chunks(
             &llm,
-            "novel translator",
+            &|_: &str| "novel translator".to_string(),
             &paragraphs,
             Some(("title".into(), "Chapter 1".into())),
             Some(&progress),
@@ -1264,7 +1266,7 @@ pub(crate) mod tests {
         }
         let paragraphs = vec!["a".to_string(), "b".to_string()];
         assert!(matches!(
-            run_chunks(&Down, "x", &paragraphs, None, None),
+            run_chunks(&Down, &|_: &str| "x".to_string(), &paragraphs, None, None),
             Err(AiError::Timeout)
         ));
     }

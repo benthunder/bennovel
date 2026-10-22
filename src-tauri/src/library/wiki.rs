@@ -991,17 +991,20 @@ pub fn search(
 
 /// Entries named in `text` (by name or alias), the most mentioned first.
 fn mentioned(conn: &Connection, novel_id: i64, text: &str) -> rusqlite::Result<Vec<Entry>> {
-    let mut found: Vec<(usize, Entry)> = entries(conn, novel_id)?
-        .into_iter()
-        .filter_map(|e| {
-            let hits: usize = std::iter::once(&e.name)
-                .chain(e.aliases.iter())
-                // One letter matches everywhere.
-                .filter(|n| n.chars().count() >= 2)
-                .map(|n| text.matches(n.as_str()).count())
-                .sum();
-            (hits > 0).then_some((hits, e))
+    let all = entries(conn, novel_id)?;
+    let names: Vec<Vec<&str>> = all
+        .iter()
+        .map(|e| {
+            std::iter::once(e.name.as_str())
+                .chain(e.aliases.iter().map(String::as_str))
+                .collect()
         })
+        .collect();
+    let hits = super::names::Finder::new(&names).hits(text);
+    let mut found: Vec<(usize, Entry)> = hits
+        .into_iter()
+        .zip(all)
+        .filter(|(hits, _)| *hits > 0)
         .collect();
     found.sort_by_key(|(hits, _)| std::cmp::Reverse(*hits));
     Ok(found.into_iter().map(|(_, e)| e).collect())

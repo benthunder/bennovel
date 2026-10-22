@@ -8,6 +8,7 @@ pub mod cast;
 pub mod db;
 pub mod folder;
 pub mod llm;
+pub mod names;
 pub mod ocr;
 pub mod queue;
 pub mod rules;
