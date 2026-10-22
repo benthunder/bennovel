@@ -51,10 +51,26 @@ const PARALLEL: usize = 3;
 /// Called with (parts done, parts in all) as a chapter's parts come back.
 pub type OnProgress = Arc<dyn Fn(usize, usize) + Send + Sync>;
 
+/// A node of the graph, as the app shows where a chapter is.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Stage {
+    Detect,
+    Recall,
+    Translate,
+    Rewrite,
+    Save,
+    Learn,
+}
+
+/// Called as each node starts its work.
+pub type OnStage = Arc<dyn Fn(Stage) + Send + Sync>;
+
 /// How a run reports and finishes; the default suits the background queue.
 #[derive(Default, Clone)]
 pub struct Hooks {
     pub progress: Option<OnProgress>,
+    pub stage: Option<OnStage>,
     /// Learn the wiki on another thread after the save instead of before returning.
     pub learn_in_background: bool,
 }
@@ -121,6 +137,7 @@ impl State for Flow {
 
 /// Runs the graph for one chapter and saves the result. `conn` must be a library
 /// file on disk (the save node opens it again).
+#[cfg(test)]
 pub fn run(conn: &Connection, llm: Arc<dyn Chat>, req: Request) -> Result<Translated, AiError> {
     run_with(conn, llm, req, Hooks::default())
 }
@@ -202,11 +219,22 @@ fn graph(
         })
     }
 
+    // Tells the hook a node started.
+    let enter = {
+        let hook = hooks.stage.clone();
+        move |s: Stage| {
+            if let Some(h) = &hook {
+                h(s);
+            }
+        }
+    };
+
     let mut g = StateGraph::new();
     {
-        let (llm, failed) = (llm.clone(), failed.clone());
+        let (llm, failed, enter) = (llm.clone(), failed.clone(), enter.clone());
         g.add_node("detect", move |mut f: Flow, _: &Config| {
             let (llm, failed) = (llm.clone(), failed.clone());
+            enter(Stage::Detect);
             async move {
                 let r = (|| {
                     let lang = match (&f.known_lang, &f.sample) {
@@ -229,9 +257,10 @@ fn graph(
         });
     }
     {
-        let (llm, failed) = (llm.clone(), failed.clone());
+        let (llm, failed, enter) = (llm.clone(), failed.clone(), enter.clone());
         g.add_node("recall", move |mut f: Flow, _: &Config| {
             let (llm, failed) = (llm.clone(), failed.clone());
+            enter(Stage::Recall);
             async move {
                 let r = (|| {
                     let conn = super::db::open(std::path::Path::new(&f.db))?;
@@ -250,8 +279,12 @@ fn graph(
     }
     {
         let (llm, failed, progress) = (llm.clone(), failed.clone(), hooks.progress.clone());
+        let enter = enter.clone();
         g.add_node("translate", move |mut f: Flow, _: &Config| {
             let (llm, failed, progress) = (llm.clone(), failed.clone(), progress.clone());
+            if f.mode == Some(Mode::Translate) {
+                enter(Stage::Translate);
+            }
             async move {
                 if f.mode != Some(Mode::Translate) {
                     return Ok(f);
@@ -285,8 +318,12 @@ fn graph(
     }
     {
         let (llm, failed, progress) = (llm.clone(), failed.clone(), hooks.progress.clone());
+        let enter = enter.clone();
         g.add_node("rewrite", move |mut f: Flow, _: &Config| {
             let (llm, failed, progress) = (llm.clone(), failed.clone(), progress.clone());
+            if f.mode == Some(Mode::Rewrite) {
+                enter(Stage::Rewrite);
+            }
             async move {
                 if f.mode != Some(Mode::Rewrite) {
                     return Ok(f);
@@ -305,9 +342,10 @@ fn graph(
         });
     }
     {
-        let (llm, failed) = (llm.clone(), failed.clone());
+        let (llm, failed, enter) = (llm.clone(), failed.clone(), enter.clone());
         g.add_node("save", move |f: Flow, _: &Config| {
             let (llm, failed) = (llm.clone(), failed.clone());
+            enter(Stage::Save);
             async move {
                 let r = (|| {
                     let conn = super::db::open(std::path::Path::new(&f.db))?;
@@ -327,6 +365,9 @@ fn graph(
         let (llm, failed, background) = (llm.clone(), failed.clone(), hooks.learn_in_background);
         g.add_node("learn", move |f: Flow, _: &Config| {
             let (llm, failed) = (llm.clone(), failed.clone());
+            if !background {
+                enter(Stage::Learn);
+            }
             async move {
                 if background {
                     let later = f.clone();

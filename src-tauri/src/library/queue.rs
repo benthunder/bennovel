@@ -6,6 +6,8 @@
 //! Events for the app: `ai-progress` after each chapter, `ai-paused` when the LLM
 //! can't be used (no settings, key turned down, no connection…), `ai-done` once the
 //! last chapter of a request is through, which also shows a system notification.
+//! `ai-live` as the chapter being worked on moves through the graph's nodes (null once
+//! the worker stops), so the book's page can show the pipeline.
 
 use super::db;
 use super::llm::{self, AiError};
@@ -14,7 +16,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Runtime};
 use tokio::sync::mpsc;
 
@@ -201,6 +203,41 @@ struct PausedEvent {
     error: String,
 }
 
+/// The chapter the worker is on: which one, the graph node it is in, and how many of
+/// its parts are back from the LLM (translate and rewrite only).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Live {
+    pub novel_id: i64,
+    pub lang: String,
+    pub style: String,
+    /// The chapter, 0-based in reading order.
+    pub index: i64,
+    pub stage: translate::Stage,
+    pub parts_done: usize,
+    pub parts_total: usize,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LiveEvent {
+    user: String,
+    live: Option<Live>,
+}
+
+/// Where the worker's state goes: kept in the queue and sent to the app.
+type Report = Arc<dyn Fn(Option<Live>) + Send + Sync>;
+
+/// A chapter's place in reading order.
+fn index_of(conn: &Connection, chapter_id: i64) -> rusqlite::Result<i64> {
+    conn.query_row(
+        "select count(*) from chapters c join chapters me on me.id = ?1
+         where c.novel_id = me.novel_id and c.number < me.number",
+        [chapter_id],
+        |r| r.get(0),
+    )
+}
+
 /// What one turn of the worker did.
 enum Step {
     Idle,
@@ -218,6 +255,8 @@ pub struct Queue {
     tx: mpsc::UnboundedSender<Wake>,
     /// Language of the notification texts, per library file (the app's UI language).
     ui_lang: Mutex<HashMap<PathBuf, String>>,
+    /// The chapter being worked on, per library file.
+    live: Mutex<HashMap<PathBuf, Live>>,
 }
 
 impl Queue {
@@ -233,7 +272,13 @@ impl Queue {
         Self {
             tx,
             ui_lang: Mutex::new(HashMap::new()),
+            live: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// The chapter being worked on in this library file, if any.
+    pub fn live(&self, db: &PathBuf) -> Option<Live> {
+        self.live.lock().unwrap().get(db).cloned()
     }
 
     /// Wakes the worker for this library file.
@@ -255,11 +300,34 @@ impl Queue {
 }
 
 async fn work<R: Runtime>(app: &AppHandle<R>, wake: &Wake) {
+    let report: Report = {
+        let (app, db, user) = (app.clone(), wake.db.clone(), wake.user.clone());
+        Arc::new(move |live: Option<Live>| {
+            use tauri::Manager;
+            if let Some(q) = app.try_state::<Queue>() {
+                let mut map = q.live.lock().unwrap();
+                match &live {
+                    Some(l) => map.insert(db.clone(), l.clone()),
+                    None => map.remove(&db),
+                };
+            }
+            let _ = app.emit(
+                "ai-live",
+                LiveEvent {
+                    user: user.clone(),
+                    live,
+                },
+            );
+        })
+    };
     loop {
-        let db_file = wake.db.clone();
-        let step = tauri::async_runtime::spawn_blocking(move || step(&db_file))
+        let (db_file, r) = (wake.db.clone(), report.clone());
+        let step = tauri::async_runtime::spawn_blocking(move || step(&db_file, r))
             .await
             .unwrap_or_else(|e| Err(AiError::Other(e.to_string())));
+        if !matches!(step, Ok(Step::Did(..))) {
+            report(None);
+        }
         match step {
             Ok(Step::Idle) => return,
             Ok(Step::Did(p, finished)) => {
@@ -302,10 +370,40 @@ async fn work<R: Runtime>(app: &AppHandle<R>, wake: &Wake) {
 }
 
 /// Translates the next queued chapter of a library file.
-fn step(db_file: &std::path::Path) -> Result<Step, AiError> {
+fn step(db_file: &std::path::Path, report: Report) -> Result<Step, AiError> {
     let conn = db::open(db_file)?;
     let Some(job) = claim(&conn)? else {
         return Ok(Step::Idle);
+    };
+    let live = Arc::new(Mutex::new(Live {
+        novel_id: job.novel_id,
+        lang: job.lang.clone(),
+        style: job.style.clone(),
+        index: index_of(&conn, job.chapter_id)?,
+        stage: translate::Stage::Detect,
+        parts_done: 0,
+        parts_total: 0,
+    }));
+    report(Some(live.lock().unwrap().clone()));
+    // A new node starts with no parts; the parts move within translate or rewrite.
+    let hooks = translate::Hooks {
+        stage: Some({
+            let (live, report) = (live.clone(), report.clone());
+            Arc::new(move |stage| {
+                let mut l = live.lock().unwrap();
+                (l.stage, l.parts_done, l.parts_total) = (stage, 0, 0);
+                report(Some(l.clone()));
+            })
+        }),
+        progress: Some({
+            let (live, report) = (live.clone(), report.clone());
+            Arc::new(move |done, total| {
+                let mut l = live.lock().unwrap();
+                (l.parts_done, l.parts_total) = (done, total);
+                report(Some(l.clone()));
+            })
+        }),
+        learn_in_background: false,
     };
     let Some(config) = llm::load(&conn)? else {
         requeue(&conn, job.id)?;
@@ -317,7 +415,7 @@ fn step(db_file: &std::path::Path) -> Result<Step, AiError> {
     match if done {
         Ok(())
     } else {
-        translate::run(&conn, model, job.request()).map(|_| ())
+        translate::run_with(&conn, model, job.request(), hooks).map(|_| ())
     } {
         Ok(_) => finish(&conn, job.id, None)?,
         Err(e) if pauses(&e) => {
@@ -419,6 +517,40 @@ mod tests {
         assert_eq!(claim(&conn).unwrap().unwrap().chapter_id, 11);
         assert_eq!(recover(&conn).unwrap(), 1);
         assert_eq!(cancel(&conn, novel).unwrap(), 1);
+    }
+
+    #[test]
+    fn reports_the_chapter_and_each_node() {
+        use translate::Stage;
+        let (conn, novel) = book("queue-live");
+        assert_eq!(
+            (index_of(&conn, 10).unwrap(), index_of(&conn, 11).unwrap()),
+            (0, 1)
+        );
+        let seen: Arc<Mutex<Vec<Stage>>> = Arc::default();
+        let log = seen.clone();
+        let hooks = translate::Hooks {
+            stage: Some(Arc::new(move |s| log.lock().unwrap().push(s))),
+            ..Default::default()
+        };
+        let req = Request {
+            novel_id: novel,
+            chapter_id: 10,
+            lang: "vi".into(),
+            style: "natural".into(),
+            glossary: false,
+        };
+        translate::run_with(&conn, Arc::new(Fake::new("en")), req, hooks).unwrap();
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [
+                Stage::Detect,
+                Stage::Recall,
+                Stage::Translate,
+                Stage::Save,
+                Stage::Learn
+            ]
+        );
     }
 
     #[test]

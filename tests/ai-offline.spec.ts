@@ -11,8 +11,8 @@ const imported = {
 
 type Calls = { cmd: string; args: Record<string, unknown> }[];
 
-async function nativeApp(page: Page, { llm = true } = {}) {
-  await page.addInitScript(({ imported, llm }) => {
+async function nativeApp(page: Page, { llm = true, queue = false } = {}) {
+  await page.addInitScript(({ imported, llm, queue }) => {
     localStorage.setItem('bennovel.onboarded', 'true');
     localStorage.setItem('bennovel.uiLang', JSON.stringify('en'));
     Object.defineProperty(Navigator.prototype, 'onLine', { get: () => false });
@@ -32,6 +32,9 @@ async function nativeApp(page: Page, { llm = true } = {}) {
     // Set `__hold` to keep a chapter translating until `__release()`.
     let release: () => void = () => undefined;
     w.__release = () => release();
+    // The background queue on chapter 2 of a request into Vietnamese; `__live(…)` moves it.
+    let live: unknown = queue ? { novelId: 1, lang: 'vi', style: 'natural', index: 1, stage: 'recall', partsDone: 0, partsTotal: 0 } : null;
+    w.__live = (l: unknown) => { live = l; emit('ai-live', { user: '', live: l }); };
     w.isTauri = true;
     w.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => undefined };
     w.__TAURI_INTERNALS__ = {
@@ -74,7 +77,9 @@ async function nativeApp(page: Page, { llm = true } = {}) {
           case 'ai_marks':
             return [...done.keys()].map(index => ({ index, lang: 'vi', style: 'natural', model: 'gpt-4o-mini' }));
           case 'ai_translate_book': return { queued: 2, mode: 'translate' };
-          case 'ai_progress': return [];
+          case 'ai_progress':
+            return queue ? [{ novelId: 1, lang: 'vi', style: 'natural', total: 2, done: 1, failed: 0, queued: 0, running: 1 }] : [];
+          case 'ai_live': return live;
           case 'ai_versions': return [];
           case 'plugin:dialog|save': return '/home/lina/bennovel-backup.bnbackup';
           case 'plugin:dialog|open': return '/home/lina/bennovel-backup.bnbackup';
@@ -84,7 +89,7 @@ async function nativeApp(page: Page, { llm = true } = {}) {
         }
       }
     };
-  }, { imported, llm });
+  }, { imported, llm, queue });
 }
 
 const calls = (page: Page) => page.evaluate(() => (window as unknown as { __calls: Calls }).__calls);
@@ -210,6 +215,22 @@ test('the whole book goes to the background queue from its page', async ({ page 
   await expect(page.getByText(/Queued 2 chapters into Tiếng Việt/)).toBeVisible();
   const req = (await calls(page)).find(c => c.cmd === 'ai_translate_book');
   expect(req?.args).toMatchObject({ novelId: 1, fromIndex: 0, lang: 'vi', style: 'natural', uiLang: 'en' });
+});
+
+test('the book page shows the chapter the queue is on and its pipeline', async ({ page }, info) => {
+  await nativeApp(page, { queue: true });
+  await page.goto('/');
+  await page.getByText('Device Diary').filter({ visible: true }).first().click();
+  const pipeline = page.getByRole('group', { name: 'Pipeline' }).filter({ visible: true }).first();
+  await expect(pipeline.getByText('Now on Part 2 of 2 · Part two')).toBeVisible();
+  await expect(pipeline.locator('[aria-current="step"]')).toHaveText('Look up the wiki');
+  await page.evaluate(() => (window as unknown as { __live: (l: unknown) => void }).__live(
+    { novelId: 1, lang: 'vi', style: 'natural', index: 1, stage: 'translate', partsDone: 2, partsTotal: 5 }));
+  await expect(pipeline.locator('[aria-current="step"]')).toContainText('Translate');
+  await expect(pipeline.getByText('2/5 parts')).toBeVisible();
+  await page.screenshot({ path: `test-results/pipeline-${info.project.name}.png` });
+  await page.evaluate(() => (window as unknown as { __live: (l: unknown) => void }).__live(null));
+  await expect(pipeline).toHaveCount(0);
 });
 
 test('without an LLM the book page points to the settings', async ({ page }) => {

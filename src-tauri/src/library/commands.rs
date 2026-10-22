@@ -670,7 +670,7 @@ pub async fn ai_translate_chapter<R: Runtime>(
             &conn,
             model,
             translate::Request { novel_id, chapter_id, lang, style, glossary },
-            translate::Hooks { progress: Some(progress), learn_in_background: true },
+            translate::Hooks { progress: Some(progress), learn_in_background: true, ..Default::default() },
         )
     })
     .await
@@ -769,6 +769,16 @@ pub async fn ai_progress<R: Runtime>(
 ) -> Result<Vec<queue::Progress>, AiError> {
     let path = db_path(&app, &user)?;
     ai_blocking(move || Ok(queue::progress(&db::open(&path)?, novel_id)?)).await
+}
+
+/// The chapter the background queue is on right now, and where in the pipeline it is.
+#[tauri::command]
+pub fn ai_live<R: Runtime>(
+    app: AppHandle<R>,
+    queue: State<'_, Queue>,
+    user: String,
+) -> Result<Option<queue::Live>, AiError> {
+    Ok(queue.live(&db_path(&app, &user)?))
 }
 
 /// Stops a book's background translation (chapters done so far stay).
