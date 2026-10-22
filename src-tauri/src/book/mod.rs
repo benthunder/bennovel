@@ -396,18 +396,7 @@ pub fn open_source(
     };
     let source: Box<dyn BookSource> = match format {
         BookFormat::Pdf => Box::new(pdf::PdfBook::open(file, &ctx.pdfium_dirs)?),
-        BookFormat::Epub => {
-            let copy = file.try_clone()?;
-            match epub::EpubBook::open(BufReader::new(file)) {
-                Ok(book) => Box::new(book),
-                // A package file that is not well-formed XML: retry with it repaired.
-                Err(e @ BookError::Parse(_)) => match epub::open_repaired(BufReader::new(copy)) {
-                    Ok(book) => Box::new(book),
-                    Err(_) => return Err(e),
-                },
-                Err(e) => return Err(e),
-            }
-        }
+        BookFormat::Epub => epub::open_file(file, cache)?,
         BookFormat::Txt => Box::new(txt::TxtBook::open(file, title)?),
         BookFormat::Html => Box::new(html::extract_html(file, cache, title, base)?),
         BookFormat::Mht => Box::new(html::extract_mht(file, cache, title)?),

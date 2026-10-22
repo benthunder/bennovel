@@ -156,6 +156,12 @@ impl Sink {
         self.paragraph(&label)
     }
 
+    /// Starts a new section named `label` (or unnamed), without adding a paragraph.
+    pub fn start_section(&mut self, label: Option<&str>) {
+        self.close_section();
+        self.label = label.map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "));
+    }
+
     fn close_section(&mut self) {
         if self.pos > self.start {
             self.sections.push(Range {
@@ -259,6 +265,7 @@ pub fn html_block(sink: &mut Sink, block: super::text::Block) -> Result<(), Book
             }
             None => sink.image(&src),
         },
+        super::text::Block::Anchor(_) => Ok(()),
     }
 }
 

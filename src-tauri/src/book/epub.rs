@@ -26,19 +26,20 @@ struct TocEntry {
 pub struct EpubBook<R: Read + Seek> {
     doc: EpubDoc<R>,
     parts: Vec<Part>,
+    /// Whether `cover` may read a whole page to find its first picture.
+    small_pages: bool,
 }
 
 impl<R: Read + Seek + Send> EpubBook<R> {
     pub fn open(reader: R) -> Result<Self, BookError> {
-        let mut doc = EpubDoc::from_reader(reader).map_err(|e| BookError::Parse(e.to_string()))?;
-        let mut toc = Vec::new();
-        flatten_ncx(&doc.toc, &mut toc);
-        // EPUB 3 books may have only the navigation document.
-        if toc.is_empty() {
-            toc = nav_toc(&mut doc);
-        }
-        let parts = parts(&mut doc, toc);
-        Ok(Self { doc, parts })
+        let mut doc = open_doc(reader)?;
+        let by_spine = toc_by_spine(&mut doc);
+        let parts = parts(&mut doc, by_spine);
+        Ok(Self {
+            doc,
+            parts,
+            small_pages: true,
+        })
     }
 
     /// The text of spine file `index`.
@@ -62,6 +63,232 @@ impl<R: Read + Seek + Send> EpubBook<R> {
             .unwrap_or_default();
         Ok((html, path))
     }
+}
+
+/// Spine files larger than this (uncompressed) are not read whole: the book is then
+/// streamed out of the ZIP once into the cache folder, cut by its TOC and into
+/// ~64 KB sections, like MOBI. Moon+ Reader also splits chapters over 1 MB.
+const BIG_FILE: u64 = 1024 * 1024;
+
+/// Opens an EPUB file: read chapter by chapter from the ZIP, or extracted when a
+/// spine file is too big to read whole, or repaired when its package is broken XML.
+pub fn open_file(
+    file: std::fs::File,
+    cache_dir: &std::path::Path,
+) -> Result<Box<dyn BookSource>, BookError> {
+    use std::io::BufReader;
+    let copy = file.try_clone()?;
+    let mut doc = match open_doc(BufReader::new(file)) {
+        Ok(doc) => doc,
+        // A package file that is not well-formed XML: retry with it repaired.
+        Err(e @ BookError::Parse(_)) => {
+            return open_repaired(BufReader::new(copy))
+                .map(|b| Box::new(b) as Box<dyn BookSource>)
+                .map_err(|_| e)
+        }
+        Err(e) => return Err(e),
+    };
+    let mut zip =
+        zip::ZipArchive::new(BufReader::new(copy)).map_err(|e| BookError::Parse(e.to_string()))?;
+    let big = (0..doc.spine.len())
+        .filter_map(|i| spine_path(&doc, i))
+        .any(|p| zip_entry(&mut zip, &p).is_some_and(|e| e.size() > BIG_FILE));
+    let by_spine = toc_by_spine(&mut doc);
+    if !big {
+        let parts = parts(&mut doc, by_spine);
+        return Ok(Box::new(EpubBook {
+            doc,
+            parts,
+            small_pages: true,
+        }));
+    }
+    let extracted = extract_big(&doc, by_spine, &mut zip, cache_dir)?;
+    let mut book = EpubBook {
+        doc,
+        parts: Vec::new(),
+        small_pages: false,
+    };
+    Ok(Box::new(BigEpub {
+        title: book.title(),
+        author: book.author(),
+        description: book.description(),
+        cover: book.cover(),
+        text: extracted,
+    }))
+}
+
+/// The ZIP entry at `path`, also when the manifest percent-encodes the name.
+fn zip_entry<'a, Z: Read + Seek>(
+    zip: &'a mut zip::ZipArchive<Z>,
+    path: &str,
+) -> Option<zip::read::ZipFile<'a, Z>> {
+    let name = if zip.index_for_name(path).is_some() {
+        path.to_string()
+    } else {
+        image::percent_decode(path)
+    };
+    zip.by_name(&name).ok()
+}
+
+/// Streams every spine file through the HTML reader into a cache text file: a new
+/// section at each file and each TOC anchor (named by its entry), or at each
+/// `<h1>`–`<h3>` in a file the TOC has no anchors in, and every ~64 KB.
+/// Pictures are copied out after the text.
+fn extract_big<Z: Read + Seek, R: Read + Seek>(
+    doc: &EpubDoc<R>,
+    mut by_spine: HashMap<usize, Vec<TocEntry>>,
+    zip: &mut zip::ZipArchive<Z>,
+    cache_dir: &std::path::Path,
+) -> Result<super::extract::ExtractedBook, BookError> {
+    use super::extract::Sink;
+    use super::text::{Block, HtmlText};
+    let mut sink = Sink::new(cache_dir)?;
+    sink.title = doc.get_title();
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut inline_pictures = 0usize;
+    for i in 0..doc.spine.len() {
+        let Some(path) = spine_path(doc, i) else {
+            continue;
+        };
+        let entries = by_spine.remove(&i).unwrap_or_default();
+        sink.start_section(entries.first().map(|e| e.label.as_str()));
+        let labels: HashMap<String, String> = entries
+            .iter()
+            .skip(1)
+            .filter_map(|e| Some((e.fragment.clone()?, e.label.clone())))
+            .collect();
+        let Some(mut entry) = zip_entry(zip, &path) else {
+            continue;
+        };
+        let mut parser = HtmlText::default();
+        parser.anchors = labels.keys().cloned().collect();
+        let mut err = Ok(());
+        let mut emit = |b: Block| {
+            if err.is_err() {
+                return;
+            }
+            err = match b {
+                Block::Text(t) => sink.paragraph(&t),
+                // Without TOC anchors in this file, its headings start the chapters.
+                Block::Heading(t) if labels.is_empty() => sink.chapter(&t),
+                Block::Heading(t) => sink.paragraph(&t),
+                Block::Anchor(id) => {
+                    sink.start_section(labels.get(&id).map(String::as_str));
+                    Ok(())
+                }
+                Block::Image(src) => match image::data_uri(&src) {
+                    Some(bytes) => {
+                        inline_pictures += 1;
+                        sink.picture(&format!("data{inline_pictures}"), &bytes)
+                    }
+                    None if !src.contains("://") => sink.image(&image::resolve(&path, &src)),
+                    None => Ok(()),
+                },
+            };
+        };
+        let mut decoder: Option<encoding_rs::Decoder> = None;
+        let mut text = String::new();
+        loop {
+            let n = entry.read(&mut buf)?;
+            let dec = decoder.get_or_insert_with(|| {
+                let (enc, _) = super::html::html_encoding(&buf[..n]);
+                enc.new_decoder()
+            });
+            text.clear();
+            text.reserve(dec.max_utf8_buffer_length(n).unwrap_or(n * 3));
+            let _ = dec.decode_to_string(&buf[..n], &mut text, n == 0);
+            parser.feed(&text, &mut emit);
+            if n == 0 {
+                parser.finish(&mut emit);
+                break;
+            }
+        }
+        err?;
+    }
+    for key in sink.missing_images() {
+        let Some(mut entry) = zip_entry(zip, &key) else {
+            continue;
+        };
+        if entry.size() > super::extract::MAX_IMAGE {
+            continue;
+        }
+        let mut bytes = Vec::with_capacity(entry.size() as usize);
+        entry.read_to_end(&mut bytes)?;
+        sink.save_image(&key, &bytes)?;
+    }
+    sink.finish()
+}
+
+/// An EPUB read from its extracted text, keeping what the package says about it.
+struct BigEpub {
+    title: Option<String>,
+    author: Option<String>,
+    description: Option<String>,
+    cover: Option<Image>,
+    text: super::extract::ExtractedBook,
+}
+
+impl BookSource for BigEpub {
+    fn title(&self) -> Option<String> {
+        self.title.clone()
+    }
+    fn author(&self) -> Option<String> {
+        self.author.clone()
+    }
+    fn description(&self) -> Option<String> {
+        self.description.clone()
+    }
+    fn cover(&mut self) -> Option<Image> {
+        self.cover.clone()
+    }
+    fn sections(&self) -> Vec<SectionMeta> {
+        self.text.sections()
+    }
+    fn load(&mut self, index: usize) -> Result<Section, BookError> {
+        self.text.load(index)
+    }
+    fn image(&mut self, key: &str) -> Result<Image, BookError> {
+        self.text.image(key)
+    }
+}
+
+fn open_doc<R: Read + Seek>(reader: R) -> Result<EpubDoc<R>, BookError> {
+    EpubDoc::from_reader(reader).map_err(|e| BookError::Parse(e.to_string()))
+}
+
+/// The ZIP path of spine file `i`.
+fn spine_path<R: Read + Seek>(doc: &EpubDoc<R>, i: usize) -> Option<String> {
+    let idref = &doc.spine.get(i)?.idref;
+    let path = doc
+        .resources
+        .get(idref)?
+        .path
+        .to_string_lossy()
+        .replace('\\', "/");
+    Some(image::resolve("", &path))
+}
+
+/// TOC entries (NCX, else the EPUB 3 navigation document) by spine position, in
+/// order, without repeated anchors.
+fn toc_by_spine<R: Read + Seek>(doc: &mut EpubDoc<R>) -> HashMap<usize, Vec<TocEntry>> {
+    let mut toc = Vec::new();
+    flatten_ncx(&doc.toc, &mut toc);
+    if toc.is_empty() {
+        toc = nav_toc(doc);
+    }
+    let spine_of: HashMap<String, usize> = (0..doc.spine.len())
+        .filter_map(|i| Some((spine_path(doc, i)?, i)))
+        .collect();
+    let mut by_spine: HashMap<usize, Vec<TocEntry>> = HashMap::new();
+    for e in toc {
+        if let Some(&i) = spine_of.get(&e.path) {
+            let entries = by_spine.entry(i).or_default();
+            if !entries.iter().any(|x| x.fragment == e.fragment) {
+                entries.push(e);
+            }
+        }
+    }
+    by_spine
 }
 
 /// Opens an EPUB whose package or TOC file is not well-formed XML (a bare `&`, an
@@ -264,31 +491,10 @@ fn nav_entries(html: &str, path: &str) -> Vec<TocEntry> {
 /// Sections in spine order. A file the TOC points into at several anchors is cut
 /// at those anchors, each piece named by its entry; any other file is one section,
 /// named by the first entry pointing into it.
-fn parts<R: Read + Seek>(doc: &mut EpubDoc<R>, toc: Vec<TocEntry>) -> Vec<Part> {
-    let spine_of: HashMap<String, usize> = doc
-        .spine
-        .iter()
-        .enumerate()
-        .filter_map(|(i, item)| {
-            let path = doc
-                .resources
-                .get(&item.idref)?
-                .path
-                .to_string_lossy()
-                .replace('\\', "/");
-            Some((image::resolve("", &path), i))
-        })
-        .collect();
-    let mut by_spine: HashMap<usize, Vec<TocEntry>> = HashMap::new();
-    for e in toc {
-        if let Some(&i) = spine_of.get(&e.path) {
-            let entries = by_spine.entry(i).or_default();
-            if !entries.iter().any(|x| x.fragment == e.fragment) {
-                entries.push(e);
-            }
-        }
-    }
-
+fn parts<R: Read + Seek>(
+    doc: &mut EpubDoc<R>,
+    mut by_spine: HashMap<usize, Vec<TocEntry>>,
+) -> Vec<Part> {
     let mut parts = Vec::with_capacity(doc.spine.len());
     for i in 0..doc.spine.len() {
         let entries = by_spine.remove(&i).unwrap_or_default();
@@ -415,6 +621,9 @@ impl<R: Read + Seek + Send> BookSource for EpubBook<R> {
             return Some(img);
         }
 
+        if !self.small_pages {
+            return None;
+        }
         let root = self.doc.root_file.to_string_lossy().replace('\\', "/");
         let page = self
             .doc
@@ -696,6 +905,62 @@ pub(crate) mod tests {
         );
         // Else the first picture of the first file.
         assert_eq!(book("", "", ""), Some("image/gif"));
+    }
+
+    #[test]
+    fn streams_a_chapter_file_too_big_to_read_whole() {
+        let ncx = r#"<?xml version="1.0"?><ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1"><navMap><navPoint id="n1" playOrder="1"><navLabel><text>Một</text></navLabel><content src="all.xhtml"/></navPoint><navPoint id="n2" playOrder="2"><navLabel><text>Hai</text></navLabel><content src="all.xhtml#c2"/></navPoint><navPoint id="n3" playOrder="3"><navLabel><text>Ba</text></navLabel><content src="end.xhtml"/></navPoint></navMap></ncx>"#;
+        let para = "<p>Trời mưa rất to, hắn đứng lặng dưới mái hiên nhìn ra phố.</p>\n";
+        // ~1.4 MB in one file: chapter one is long, chapter two short.
+        let big = format!(
+            r#"<html><body><h1>Một</h1>{}<img src="img/a.svg"/><h1 id="c2">Hai</h1><p>hai</p></body></html>"#,
+            para.repeat(20_000)
+        );
+        let epub = build(&[
+            (
+                "OEBPS/content.opf",
+                &opf(
+                    "2.0",
+                    "<dc:title>Lớn</dc:title><dc:creator>Tác giả</dc:creator>",
+                    r#"<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/><item id="all" href="all.xhtml" media-type="application/xhtml+xml"/><item id="end" href="end.xhtml" media-type="application/xhtml+xml"/><item id="cover" href="img/a.svg" media-type="image/svg+xml"/>"#,
+                    r#" toc="ncx"><itemref idref="all"/><itemref idref="end"/>"#,
+                ),
+            ),
+            ("OEBPS/toc.ncx", ncx),
+            ("OEBPS/all.xhtml", &big),
+            (
+                "OEBPS/img/a.svg",
+                "<svg xmlns=\"http://www.w3.org/2000/svg\"/>",
+            ),
+            ("OEBPS/end.xhtml", "<html><body><p>hết</p></body></html>"),
+        ]);
+        let dir = crate::book::test_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("big-{}.epub", std::process::id()));
+        std::fs::write(&path, &epub).unwrap();
+        let mut book = open_file(std::fs::File::open(&path).unwrap(), &dir).unwrap();
+
+        let labels: Vec<_> = book.sections().into_iter().map(|s| s.label).collect();
+        assert!(labels.len() > 10, "long chapter cut into ~64 KB parts");
+        assert_eq!(labels[0].as_deref(), Some("Một"));
+        assert!(labels[1..labels.len() - 2].iter().all(Option::is_none));
+        assert_eq!(labels[labels.len() - 2].as_deref(), Some("Hai"));
+        assert_eq!(labels[labels.len() - 1].as_deref(), Some("Ba"));
+        let n = labels.len();
+        assert_eq!(book.load(n - 2).unwrap().paragraphs, ["Hai", "hai"]);
+        assert_eq!(book.load(n - 1).unwrap().paragraphs, ["hết"]);
+        let last_of_one = book.load(n - 3).unwrap().paragraphs;
+        let pic = last_of_one.last().unwrap();
+        assert_eq!(image::key_of(pic), Some("OEBPS/img/a.svg"));
+        assert_eq!(book.image("OEBPS/img/a.svg").unwrap().mime, "image/svg+xml");
+        assert_eq!(book.title().as_deref(), Some("Lớn"));
+        assert_eq!(book.author().as_deref(), Some("Tác giả"));
+        assert_eq!(book.cover().unwrap().mime, "image/svg+xml");
+        // Every paragraph of the book comes back once.
+        let total: usize = (0..n).map(|i| book.load(i).unwrap().paragraphs.len()).sum();
+        assert_eq!(total, 1 + 20_000 + 1 + 2 + 1);
+        drop(book);
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]
