@@ -1,14 +1,24 @@
+use super::headings::{self, Candidate};
 use super::{BookError, BookSource, Section, SectionMeta};
-use encoding_rs::{Encoding, GB18030, UTF_16BE, UTF_16LE, UTF_8};
+use encoding_rs::{Encoding, GB18030, GBK, UTF_16BE, UTF_16LE, UTF_8};
 use std::io::{BufReader, Read, Seek, SeekFrom};
 
 /// Target size of one section; it ends at the first line break after this.
 pub const SECTION_BYTES: u64 = 64 * 1024;
 /// A section with no line break is cut here anyway, at a character boundary.
 const MAX_SECTION_BYTES: u64 = 4 * SECTION_BYTES;
+/// A chapter longer than this is split into several sections at line breaks.
+const MAX_CHAPTER_BYTES: u64 = 4 * SECTION_BYTES;
+/// Text before the first chapter heading shorter than this joins the first chapter
+/// (a book title and author line); longer, it is a section of its own.
+const PREAMBLE_BYTES: u64 = 256;
+/// Lines longer than this (bytes) are not checked for a chapter heading.
+const MAX_HEADING_BYTES: usize = 4 * headings::MAX_HEADING_CHARS;
 
-/// Plain text read in ~64 KB sections. Opening scans the file once, a buffer at a
-/// time, to find where sections start; their text is decoded only when requested.
+/// Plain text read in sections: one per chapter when the text has chapter headings
+/// ("Chương 12", "第十二章"…), else ~64 KB each. Opening scans the file once, a
+/// buffer at a time, to find where sections start; their text is decoded only when
+/// requested.
 pub struct TxtBook<R: Read + Seek> {
     reader: R,
     title: Option<String>,
@@ -17,6 +27,8 @@ pub struct TxtBook<R: Read + Seek> {
     data_start: u64,
     /// Start offset (relative to `data_start`) and byte length of each section.
     sections: Vec<(u64, u64)>,
+    /// Chapter heading that starts each section, if any.
+    labels: Vec<Option<String>>,
 }
 
 impl<R: Read + Seek + Send> TxtBook<R> {
@@ -27,37 +39,123 @@ impl<R: Read + Seek + Send> TxtBook<R> {
         let (encoding, data_start) = detect_encoding(&head);
 
         reader.seek(SeekFrom::Start(data_start))?;
-        let sections = index_sections(BufReader::new(&mut reader), encoding)?;
+        let scan = scan(BufReader::new(&mut reader), encoding)?;
+        let (sections, labels) = chapter_sections(scan);
         Ok(Self {
             reader,
             title,
             encoding,
             data_start,
             sections,
+            labels,
         })
     }
 }
 
-/// Byte order mark first; otherwise UTF-8 when the start of the file is valid
-/// UTF-8, else GB18030 (a superset of GBK, common for Chinese novels).
+/// Byte order mark first, then UTF-16 without one (every other byte zero), then
+/// UTF-8 when the sample decodes as UTF-8 (a few broken bytes allowed), else the
+/// guess of `chardetng` (Firefox's detector: GBK, Big5, Shift_JIS, EUC-KR,
+/// Windows-1251/1258…). GBK is read as GB18030, its superset.
 pub(super) fn detect_encoding(head: &[u8]) -> (&'static Encoding, u64) {
     if let Some((enc, bom)) = Encoding::for_bom(head) {
         return (enc, bom as u64);
     }
-    match std::str::from_utf8(head) {
-        Ok(_) => (UTF_8, 0),
-        // Only an incomplete character cut off at the end of the sample.
-        Err(e) if e.error_len().is_none() => (UTF_8, 0),
-        Err(_) => (GB18030, 0),
+    if let Some(enc) = utf16_without_bom(head) {
+        return (enc, 0);
+    }
+    if mostly_utf8(head) {
+        return (UTF_8, 0);
+    }
+    let mut detector = chardetng::EncodingDetector::new();
+    detector.feed(head, true);
+    let enc = detector.guess(None, false);
+    (if enc == GBK { GB18030 } else { enc }, 0)
+}
+
+/// UTF-16 text in a Latin or CJK script has a zero in most high bytes and almost
+/// never in the low ones.
+fn utf16_without_bom(head: &[u8]) -> Option<&'static Encoding> {
+    let units = head.len() / 2;
+    if units < 32 {
+        return None;
+    }
+    let zeros = |parity: usize| {
+        head.iter()
+            .skip(parity)
+            .step_by(2)
+            .filter(|&&b| b == 0)
+            .count()
+    };
+    let (even, odd) = (zeros(0), zeros(1));
+    // Latin text: half the bytes are zero; CJK text has fewer, so the bar is lower.
+    if odd * 5 > units && even * 50 < units {
+        Some(UTF_16LE)
+    } else if even * 5 > units && odd * 50 < units {
+        Some(UTF_16BE)
+    } else {
+        None
     }
 }
 
-fn index_sections(mut r: impl Read, enc: &'static Encoding) -> Result<Vec<(u64, u64)>, BookError> {
+/// Valid UTF-8, or UTF-8 with a few broken bytes among plenty of valid multi-byte
+/// characters (a file damaged in one place). Legacy encodings such as GBK produce
+/// many invalid sequences, so they never pass.
+fn mostly_utf8(head: &[u8]) -> bool {
+    let (mut errors, mut multibyte, mut rest) = (0usize, 0usize, head);
+    loop {
+        match std::str::from_utf8(rest) {
+            Ok(s) => {
+                multibyte += s.chars().filter(|c| !c.is_ascii()).count();
+                break;
+            }
+            Err(e) => {
+                let valid = &rest[..e.valid_up_to()];
+                multibyte += std::str::from_utf8(valid)
+                    .map_or(0, |s| s.chars().filter(|c| !c.is_ascii()).count());
+                match e.error_len() {
+                    // Only an incomplete character cut off at the end of the sample.
+                    None => break,
+                    Some(len) => {
+                        errors += 1;
+                        if errors > 8 {
+                            return false;
+                        }
+                        rest = &rest[e.valid_up_to() + len..];
+                    }
+                }
+            }
+        }
+    }
+    errors == 0 || multibyte >= 50 * errors
+}
+
+/// What one pass over the file finds: fixed-size blocks and heading-like lines.
+struct Scan {
+    /// Start offset and length of ~64 KB blocks ending at line breaks.
+    blocks: Vec<(u64, u64)>,
+    /// Lines that look like chapter headings, in order.
+    headings: Vec<Candidate>,
+    len: u64,
+}
+
+fn scan(mut r: impl Read, enc: &'static Encoding) -> Result<Scan, BookError> {
     let utf16_le = enc == UTF_16LE;
     let utf16 = utf16_le || enc == UTF_16BE;
-    let mut sections = Vec::new();
+    let mut blocks = Vec::new();
+    let mut found = Vec::new();
     let mut buf = vec![0u8; 64 * 1024];
     let (mut start, mut pos, mut prev) = (0u64, 0u64, 0u8);
+    // The current line, while it is short enough to be a heading.
+    let (mut line_start, mut line) = (0u64, Vec::with_capacity(MAX_HEADING_BYTES));
+    let mut check_line = |line: &mut Vec<u8>, line_start: u64, end: u64| {
+        if !line.is_empty() && line.len() <= MAX_HEADING_BYTES {
+            let (text, _) = enc.decode_without_bom_handling(line);
+            if let Some(c) = headings::candidate(&text, line_start, end) {
+                found.push(c);
+            }
+        }
+        line.clear();
+    };
 
     loop {
         let n = r.read(&mut buf)?;
@@ -76,7 +174,7 @@ fn index_sections(mut r: impl Read, enc: &'static Encoding) -> Result<Vec<(u64, 
                     b < 0x30
                 };
                 if boundary {
-                    sections.push((start, pos - start));
+                    blocks.push((start, pos - start));
                     start = pos;
                 }
             }
@@ -90,18 +188,69 @@ fn index_sections(mut r: impl Read, enc: &'static Encoding) -> Result<Vec<(u64, 
             } else {
                 b == b'\n'
             };
+            if line.len() <= MAX_HEADING_BYTES {
+                line.push(b);
+            }
             pos += 1;
             prev = b;
-            if line_end && pos - start >= SECTION_BYTES {
-                sections.push((start, pos - start));
-                start = pos;
+            if line_end {
+                check_line(&mut line, line_start, pos);
+                line_start = pos;
+                if pos - start >= SECTION_BYTES {
+                    blocks.push((start, pos - start));
+                    start = pos;
+                }
             }
         }
     }
-    if pos > start || sections.is_empty() {
-        sections.push((start, pos - start));
+    check_line(&mut line, line_start, pos);
+    if pos > start || blocks.is_empty() {
+        blocks.push((start, pos - start));
     }
-    Ok(sections)
+    Ok(Scan {
+        blocks,
+        headings: found,
+        len: pos,
+    })
+}
+
+/// Sections from the chapter headings that pass [`headings::filter`], each long
+/// chapter split again at block boundaries; the plain blocks when there are none.
+fn chapter_sections(scan: Scan) -> (Vec<(u64, u64)>, Vec<Option<String>>) {
+    let heads = headings::filter(scan.headings);
+    if heads.is_empty() {
+        let labels = vec![None; scan.blocks.len()];
+        return (scan.blocks, labels);
+    }
+    let mut chapters: Vec<(u64, Option<String>)> = Vec::with_capacity(heads.len() + 1);
+    let preamble = heads[0].start >= PREAMBLE_BYTES;
+    if preamble {
+        chapters.push((0, None));
+    }
+    for (i, h) in heads.into_iter().enumerate() {
+        let start = if i == 0 && !preamble { 0 } else { h.start };
+        chapters.push((start, Some(h.label)));
+    }
+
+    // Line breaks to split long chapters at: where blocks start.
+    let cuts: Vec<u64> = scan.blocks.iter().skip(1).map(|&(s, _)| s).collect();
+    let (mut sections, mut labels) = (Vec::new(), Vec::new());
+    for (i, (start, label)) in chapters.iter().enumerate() {
+        let end = chapters.get(i + 1).map_or(scan.len, |c| c.0);
+        let mut cur = *start;
+        let mut label = label.clone();
+        let from = cuts.partition_point(|&c| c <= cur);
+        for &cut in cuts[from..].iter().take_while(|&&c| c < end) {
+            if cut - cur >= MAX_CHAPTER_BYTES {
+                sections.push((cur, cut - cur));
+                labels.push(label.take());
+                cur = cut;
+            }
+        }
+        sections.push((cur, end - cur));
+        labels.push(label);
+    }
+    (sections, labels)
 }
 
 fn read_up_to(r: &mut impl Read, buf: &mut [u8]) -> std::io::Result<usize> {
@@ -121,10 +270,10 @@ impl<R: Read + Seek + Send> BookSource for TxtBook<R> {
     }
 
     fn sections(&self) -> Vec<SectionMeta> {
-        self.sections
+        self.labels
             .iter()
-            .map(|_| SectionMeta {
-                label: None,
+            .map(|label| SectionMeta {
+                label: label.clone(),
                 pages: None,
                 number: None,
             })
@@ -224,6 +373,153 @@ mod tests {
         let mut book = TxtBook::open(Cursor::new(text.clone().into_bytes()), None).unwrap();
         assert!(book.sections().len() >= 2);
         assert_eq!(all_paragraphs(&mut book).concat(), text);
+    }
+
+    fn labels(book: &TxtBook<Cursor<Vec<u8>>>) -> Vec<Option<String>> {
+        book.sections().into_iter().map(|s| s.label).collect()
+    }
+
+    fn body(n: usize) -> String {
+        "Trời mưa rất to, hắn đứng lặng dưới mái hiên nhìn ra phố.\n".repeat(n)
+    }
+
+    #[test]
+    fn finds_chapters_after_preamble_and_table_of_contents() {
+        let mut text =
+            String::from("Đấu Phá Thương Khung\nTác giả: Thiên Tằm Thổ Đậu\n\nMục lục\n");
+        for i in 1..=4 {
+            text.push_str(&format!("Chương {i}\n"));
+        }
+        text.push_str(&body(5));
+        for i in 1..=4 {
+            text.push_str(&format!("\nChương {i}: Phần {i}\n\n{}", body(20)));
+        }
+        let mut book = TxtBook::open(Cursor::new(text.into_bytes()), None).unwrap();
+        let mut want = vec![None];
+        want.extend((1..=4).map(|i| Some(format!("Chương {i}: Phần {i}"))));
+        assert_eq!(labels(&book), want);
+        // The preamble keeps the book title and the table of contents.
+        assert_eq!(book.load(0).unwrap().paragraphs[0], "Đấu Phá Thương Khung");
+        let ch2 = book.load(2).unwrap().paragraphs;
+        assert_eq!(ch2[0], "Chương 2: Phần 2");
+        assert_eq!(ch2.len(), 21);
+    }
+
+    #[test]
+    fn short_title_joins_the_first_chapter() {
+        let mut text = String::from("Truyện ngắn\n");
+        for i in 1..=3 {
+            text.push_str(&format!("Chương {i}\n{}", body(10)));
+        }
+        let mut book = TxtBook::open(Cursor::new(text.into_bytes()), None).unwrap();
+        assert_eq!(
+            labels(&book),
+            vec![
+                Some("Chương 1".to_string()),
+                Some("Chương 2".to_string()),
+                Some("Chương 3".to_string())
+            ]
+        );
+        assert_eq!(
+            book.load(0).unwrap().paragraphs[..2],
+            ["Truyện ngắn", "Chương 1"]
+        );
+    }
+
+    #[test]
+    fn finds_chinese_chapters_in_gbk() {
+        let mut text = String::new();
+        let nums = ["一", "二", "三", "四", "五", "六"];
+        for i in nums {
+            text.push_str(&format!("第{i}章 风起\r\n"));
+            for _ in 0..20 {
+                text.push_str("　　他走进了房间，看见桌上放着一封信，信上写着他的名字。\r\n");
+            }
+        }
+        // A sentence that starts like a heading, indented like the story text.
+        text.push_str("　　第一章就这样结束了\r\n");
+        let (gbk, _, _) = GBK.encode(&text);
+        let mut book = TxtBook::open(Cursor::new(gbk.into_owned()), None).unwrap();
+        assert_eq!(book.encoding, GB18030);
+        assert_eq!(
+            labels(&book),
+            nums.map(|i| Some(format!("第{i}章 风起"))).to_vec()
+        );
+        assert_eq!(book.load(5).unwrap().paragraphs.len(), 22);
+    }
+
+    #[test]
+    fn splits_a_long_chapter_and_names_only_its_first_part() {
+        let mut text = String::new();
+        for i in 1..=3 {
+            text.push_str(&format!("Chương {i}\n"));
+            text.push_str(&body(if i == 2 { 12_000 } else { 10 }));
+        }
+        let mut book = TxtBook::open(Cursor::new(text.clone().into_bytes()), None).unwrap();
+        let labels = labels(&book);
+        assert!(labels.len() > 4, "{labels:?}");
+        assert_eq!(labels[1].as_deref(), Some("Chương 2"));
+        assert_eq!(labels[2], None);
+        assert_eq!(labels.last().unwrap().as_deref(), Some("Chương 3"));
+        assert!(book
+            .sections
+            .iter()
+            .all(|&(_, len)| len <= MAX_CHAPTER_BYTES + SECTION_BYTES + 100));
+        let want: Vec<String> = text.lines().map(String::from).collect();
+        assert_eq!(all_paragraphs(&mut book), want);
+    }
+
+    #[test]
+    fn utf16_chapters_without_bom() {
+        let mut text = String::new();
+        for i in 1..=3 {
+            text.push_str(&format!(
+                "Chapter {i}\r\n{}",
+                "It was raining.\r\n".repeat(30)
+            ));
+        }
+        let le: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let mut book = TxtBook::open(Cursor::new(le), None).unwrap();
+        assert_eq!(book.encoding, UTF_16LE);
+        assert_eq!(labels(&book)[2].as_deref(), Some("Chapter 3"));
+        assert_eq!(book.load(2).unwrap().paragraphs[0], "Chapter 3");
+    }
+
+    #[test]
+    fn detects_legacy_encodings() {
+        let cases: [(&str, &'static Encoding); 4] = [
+            (
+                "他走進了房間，看見桌上放著一封信。這是他第一次離開家鄉，心裡十分緊張。",
+                encoding_rs::BIG5,
+            ),
+            (
+                "彼は部屋に入って、机の上に置かれた手紙を見た。これは初めて故郷を離れる日だった。",
+                encoding_rs::SHIFT_JIS,
+            ),
+            (
+                "Он вошёл в комнату и увидел на столе письмо. Это был первый раз, когда он уехал из дома.",
+                encoding_rs::WINDOWS_1251,
+            ),
+            (
+                "他走进了房间，看见桌上放着一封信。这是他第一次离开家乡，心里十分紧张。",
+                GB18030,
+            ),
+        ];
+        for (text, enc) in cases {
+            let text = format!("{text}\n").repeat(20);
+            let (bytes, _, _) = enc.encode(&text);
+            assert_eq!(detect_encoding(&bytes).0, enc, "{text}");
+        }
+    }
+
+    #[test]
+    fn keeps_utf8_with_one_broken_byte() {
+        let mut bytes = "Trời mưa rất to, hắn đứng lặng dưới mái hiên.\n"
+            .repeat(20)
+            .into_bytes();
+        bytes[300] = 0xFF;
+        assert_eq!(detect_encoding(&bytes).0, UTF_8);
+        assert_eq!(detect_encoding(b"plain ascii\n").0, UTF_8);
     }
 
     #[test]
