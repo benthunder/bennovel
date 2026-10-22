@@ -31,6 +31,34 @@ fn db_path<R: Runtime>(app: &AppHandle<R>, user: &str) -> Result<PathBuf, BookEr
     Ok(dir.join("library").join(format!("{name}.sqlite3")))
 }
 
+/// Serves a library book's cover through the `bookimg:` scheme, at
+/// `cover/{novel_id}/{user}` (the user part URL-encoded, empty for a guest).
+pub fn serve_cover<R: Runtime>(app: &AppHandle<R>, path: &str) -> tauri::http::Response<Vec<u8>> {
+    let path = crate::book::image::percent_decode(path.trim_start_matches('/'));
+    let result = (|| {
+        let rest = path.strip_prefix("cover/").unwrap_or_default();
+        let (id, user) = rest.split_once('/').unwrap_or((rest, ""));
+        let id: i64 = id.parse().map_err(|_| BookError::NoImage(path.clone()))?;
+        let conn = rusqlite::Connection::open_with_flags(
+            db_path(app, user)?,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )?;
+        super::cover(&conn, id)
+    })();
+    let builder = tauri::http::Response::builder().header("Access-Control-Allow-Origin", "*");
+    match result {
+        Ok(img) => builder
+            .header("Content-Type", img.mime)
+            .header("Cache-Control", "max-age=3600")
+            .body(img.bytes),
+        Err(e) => builder
+            .status(404)
+            .header("Content-Type", "text/plain")
+            .body(e.to_string().into_bytes()),
+    }
+    .unwrap_or_default()
+}
+
 async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> Result<T, BookError> + Send + 'static,
 ) -> Result<T, BookError> {

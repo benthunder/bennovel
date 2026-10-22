@@ -29,11 +29,7 @@ pub struct EpubBook<R: Read + Seek> {
 }
 
 impl<R: Read + Seek + Send> EpubBook<R> {
-    pub fn open(mut reader: R) -> Result<Self, BookError> {
-        if drm_protected(&mut reader)? {
-            return Err(BookError::Drm);
-        }
-        reader.seek(SeekFrom::Start(0))?;
+    pub fn open(reader: R) -> Result<Self, BookError> {
         let mut doc = EpubDoc::from_reader(reader).map_err(|e| BookError::Parse(e.to_string()))?;
         let mut toc = Vec::new();
         flatten_ncx(&doc.toc, &mut toc);
@@ -149,43 +145,17 @@ fn fix_xml_entities(xml: &str) -> String {
     out
 }
 
-/// Encrypted content (Adobe ADEPT, Readium LCP, Apple FairPlay…), as opposed to the
-/// font obfuscation many DRM-free books use. Moon+ Reader checks the same files.
-fn drm_protected<R: Read + Seek>(reader: &mut R) -> Result<bool, BookError> {
-    const FONT_OBFUSCATION: &[&str] = &[
-        "http://www.idpf.org/2008/embedding",
-        "http://ns.adobe.com/pdf/enc#RC",
-    ];
-    let Ok(mut zip) = zip::ZipArchive::new(&mut *reader) else {
-        // Not readable as a ZIP here; the EPUB reader reports the real error.
-        return Ok(false);
-    };
-    for name in [
-        "META-INF/rights.xml",
-        "META-INF/license.lcpl",
-        "META-INF/sinf.xml",
-    ] {
-        if zip.by_name(name).is_ok() {
-            return Ok(true);
-        }
-    }
-    let mut xml = String::new();
-    match zip.by_name("META-INF/encryption.xml") {
-        Ok(mut f) => {
-            let _ = f.read_to_string(&mut xml);
-        }
-        Err(_) => return Ok(false),
-    }
-    let mut rest = xml.as_str();
-    while let Some(i) = rest.find("Algorithm=") {
-        rest = &rest[i + "Algorithm=".len()..];
-        let quote = rest.chars().next().unwrap_or('"');
-        let value = rest[1..].split(quote).next().unwrap_or_default();
-        if !FONT_OBFUSCATION.contains(&value) {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+/// The `href` of `<reference type="cover">` in the OPF `<guide>`.
+fn guide_cover(opf: &str) -> Option<String> {
+    let lower = opf.to_ascii_lowercase();
+    lower.match_indices("<reference").find_map(|(i, _)| {
+        let end = lower[i..].find('>').map_or(lower.len(), |e| i + e);
+        let tag = &opf[i + 1..end];
+        let kind = image::attr(tag, "type")?;
+        kind.eq_ignore_ascii_case("cover")
+            .then(|| image::attr(tag, "href"))
+            .flatten()
+    })
 }
 
 /// NCX entries in reading order, nested ones after their parent.
@@ -414,6 +384,63 @@ impl<R: Read + Seek + Send> BookSource for EpubBook<R> {
         (!text.is_empty()).then_some(text)
     }
 
+    /// Tried in turn, as Moon+ Reader does: the EPUB 3 `cover-image` or EPUB 2
+    /// `<meta name="cover">`, a manifest picture named "cover", then the first picture
+    /// of the cover page (`<guide><reference type="cover">`, else the first file).
+    fn cover(&mut self) -> Option<Image> {
+        let picture = |bytes: Vec<u8>| {
+            let img = Image::sniff(bytes);
+            (img.mime.starts_with("image/") && img.bytes.len() as u64 <= super::extract::MAX_IMAGE)
+                .then_some(img)
+        };
+        let named = self.doc.get_cover_id().or_else(|| {
+            let mut ids: Vec<&String> = self
+                .doc
+                .resources
+                .iter()
+                .filter(|(id, r)| {
+                    r.mime.starts_with("image/")
+                        && (id.to_lowercase().contains("cover")
+                            || r.path.to_string_lossy().to_lowercase().contains("cover"))
+                })
+                .map(|(id, _)| id)
+                .collect();
+            ids.sort();
+            ids.first().map(|id| id.to_string())
+        });
+        if let Some(img) = named
+            .and_then(|id| self.doc.get_resource(&id))
+            .and_then(|(bytes, _)| picture(bytes))
+        {
+            return Some(img);
+        }
+
+        let root = self.doc.root_file.to_string_lossy().replace('\\', "/");
+        let page = self
+            .doc
+            .get_resource_str_by_path(self.doc.root_file.clone())
+            .and_then(|opf| guide_cover(&opf))
+            .map(|href| image::resolve(&root, &href))
+            .or_else(|| {
+                let first = &self.doc.spine.first()?.idref;
+                let path = self
+                    .doc
+                    .resources
+                    .get(first)?
+                    .path
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                Some(path)
+            })?;
+        let html = self.doc.get_resource_str_by_path(&page)?;
+        let key = html_to_paragraphs(&html, |src| {
+            (!src.contains("://") && !src.starts_with("data:")).then(|| image::resolve(&page, src))
+        })
+        .iter()
+        .find_map(|p| image::key_of(p).map(String::from))?;
+        self.doc.get_resource_by_path(&key).and_then(picture)
+    }
+
     fn sections(&self) -> Vec<SectionMeta> {
         self.parts
             .iter()
@@ -618,39 +645,57 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn rejects_drm_but_not_font_obfuscation() {
-        let book = |algorithm: &str| {
-            let enc = format!(
-                r#"<encryption><EncryptedData><EncryptionMethod Algorithm="{algorithm}"/></EncryptedData></encryption>"#
+    fn finds_the_cover_like_moon_reader() {
+        // Text bodies only: an SVG and a GIF stand for the two pictures.
+        let png = "<svg xmlns=\"http://www.w3.org/2000/svg\"/>";
+        let jpg = "GIF89a first";
+        let book = |metadata: &str, extra_manifest: &str, guide: &str| {
+            let opf = format!(
+                r#"<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">x</dc:identifier><dc:title>T</dc:title>{metadata}</metadata><manifest><item id="p" href="p.xhtml" media-type="application/xhtml+xml"/><item id="a" href="a.xhtml" media-type="application/xhtml+xml"/><item id="im" href="img/x.png" media-type="image/png"/>{extra_manifest}</manifest><spine><itemref idref="a"/></spine>{guide}</package>"#
             );
-            let mut files: Vec<(String, String)> = vec![
+            let epub = build(&[
+                ("OEBPS/content.opf", &opf),
+                ("OEBPS/img/x.png", png),
+                ("OEBPS/img/first.jpg", jpg),
                 (
-                    "OEBPS/content.opf".into(),
-                    opf(
-                        "2.0",
-                        "<dc:title>T</dc:title>",
-                        r#"<item id="a" href="a.xhtml" media-type="application/xhtml+xml"/>"#,
-                        r#"><itemref idref="a"/>"#,
-                    ),
+                    "OEBPS/p.xhtml",
+                    r#"<html><body><img src="img/x.png"/></body></html>"#,
                 ),
                 (
-                    "OEBPS/a.xhtml".into(),
-                    "<html><body><p>A</p></body></html>".into(),
+                    "OEBPS/a.xhtml",
+                    r#"<html><body><p>A</p><img src="img/first.jpg"/></body></html>"#,
                 ),
-                ("META-INF/encryption.xml".into(), enc),
-            ];
-            files.sort();
-            let refs: Vec<(&str, &str)> = files
-                .iter()
-                .map(|(a, b)| (a.as_str(), b.as_str()))
-                .collect();
-            EpubBook::open(Cursor::new(build(&refs)))
+            ]);
+            EpubBook::open(Cursor::new(epub))
+                .unwrap()
+                .cover()
+                .map(|i| i.mime)
         };
-        assert!(matches!(
-            book("http://www.w3.org/2001/04/xmlenc#aes128-cbc"),
-            Err(BookError::Drm)
-        ));
-        assert!(book("http://www.idpf.org/2008/embedding").is_ok());
+        // <meta name="cover">
+        assert_eq!(
+            book(r#"<meta name="cover" content="im"/>"#, "", ""),
+            Some("image/svg+xml")
+        );
+        // A picture named cover in the manifest.
+        assert_eq!(
+            book(
+                "",
+                r#"<item id="cover-image" href="img/x.png" media-type="image/png"/>"#,
+                ""
+            ),
+            Some("image/svg+xml")
+        );
+        // The guide's cover page.
+        assert_eq!(
+            book(
+                "",
+                "",
+                r#"<guide><reference type="cover" href="p.xhtml"/></guide>"#
+            ),
+            Some("image/svg+xml")
+        );
+        // Else the first picture of the first file.
+        assert_eq!(book("", "", ""), Some("image/gif"));
     }
 
     #[test]

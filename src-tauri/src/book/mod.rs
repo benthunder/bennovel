@@ -46,8 +46,6 @@ pub enum BookError {
     Parse(String),
     #[error("PDF support is unavailable: {0}")]
     PdfUnavailable(String),
-    #[error("this book is DRM-protected")]
-    Drm,
     #[error("section {0} does not exist")]
     NoSection(usize),
     #[error("book {0} is not open")]
@@ -110,6 +108,11 @@ pub trait BookSource: Send {
 
     /// The book's blurb as plain text (paragraphs separated by blank lines).
     fn description(&self) -> Option<String> {
+        None
+    }
+
+    /// The cover picture, when the book has one.
+    fn cover(&mut self) -> Option<image::Image> {
         None
     }
     fn sections(&self) -> Vec<SectionMeta>;

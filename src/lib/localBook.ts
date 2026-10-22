@@ -96,6 +96,8 @@ export interface LibraryBook {
   sourceName: string | null;
   chapterCount: number;
   createdAt: string;
+  /** The book file had a cover picture (see `libraryCoverUrl`). */
+  hasCover: boolean;
   lastRead: { index: number; progress: number; lastReadAt: string } | null;
 }
 
@@ -189,6 +191,10 @@ export const deleteLibraryBook = (user: string, novelId: number) => invoke<void>
 
 const COVER_PALETTES = ['accent', 'accent-2'] as const;
 const COVER_SHADES = [[200, 800, 400], [300, 900, 500], [100, 700, 300]] as const;
+
+/** The cover picture of a library book, served by the `bookimg:` scheme; null when it has none. */
+export const libraryCoverUrl = (user: string, b: Pick<LibraryBook, 'novelId' | 'hasCover'>) =>
+  b.hasCover ? convertFileSrc(`cover/${b.novelId}/${user}`, 'bookimg') : null;
 
 /** A placeholder cover like the online novels have, picked from the title so it stays the same. */
 export function localCover(title: string) {
