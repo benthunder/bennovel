@@ -170,7 +170,6 @@ export function WikiScreen({ novelId, title, lang: startLang }: { novelId: numbe
 
             <div>
               <SearchField value={query} onChange={setQuery} placeholder={t('wiki.search')} />
-              <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>{t(wiki.byMeaning ? 'wiki.byMeaning' : 'wiki.byName')}</div>
             </div>
 
             {kinds.length > 0 && (

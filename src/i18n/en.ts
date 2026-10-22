@@ -220,8 +220,6 @@ export const en = {
   'ai.versions': 'AI versions',
   'ai.versionRow': '{lang} · {style} · {n} chapters',
   'ai.hint': 'Uses the LLM set in Profile. If the book is already in the target language, the AI rewrites it in the chosen style with correct grammar.',
-  'ai.embedModel': 'Embedding model (optional)',
-  'ai.embedHint': 'For searching the book wiki by meaning, e.g. text-embedding-3-small or nomic-embed-text. Leave empty to search by name only.',
 
   // backup & restore (Profile)
   'backup.hint': 'Everything: books with their AI translations, history, replace rules, glossaries, the wiki, app and reading settings, and the LLM (its API key too, so keep the file safe). Restoring merges it into this device.',
@@ -243,8 +241,6 @@ export const en = {
   'wiki.autoSub': 'The AI adds characters, places and relationships from each translated chapter, and uses them to keep names consistent.',
   'wiki.lastError': 'The last wiki update failed: {error}',
   'wiki.search': 'Search names, aliases, descriptions…',
-  'wiki.byMeaning': 'Searching by name and by meaning.',
-  'wiki.byName': 'Searching by name. Set an embedding model in Profile → AI translation to search by meaning too.',
   'wiki.all': 'All',
   'wiki.kind.character': 'Characters',
   'wiki.kind.place': 'Places',

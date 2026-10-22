@@ -49,10 +49,6 @@ pub struct Config {
     pub base_url: String,
     pub api_key: String,
     pub model: String,
-    /// The embedding model of the same API (`POST {base_url}/embeddings`) for the
-    /// book wiki's search; empty when none is used.
-    #[serde(default)]
-    pub embed_model: String,
 }
 
 /// The saved LLM as shown in the app: no key.
@@ -62,13 +58,12 @@ pub struct Settings {
     pub provider: String,
     pub base_url: String,
     pub model: String,
-    pub embed_model: String,
     pub has_key: bool,
 }
 
 pub fn load(conn: &Connection) -> rusqlite::Result<Option<Config>> {
     conn.query_row(
-        "select provider, base_url, api_key, model, embed_model from llm_config where id = 1",
+        "select provider, base_url, api_key, model from llm_config where id = 1",
         [],
         |r| {
             Ok(Config {
@@ -76,7 +71,6 @@ pub fn load(conn: &Connection) -> rusqlite::Result<Option<Config>> {
                 base_url: r.get(1)?,
                 api_key: r.get(2)?,
                 model: r.get(3)?,
-                embed_model: r.get(4)?,
             })
         },
     )
@@ -88,7 +82,6 @@ pub fn settings(conn: &Connection) -> rusqlite::Result<Option<Settings>> {
         provider: c.provider,
         base_url: c.base_url,
         model: c.model,
-        embed_model: c.embed_model,
         has_key: !c.api_key.is_empty(),
     }))
 }
@@ -115,18 +108,16 @@ pub fn save(conn: &Connection, config: Option<&Config>) -> rusqlite::Result<()> 
         }
         Some(c) => {
             conn.execute(
-                "insert into llm_config (id, provider, base_url, api_key, model, embed_model, updated_at)
-                 values (1, ?1, ?2, ?3, ?4, ?5, ?6)
+                "insert into llm_config (id, provider, base_url, api_key, model, updated_at)
+                 values (1, ?1, ?2, ?3, ?4, ?5)
                  on conflict (id) do update set provider = excluded.provider,
                    base_url = excluded.base_url, model = excluded.model,
-                   embed_model = excluded.embed_model,
                    api_key = excluded.api_key, updated_at = excluded.updated_at",
                 params![
                     c.provider.trim(),
                     normalize_base(&c.base_url),
                     c.api_key.trim(),
                     c.model.trim(),
-                    c.embed_model.trim(),
                     super::db::now_ms()
                 ],
             )?;
@@ -185,14 +176,6 @@ pub trait Chat: Send + Sync {
         _tools: &serde_json::Value,
     ) -> Result<serde_json::Value, AiError> {
         Err(AiError::Other("tools-unsupported".into()))
-    }
-    /// The embedding model, when one is set.
-    fn embed_model(&self) -> Option<&str> {
-        None
-    }
-    /// One vector per text, in order (only called when `embed_model` is set).
-    fn embed(&self, _texts: &[String]) -> Result<Vec<Vec<f32>>, AiError> {
-        Err(AiError::Other("embeddings-unsupported".into()))
     }
 }
 
@@ -334,21 +317,6 @@ impl Chat for OpenAi {
             .cloned()
             .ok_or(AiError::Empty)
     }
-
-    fn embed_model(&self) -> Option<&str> {
-        Some(self.config.embed_model.trim()).filter(|m| !m.is_empty())
-    }
-
-    fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, AiError> {
-        let model = self.embed_model().ok_or(AiError::NotSet)?;
-        let body = serde_json::json!({ "model": model, "input": texts });
-        let data = self.retry(|| self.post_to("embeddings", &body))?;
-        let vectors = embeddings(&data).ok_or(AiError::Empty)?;
-        if vectors.len() != texts.len() {
-            return Err(AiError::Other("embeddings: wrong count".into()));
-        }
-        Ok(vectors)
-    }
 }
 
 /// A read that failed while the answer came in.
@@ -402,28 +370,6 @@ fn is_timeout(msg: &str) -> bool {
     msg.contains("timed out") || msg.contains("timeout")
 }
 
-/// `data[].embedding` of an embeddings reply, in `index` order.
-fn embeddings(data: &serde_json::Value) -> Option<Vec<Vec<f32>>> {
-    let mut items: Vec<(i64, Vec<f32>)> = data
-        .get("data")?
-        .as_array()?
-        .iter()
-        .enumerate()
-        .map(|(i, d)| {
-            let index = d.get("index").and_then(|v| v.as_i64()).unwrap_or(i as i64);
-            let v = d
-                .get("embedding")?
-                .as_array()?
-                .iter()
-                .map(|x| x.as_f64().map(|f| f as f32))
-                .collect::<Option<Vec<f32>>>()?;
-            Some((index, v))
-        })
-        .collect::<Option<_>>()?;
-    items.sort_by_key(|(i, _)| *i);
-    Some(items.into_iter().map(|(_, v)| v).collect())
-}
-
 /// `choices[0].message.content` of a chat reply.
 fn reply_text(data: &serde_json::Value) -> Option<String> {
     let text = data
@@ -451,19 +397,13 @@ fn error_message(body: &str) -> String {
         .unwrap_or_else(|| body.chars().take(300).collect())
 }
 
-/// Checks that the API answers with these settings (a tiny request), and its
-/// embedding model too when one is set.
+/// Checks that the API answers with these settings (a tiny request).
 pub fn check(config: &Config) -> Result<(), AiError> {
-    let api = OpenAi::new(config.clone());
-    api.post(&serde_json::json!({
+    OpenAi::new(config.clone()).post(&serde_json::json!({
         "model": config.model,
         "messages": [{ "role": "user", "content": "Reply with OK." }],
         "max_tokens": 5,
     }))?;
-    if api.embed_model().is_some() {
-        api.embed(&["test".to_string()])
-            .map_err(|e| AiError::Other(format!("embedding model: {e}")))?;
-    }
     Ok(())
 }
 
@@ -500,7 +440,6 @@ mod tests {
             base_url: base.into(),
             api_key: key.into(),
             model: "m".into(),
-            embed_model: String::new(),
         };
         save(
             &conn,
@@ -565,7 +504,6 @@ mod tests {
             base_url,
             api_key: "sk-test".into(),
             model: "m-1".into(),
-            embed_model: "e-1".into(),
         }
     }
 
@@ -594,21 +532,6 @@ mod tests {
             other => panic!("{other:?}"),
         }
         server.join().unwrap();
-    }
-
-    #[test]
-    fn asks_for_embeddings() {
-        let (url, server) = serve(
-            "200 OK",
-            r#"{"data":[{"index":1,"embedding":[0.5,1]},{"index":0,"embedding":[1,0]}]}"#,
-        );
-        let v = OpenAi::new(config(url))
-            .embed(&["a".into(), "b".into()])
-            .unwrap();
-        assert_eq!(v, vec![vec![1.0, 0.0], vec![0.5, 1.0]]);
-        let req = server.join().unwrap();
-        assert!(req.starts_with("POST /v1/embeddings"));
-        assert!(req.contains(r#""model":"e-1""#));
     }
 
     #[test]
@@ -654,8 +577,12 @@ mod tests {
 
     #[test]
     fn timeouts_are_told_apart() {
-        assert!(is_timeout("http://localhost:11434/v1/chat/completions: Network Error: timed out reading response"));
-        assert!(!is_timeout("Dns Failed: resolve dns name 'api.example.com:443'"));
+        assert!(is_timeout(
+            "http://localhost:11434/v1/chat/completions: Network Error: timed out reading response"
+        ));
+        assert!(!is_timeout(
+            "Dns Failed: resolve dns name 'api.example.com:443'"
+        ));
         assert_eq!(AiError::Timeout.to_string(), "llm-timeout");
     }
 

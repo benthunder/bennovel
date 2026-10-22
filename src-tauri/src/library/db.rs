@@ -400,7 +400,7 @@ drop table offline_novels;
 -- Local only: the wiki facts the translation requests found in a chapter (one JSON
 -- array of the replies' JSON objects, see translate.rs WIKI_MARK), kept whether or not
 -- the book's wiki learns, so turning it on later fills the wiki from them with no
--- request but the embeddings.
+-- request.
 create table chapter_wiki_facts (
   chapter_id integer not null references chapters (id) on delete cascade,
   lang       text not null,
@@ -447,6 +447,12 @@ create table cast_address (
   primary key (novel_id, lang, from_name, to_name)
 );
 "#,
+    r#"
+-- No more embeddings: the wiki is found by name (names.rs) from what the translations
+-- keep in SQLite.
+drop table wiki_vectors;
+alter table llm_config drop column embed_model;
+"#,
 ];
 
 /// Epoch milliseconds now.
@@ -479,20 +485,7 @@ pub fn set_state(conn: &Connection, key: &str, value: &str) -> rusqlite::Result<
     Ok(())
 }
 
-/// Builds sqlite-vec (`vec_distance_cosine`…) into every connection opened from here
-/// on; it is compiled into the app, so it works on Android too.
-fn load_vec() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| unsafe {
-        #[allow(clippy::missing_transmute_annotations)]
-        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
-            sqlite_vec::sqlite3_vec_init as *const (),
-        )));
-    });
-}
-
 pub fn open(path: &Path) -> rusqlite::Result<Connection> {
-    load_vec();
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
@@ -559,15 +552,14 @@ mod tests {
         assert_eq!(rows[0], ("a".into(), r#"{"vi":"Nhân vật chính."}"#.into()));
         assert_eq!(rows[1], ("b".into(), r#"{"raw":"A city."}"#.into()));
         assert_eq!(rows[2], ("c".into(), "{}".into()));
-        let kept: (i64, i64, String) = conn
+        let kept: (i64, String) = conn
             .query_row(
-                "select (select count(*) from wiki_relations), (select count(*) from wiki_vectors),
-                   (select labels from wiki_relations)",
+                "select (select count(*) from wiki_relations), (select labels from wiki_relations)",
                 [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap();
-        assert_eq!(kept, (1, 1, "{}".into()));
+        assert_eq!(kept, (1, "{}".into()));
         conn.execute(
             "insert into wiki_entries (uid, novel_id, kind, name, rank, updated_at) values ('d', 1, 'level', '斗师', 2, 1)",
             [],

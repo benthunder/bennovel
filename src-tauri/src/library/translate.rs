@@ -10,8 +10,8 @@
 //!   chapter (asked once per book, kept in `ai_books`), and picks the mode: another
 //!   language than the one asked for → translate; the same → rewrite (polish it in
 //!   the chosen style, correct in that language).
-//! - recall: the book's wiki entries the chapter names, and those nearest to it in
-//!   meaning (sqlite-vec), go in the prompt with their relations (wiki.rs).
+//! - recall: the book's wiki entries the chapter names go in the prompt with their
+//!   relations (wiki.rs), found by name (names.rs).
 //! - translate and rewrite each run only in their mode and pass the state on
 //!   otherwise. (rust-langgraph 0.1.1 accepts `add_conditional_edges` but `compile`
 //!   drops them, so the branch is made by the nodes; once fixed upstream it can be a
@@ -271,16 +271,15 @@ fn graph(
         });
     }
     {
-        let (llm, failed, enter) = (llm.clone(), failed.clone(), enter.clone());
+        let (failed, enter) = (failed.clone(), enter.clone());
         g.add_node("recall", move |mut f: Flow, _: &Config| {
-            let (llm, failed) = (llm.clone(), failed.clone());
+            let failed = failed.clone();
             enter(Stage::Recall);
             async move {
                 let r = (|| {
                     let conn = super::db::open(std::path::Path::new(&f.db))?;
                     f.wiki = super::wiki::context(
                         &conn,
-                        llm.as_ref(),
                         f.req.novel_id,
                         &f.paragraphs.join("\n\n"),
                         &f.req.lang,
@@ -349,8 +348,13 @@ fn graph(
                     let system = rewrite_prompt(&f.req.lang, &f.req.style, &f.wiki);
                     let extract = super::wiki::extract_prompt(&f.req.lang, WIKI_MARK);
                     let system = |part: &str| format!("{system}{}{extract}", f.cast.prompt(part));
-                    let (out, _, found) =
-                        run_chunks(llm.as_ref(), &system, &f.paragraphs, None, progress.as_deref())?;
+                    let (out, _, found) = run_chunks(
+                        llm.as_ref(),
+                        &system,
+                        &f.paragraphs,
+                        None,
+                        progress.as_deref(),
+                    )?;
                     (f.out, f.found) = (out, found);
                     // Same language: the chapter keeps its title.
                     f.out_title = f.title.clone();
@@ -375,7 +379,13 @@ fn graph(
                     }
                     save(&conn, &f.req, &f.out_title, &f.out, llm.model())?;
                     super::wiki::keep_found(&conn, f.req.chapter_id, &f.req.lang, &f.found)?;
-                    super::cast::keep(&conn, f.req.novel_id, f.req.chapter_id, &f.req.lang, &f.found)?;
+                    super::cast::keep(
+                        &conn,
+                        f.req.novel_id,
+                        f.req.chapter_id,
+                        &f.req.lang,
+                        &f.found,
+                    )?;
                     Ok(f)
                 })();
                 step(&failed, r)
@@ -1061,7 +1071,6 @@ pub(crate) mod tests {
                 base_url: "http://x/v1/".into(),
                 api_key: "sk".into(),
                 model: "m".into(),
-                embed_model: String::new(),
             }),
         )
         .unwrap();
@@ -1137,13 +1146,20 @@ pub(crate) mod tests {
         let llm = std::sync::Arc::new(Fake::new("en"));
         run(&conn, llm.clone(), req(11, "vi")).unwrap();
         let calls = llm.calls.lock().unwrap();
-        let translate = calls.iter().find(|(s, _)| s.contains("novel translator")).unwrap();
+        let translate = calls
+            .iter()
+            .find(|(s, _)| s.contains("novel translator"))
+            .unwrap();
         assert!(translate.0.contains("- Second → Thứ Hai (term)"));
         // Fake has no tools, so the wiki was asked for as JSON after the translation.
         assert!(calls.last().unwrap().0.contains("JSON"));
         drop(calls);
         let done: i64 = conn
-            .query_row("select count(*) from wiki_chapters where chapter_id = 11", [], |r| r.get(0))
+            .query_row(
+                "select count(*) from wiki_chapters where chapter_id = 11",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(done, 1);
     }
@@ -1175,16 +1191,21 @@ pub(crate) mod tests {
         };
         run_with(&conn, llm.clone(), req(11, "vi"), hooks).unwrap();
         // The translation went on without learning.
-        assert!(super::super::wiki::entries(&conn, novel).unwrap().is_empty());
+        assert!(super::super::wiki::entries(&conn, novel)
+            .unwrap()
+            .is_empty());
         let before = llm.0.count();
         assert_eq!(
-            super::super::wiki::learn_pending(&conn, llm.as_ref()).unwrap(),
+            super::super::wiki::learn_pending(&conn).unwrap(),
             vec![(novel, 1)]
         );
         assert_eq!(llm.0.count(), before);
-        assert_eq!(super::super::wiki::entries(&conn, novel).unwrap()[0].name, "Lina");
+        assert_eq!(
+            super::super::wiki::entries(&conn, novel).unwrap()[0].name,
+            "Lina"
+        );
         // Nothing is left for the next turn.
-        assert!(super::super::wiki::learn_pending(&conn, llm.as_ref()).unwrap().is_empty());
+        assert!(super::super::wiki::learn_pending(&conn).unwrap().is_empty());
     }
 
     #[test]
@@ -1205,7 +1226,7 @@ pub(crate) mod tests {
         // Turned on: the kept facts go in with no request.
         super::super::wiki::set_auto(&conn, novel, true).unwrap();
         let before = llm.0.count();
-        assert_eq!(super::super::wiki::learn_kept(&conn, None, novel).unwrap(), 1);
+        assert_eq!(super::super::wiki::learn_kept(&conn, novel).unwrap(), 1);
         assert_eq!(names(), vec!["Lina"]);
         assert_eq!(llm.0.count(), before);
         // On while translating: the same requests bring the facts, none is made to learn.
@@ -1244,7 +1265,13 @@ pub(crate) mod tests {
         .unwrap();
         let want: Vec<String> = paragraphs
             .iter()
-            .map(|p| if p.starts_with(IMAGE_MARK) { p.clone() } else { format!("[tr] {p}") })
+            .map(|p| {
+                if p.starts_with(IMAGE_MARK) {
+                    p.clone()
+                } else {
+                    format!("[tr] {p}")
+                }
+            })
             .collect();
         assert_eq!(out, want);
         assert_eq!(title.as_deref(), Some("```\n[tr] Chapter 1\n```"));

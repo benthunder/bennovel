@@ -222,8 +222,6 @@ export const vi: Record<MessageKey, string> = {
   'ai.versions': 'Bản AI',
   'ai.versionRow': '{lang} · {style} · {n} chương',
   'ai.hint': 'Dùng LLM đã cài ở Cá nhân. Nếu sách đã là ngôn ngữ đích, AI sẽ viết lại theo văn phong đã chọn và đúng ngữ pháp.',
-  'ai.embedModel': 'Model embedding (tuỳ chọn)',
-  'ai.embedHint': 'Dùng để tìm trong wiki truyện theo ý nghĩa, ví dụ text-embedding-3-small hoặc nomic-embed-text. Để trống thì chỉ tìm theo tên.',
 
   // sao lưu & khôi phục (Cá nhân)
   'backup.hint': 'Toàn bộ: sách kèm bản dịch AI, lịch sử, quy tắc thay thế, từ điển, wiki, cài đặt app và cài đặt đọc, cùng LLM (gồm cả API key, hãy giữ file cẩn thận). Khôi phục sẽ gộp vào máy này.',
@@ -245,8 +243,6 @@ export const vi: Record<MessageKey, string> = {
   'wiki.autoSub': 'AI ghi lại nhân vật, địa danh và quan hệ từ mỗi chương đã dịch, rồi dùng chúng để giữ tên gọi nhất quán.',
   'wiki.lastError': 'Lần cập nhật wiki gần nhất bị lỗi: {error}',
   'wiki.search': 'Tìm tên, tên khác, mô tả…',
-  'wiki.byMeaning': 'Đang tìm theo tên và theo ý nghĩa.',
-  'wiki.byName': 'Đang tìm theo tên. Cài model embedding ở Cá nhân → Dịch AI để tìm cả theo ý nghĩa.',
   'wiki.all': 'Tất cả',
   'wiki.kind.character': 'Nhân vật',
   'wiki.kind.place': 'Địa danh',

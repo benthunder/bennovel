@@ -3,8 +3,8 @@
 //! never held in memory whole; reading then loads chapters from SQLite on demand
 //! through the same windowed reader as a book file (`DbBook`).
 
-pub mod commands;
 pub mod cast;
+pub mod commands;
 pub mod db;
 pub mod folder;
 pub mod llm;

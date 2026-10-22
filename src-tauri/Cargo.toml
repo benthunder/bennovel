@@ -37,7 +37,6 @@ ureq = { version = "2", default-features = false, features = ["tls"] }
 tokio = { version = "1", features = ["sync", "rt"] }
 rust-langgraph = { version = "0.1.1", default-features = false }
 tauri-plugin-notification = "2"
-sqlite-vec = "0.1.9"
 aho-corasick = "1"
 
 # Sends a second launch (a sign-in link, a file to open) to the running app.

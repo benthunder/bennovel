@@ -4,8 +4,7 @@ import { AiFailure } from './ai';
 /*
  * The wiki of a book on this device: characters, places, factions, items and terms
  * with their relations (src-tauri/src/library/wiki.rs). The AI fills it while it
- * translates; the user can edit it. Search goes by name, and by meaning (sqlite-vec)
- * when an embedding model is set with the LLM.
+ * translates; the user can edit it. Search goes by name, aliases and notes.
  */
 
 export const WIKI_KINDS = ['character', 'place', 'faction', 'item', 'level', 'term', 'other'] as const;
@@ -55,7 +54,7 @@ export interface WikiRelation {
   note: string; firstChapter: number | null; firstChapterShown?: number | null;
 }
 
-export interface Wiki { entries: WikiEntry[]; relations: WikiRelation[]; auto: boolean; lastError: string | null; byMeaning: boolean }
+export interface Wiki { entries: WikiEntry[]; relations: WikiRelation[]; auto: boolean; lastError: string | null }
 
 export interface WikiEntryInput {
   uid?: string; kind: WikiKind; name: string; names: Record<string, string>; aliases: string[];

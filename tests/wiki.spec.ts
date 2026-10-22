@@ -36,7 +36,7 @@ async function nativeApp(page: Page) {
         { uid: 'r4', fromUid: 'a', toUid: 'g', kind: 'has_level', labels: {}, note: '', firstChapter: 1 },
         { uid: 'r5', fromUid: 'a', toUid: 'f', kind: 'has_level', labels: {}, note: '', firstChapter: 5 }
       ],
-      auto: true, lastError: null, byMeaning: true
+      auto: true, lastError: null
     };
     let next = 1;
     w.isTauri = true;
@@ -51,7 +51,7 @@ async function nativeApp(page: Page) {
           case 'take_opened_files': return [];
           case 'library_list': return [imported];
           case 'library_detail': return { book: imported, sections: [{ label: 'Chương 1', pages: null }, { label: 'Chương 2', pages: null }] };
-          case 'llm_config_get': return { provider: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', embedModel: 'text-embedding-3-small', hasKey: true };
+          case 'llm_config_get': return { provider: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', hasKey: true };
           case 'wiki_get': return wiki;
           case 'library_open': return { book: { id: 9, format: 'txt', title: 'Võ Động Càn Khôn', sections: [{ label: 'Chương 1', pages: null }, { label: 'Chương 2', pages: null }], pageImages: false }, novelId: 1, lang: 'zh', index: 0, progress: 0 };
           case 'book_section':
@@ -107,16 +107,15 @@ test('the book wiki lists, searches and edits entries', async ({ page }, info) =
   await page.getByRole('radio', { name: 'Tiếng Việt' }).click();
   await expect(page.getByText('Lâm Động', { exact: true })).toBeVisible();
   await expect(page.locator('[data-entry="林动"]').getByText('3 quan hệ')).toBeVisible();
-  await expect(page.getByText('Đang tìm theo tên và theo ý nghĩa.')).toBeVisible();
   // A character shows the level it reached last.
   await expect(page.locator('[data-entry="林动"]').getByText('Địa Nguyên cảnh')).toBeVisible();
   await page.screenshot({ path: `test-results/wiki-${info.project.name}-list.png` });
 
-  // Search goes to the native side (by name, then by meaning).
-  await page.getByPlaceholder('Tìm tên, tên khác, mô tả…').fill('tông môn nào');
+  // Search goes to the native side (names, aliases and notes).
+  await page.getByPlaceholder('Tìm tên, tên khác, mô tả…').fill('tông môn');
   await expect(page.getByText('Đạo Tông', { exact: true })).toBeVisible();
   await expect(page.getByText('Lâm Động', { exact: true })).toHaveCount(0);
-  expect((await calls(page)).some(c => c.cmd === 'wiki_search' && c.args.query === 'tông môn nào')).toBe(true);
+  expect((await calls(page)).some(c => c.cmd === 'wiki_search' && c.args.query === 'tông môn')).toBe(true);
   await page.getByPlaceholder('Tìm tên, tên khác, mô tả…').fill('');
 
   // Turning off the update while translating.

@@ -105,7 +105,7 @@ test('the LLM is set up in Profile and kept on the device', async ({ page }) => 
   await page.getByRole('button', { name: 'Save' }).click();
   await expect(page.getByText('LLM saved.')).toBeVisible();
   const set = (await calls(page)).find(c => c.cmd === 'llm_config_set');
-  expect(set?.args.config).toEqual({ provider: 'custom', baseUrl: 'http://localhost:11434/v1', model: 'qwen2.5:7b', embedModel: '', apiKey: '' });
+  expect(set?.args.config).toEqual({ provider: 'custom', baseUrl: 'http://localhost:11434/v1', model: 'qwen2.5:7b', apiKey: '' });
   await expect(page.getByRole('button', { name: /AI translation \(your LLM\)/ })).toContainText('qwen2.5:7b');
 });
 

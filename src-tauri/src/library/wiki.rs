@@ -1,16 +1,14 @@
 //! The wiki of an imported book: its characters, places, factions, items and terms,
-//! and the relations between them. Only the wiki is embedded, never the chapters.
+//! and the relations between them.
 //!
 //! - The AI fills it as it translates (`learn`, the last node of the graph in
 //!   translate.rs): the model gets tools (`wiki_search`, `wiki_upsert`, `wiki_relate`)
 //!   in the OpenAI tool-calling format and runs them in a loop; an API or model
 //!   without tools gets the same job as one JSON answer instead.
-//! - Before a chapter is translated, the entries it mentions (by name or alias) and
-//!   the ones nearest to it in meaning go in the prompt (`context`), so names and
-//!   relations stay the same through the book.
-//! - Search by meaning uses sqlite-vec (`vec_distance_cosine`) over one vector per
-//!   entry, made by the embedding model set with the LLM; without one, search goes by
-//!   name only. The vectors stay on the device; entries and relations are synced.
+//! - Before a chapter is translated, the entries it mentions (by name or alias, found
+//!   in one pass by names.rs) go in the prompt (`context`), so names and relations
+//!   stay the same through the book. There are no embeddings: what the translation
+//!   requests find (`extract_prompt`) is kept in the library and found by name.
 //! - An entry the user edited keeps their words: the AI may only add to it. One the
 //!   user removed stays removed.
 //! - What an entry is and how it links to others is the same in every language: the
@@ -62,18 +60,9 @@ const TRANSLATE_BATCH: usize = 10;
 const MAX_ROUNDS: usize = 12;
 /// Entries put in a translation prompt at most.
 const CONTEXT_ENTRIES: usize = 40;
-/// Entries found by meaning added to those a chapter names.
-const NEIGHBOURS: usize = 8;
-/// Cosine distance under which an entry counts as related to a chapter.
-const NEAR: f64 = 0.55;
 /// Text of a chapter the AI reads to learn from it, in characters.
 const ORIGINAL_CHARS: usize = 12_000;
 const TRANSLATED_CHARS: usize = 6_000;
-/// Text of a chapter its neighbours are found from.
-const QUERY_CHARS: usize = 2_000;
-/// Entries embedded per request.
-const EMBED_BATCH: usize = 32;
-
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Entry {
@@ -139,8 +128,6 @@ pub struct Wiki {
     /// Translating updates the wiki.
     pub auto: bool,
     pub last_error: Option<String>,
-    /// An embedding model is set, so search goes by meaning too.
-    pub by_meaning: bool,
 }
 
 const ENTRY_COLS: &str =
@@ -240,14 +227,13 @@ pub fn relations(conn: &Connection, novel_id: i64) -> rusqlite::Result<Vec<Relat
     rows.collect()
 }
 
-pub fn load(conn: &Connection, novel_id: i64, by_meaning: bool) -> rusqlite::Result<Wiki> {
+pub fn load(conn: &Connection, novel_id: i64) -> rusqlite::Result<Wiki> {
     let (auto, last_error) = book_state(conn, novel_id)?;
     Ok(Wiki {
         entries: entries(conn, novel_id)?,
         relations: relations(conn, novel_id)?,
         auto,
         last_error,
-        by_meaning,
     })
 }
 
@@ -738,222 +724,9 @@ fn relate_ai(
 
 /* ---------- Search ---------- */
 
-fn to_blob(v: &[f32]) -> Vec<u8> {
-    v.iter().flat_map(|x| x.to_le_bytes()).collect()
-}
-
-/// What an entry's vector is made from.
-/// How each relation type reads from each end (English, Vietnamese), for what gets
-/// embedded: "Lâm Động: disciple of / đệ tử của Đạo Tông" is found by meaning in either
-/// language. Same words as the app's (`wiki.rel.*`).
-const REL_WORDS: &[(&str, [&str; 2], [&str; 2])] = &[
-    (
-        "master_of",
-        ["master of", "sư phụ của"],
-        ["disciple of", "đệ tử của"],
-    ),
-    (
-        "disciple_of",
-        ["disciple of", "đệ tử của"],
-        ["master of", "sư phụ của"],
-    ),
-    (
-        "parent_of",
-        ["parent of", "cha/mẹ của"],
-        ["child of", "con của"],
-    ),
-    (
-        "child_of",
-        ["child of", "con của"],
-        ["parent of", "cha/mẹ của"],
-    ),
-    (
-        "sibling_of",
-        ["sibling of", "anh chị em của"],
-        ["sibling of", "anh chị em của"],
-    ),
-    (
-        "spouse_of",
-        ["spouse of", "vợ/chồng của"],
-        ["spouse of", "vợ/chồng của"],
-    ),
-    (
-        "lover_of",
-        ["lover of", "người yêu của"],
-        ["lover of", "người yêu của"],
-    ),
-    (
-        "friend_of",
-        ["friend of", "bạn của"],
-        ["friend of", "bạn của"],
-    ),
-    (
-        "enemy_of",
-        ["enemy of", "kẻ thù của"],
-        ["enemy of", "kẻ thù của"],
-    ),
-    (
-        "member_of",
-        ["member of", "thành viên của"],
-        ["has member", "có thành viên"],
-    ),
-    (
-        "leader_of",
-        ["leader of", "đứng đầu"],
-        ["led by", "người đứng đầu là"],
-    ),
-    (
-        "located_in",
-        ["located in", "nằm trong"],
-        ["contains", "gồm có"],
-    ),
-    ("owns", ["owns", "sở hữu"], ["owned by", "thuộc về"]),
-    (
-        "has_level",
-        ["at level", "đạt cảnh giới"],
-        ["reached by", "người đạt"],
-    ),
-];
-
-/// The words for relation `r` seen from entry `uid`'s end, in every language known.
-fn rel_words_all(r: &Relation, uid: &str) -> Vec<String> {
-    match REL_WORDS.iter().find(|(c, _, _)| *c == r.kind) {
-        Some((_, from, to)) => (if r.from_uid == uid { from } else { to })
-            .iter()
-            .map(|s| s.to_string())
-            .collect(),
-        None => {
-            let mut w: Vec<String> = r.labels.values().cloned().collect();
-            if w.is_empty() {
-                w.push(r.kind.clone());
-            }
-            w
-        }
-    }
-}
-
-fn embed_text(e: &Entry) -> String {
-    let mut s = format!("{} ({})", e.name, e.kind);
-    for n in e.names.values() {
-        s.push_str(&format!(" / {n}"));
-    }
-    if !e.aliases.is_empty() {
-        s.push_str(&format!(". Also: {}", e.aliases.join(", ")));
-    }
-    for d in e.summaries.values() {
-        s.push_str(&format!(". {d}"));
-    }
-    s
-}
-
-/// What an entry is embedded as: its words, then its links to other entries (the graph)
-/// in every language, so "đệ tử của Đạo Tông" or "disciple of the Dao Sect" finds it.
-fn embed_text_linked(e: &Entry, rels: &[Relation], by_uid: &BTreeMap<&str, &Entry>) -> String {
-    let mut s = embed_text(e);
-    for r in rels
-        .iter()
-        .filter(|r| r.from_uid == e.uid || r.to_uid == e.uid)
-    {
-        let other = if r.from_uid == e.uid {
-            &r.to_uid
-        } else {
-            &r.from_uid
-        };
-        let Some(o) = by_uid.get(other.as_str()) else {
-            continue;
-        };
-        let mut names = vec![o.name.clone()];
-        names.extend(o.names.values().filter(|n| **n != o.name).cloned());
-        s.push_str(&format!(
-            ". {} {}",
-            rel_words_all(r, &e.uid).join(" / "),
-            names.join(" / ")
-        ));
-    }
-    s
-}
-
-/// Embeds the entries whose vector is missing or out of date; returns how many.
-pub fn reindex(conn: &Connection, llm: &dyn Chat, novel_id: i64) -> Result<usize, AiError> {
-    let Some(model) = llm.embed_model().map(String::from) else {
-        return Ok(0);
-    };
-    let all = entries(conn, novel_id)?;
-    let by_uid: BTreeMap<&str, &Entry> = all.iter().map(|e| (e.uid.as_str(), e)).collect();
-    let rels = relations(conn, novel_id)?;
-    let mut stmt = conn.prepare(&format!(
-        "select {ENTRY_COLS}, e.id, v.model, v.text from wiki_entries e
-         left join wiki_vectors v on v.entry_id = e.id
-         where e.novel_id = ?1 and e.deleted = 0"
-    ))?;
-    let stale: Vec<(i64, String)> = stmt
-        .query_map([novel_id], |r| {
-            let e = entry_row(r)?;
-            let id: i64 = r.get(AFTER)?;
-            let m: Option<String> = r.get(AFTER + 1)?;
-            let t: Option<String> = r.get(AFTER + 2)?;
-            Ok((id, embed_text_linked(&e, &rels, &by_uid), m, t))
-        })?
-        .filter_map(|row| match row {
-            Ok((id, text, m, t)) => (m.as_deref() != Some(model.as_str())
-                || t.as_deref() != Some(text.as_str()))
-            .then_some(Ok((id, text))),
-            Err(e) => Some(Err(e)),
-        })
-        .collect::<rusqlite::Result<_>>()?;
-    for batch in stale.chunks(EMBED_BATCH) {
-        let texts: Vec<String> = batch.iter().map(|(_, t)| t.clone()).collect();
-        let vectors = llm.embed(&texts)?;
-        for ((id, text), v) in batch.iter().zip(vectors) {
-            conn.execute(
-                "insert into wiki_vectors (entry_id, model, text, embedding) values (?1, ?2, ?3, ?4)
-                 on conflict (entry_id) do update set model = excluded.model, text = excluded.text,
-                   embedding = excluded.embedding",
-                params![id, model, text, to_blob(&v)],
-            )?;
-        }
-    }
-    Ok(stale.len())
-}
-
-/// The entries nearest in meaning to `query`, with their cosine distance.
-fn nearest(
-    conn: &Connection,
-    llm: &dyn Chat,
-    novel_id: i64,
-    query: &str,
-    limit: usize,
-) -> Result<Vec<(Entry, f64)>, AiError> {
-    let Some(model) = llm.embed_model().map(String::from) else {
-        return Ok(Vec::new());
-    };
-    let has: bool = conn.query_row(
-        "select exists (select 1 from wiki_vectors v join wiki_entries e on e.id = v.entry_id
-           where e.novel_id = ?1 and v.model = ?2)",
-        params![novel_id, model],
-        |r| r.get(0),
-    )?;
-    if !has {
-        return Ok(Vec::new());
-    }
-    let q = to_blob(&llm.embed(&[query.to_string()])?.pop().unwrap_or_default());
-    let mut stmt = conn.prepare(&format!(
-        "select {ENTRY_COLS}, vec_distance_cosine(v.embedding, ?3) as d
-         from wiki_vectors v join wiki_entries e on e.id = v.entry_id
-         where e.novel_id = ?1 and e.deleted = 0 and v.model = ?2 and length(v.embedding) = length(?3)
-         order by d limit ?4"
-    ))?;
-    let rows = stmt.query_map(params![novel_id, model, q, limit as i64], |r| {
-        Ok((entry_row(r)?, r.get(AFTER)?))
-    })?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
-}
-
-/// Entries matching `query` by name, alias or summary, then (with an embedding model)
-/// the nearest in meaning.
+/// Entries matching `query` by name, alias or summary.
 pub fn search(
     conn: &Connection,
-    llm: Option<&dyn Chat>,
     novel_id: i64,
     query: &str,
     limit: usize,
@@ -968,24 +741,9 @@ pub fn search(
            or instr(lower(e.names), ?2) > 0 or instr(lower(e.summaries), ?2) > 0)
          order by lower(e.name) = ?2 desc, instr(lower(e.name), ?2) = 0, e.name limit ?3"
     ))?;
-    let mut out: Vec<Entry> = stmt
+    let out: Vec<Entry> = stmt
         .query_map(params![novel_id, q, limit as i64], entry_row)?
         .collect::<rusqlite::Result<_>>()?;
-    if let Some(llm) = llm {
-        if out.len() < limit {
-            // A failed embedding leaves the search by name.
-            if let Ok(near) = nearest(conn, llm, novel_id, query, limit) {
-                for (e, _) in near {
-                    if out.len() >= limit {
-                        break;
-                    }
-                    if !out.iter().any(|x| x.uid == e.uid) {
-                        out.push(e);
-                    }
-                }
-            }
-        }
-    }
     Ok(out)
 }
 
@@ -1014,30 +772,16 @@ fn head(text: &str, chars: usize) -> String {
     text.chars().take(chars).collect()
 }
 
-/// The wiki part of a translation prompt for chapter `text`: the entries it names and
-/// those nearest to it, with their relations. Empty when the wiki has nothing for it.
+/// The wiki part of a translation prompt for chapter `text`: the entries it names,
+/// with their relations. Empty when the wiki has nothing for it.
 pub fn context(
     conn: &Connection,
-    llm: &dyn Chat,
     novel_id: i64,
     text: &str,
     lang: &str,
 ) -> rusqlite::Result<String> {
     let mut picked = mentioned(conn, novel_id, text)?;
     picked.truncate(CONTEXT_ENTRIES);
-    if picked.len() < CONTEXT_ENTRIES {
-        // Finding neighbours is a help, not a must: a failed request is skipped.
-        if let Ok(near) = nearest(conn, llm, novel_id, &head(text, QUERY_CHARS), NEIGHBOURS) {
-            for (e, d) in near {
-                if d < NEAR
-                    && picked.len() < CONTEXT_ENTRIES
-                    && !picked.iter().any(|x| x.uid == e.uid)
-                {
-                    picked.push(e);
-                }
-            }
-        }
-    }
     if picked.is_empty() {
         return Ok(String::new());
     }
@@ -1232,7 +976,6 @@ fn tools_refused(e: &AiError) -> bool {
 #[allow(clippy::too_many_arguments)]
 fn run_tool(
     conn: &Connection,
-    llm: &dyn Chat,
     novel_id: i64,
     lang: &str,
     chapter: Option<i64>,
@@ -1247,7 +990,7 @@ fn run_tool(
                 .get("query")
                 .and_then(|q| q.as_str())
                 .unwrap_or_default();
-            match search(conn, Some(llm), novel_id, q, 8) {
+            match search(conn, novel_id, q, 8) {
                 Ok(found) => json!(found
                     .iter()
                     .map(|e| json!({
@@ -1317,8 +1060,8 @@ fn apply_json(
     Ok(changes)
 }
 
-/// Reads one translated chapter into the book's wiki (once per chapter) and embeds
-/// what changed; returns the changes made.
+/// Reads one translated chapter into the book's wiki (once per chapter); returns the
+/// changes made.
 pub fn learn(
     conn: &Connection,
     llm: &dyn Chat,
@@ -1381,7 +1124,7 @@ pub fn learn(
             let f = call.get("function").cloned().unwrap_or(Value::Null);
             let name = f.get("name").and_then(|n| n.as_str()).unwrap_or_default();
             let args = f.get("arguments").and_then(|a| a.as_str()).unwrap_or("{}");
-            let answer = run_tool(conn, llm, novel_id, lang, chapter, name, args, &mut changes)?;
+            let answer = run_tool(conn, novel_id, lang, chapter, name, args, &mut changes)?;
             messages.push(json!({
                 "role": "tool",
                 "tool_call_id": call.get("id").cloned().unwrap_or(Value::Null),
@@ -1393,23 +1136,18 @@ pub fn learn(
         "insert or replace into wiki_chapters (chapter_id, done_at) values (?1, ?2)",
         params![chapter_id, super::db::now_ms()],
     )?;
-    if changes > 0 {
-        reindex(conn, llm, novel_id)?;
-    }
     Ok(changes)
 }
 
 /// Whether any of the facts the translation requests brought reads as JSON.
 pub fn has_found(found: &[String]) -> bool {
-    found
-        .iter()
-        .any(|f| parse_object::<AiAnswer>(f).is_some())
+    found.iter().any(|f| parse_object::<AiAnswer>(f).is_some())
 }
 
 /// The wiki queue's turn (queue.rs): every book whose wiki learns gets the facts kept
 /// for its chapters not read in yet. Returns (book, changes) for each book done; a
 /// book's failure is kept for its wiki screen.
-pub fn learn_pending(conn: &Connection, llm: &dyn Chat) -> rusqlite::Result<Vec<(i64, usize)>> {
+pub fn learn_pending(conn: &Connection) -> rusqlite::Result<Vec<(i64, usize)>> {
     let mut stmt = conn.prepare(
         "select distinct c.novel_id from chapter_wiki_facts f join chapters c on c.id = f.chapter_id
          where not exists (select 1 from wiki_chapters w where w.chapter_id = f.chapter_id)",
@@ -1422,7 +1160,7 @@ pub fn learn_pending(conn: &Connection, llm: &dyn Chat) -> rusqlite::Result<Vec<
         if !auto(conn, novel_id)? {
             continue;
         }
-        match learn_kept(conn, Some(llm), novel_id) {
+        match learn_kept(conn, novel_id) {
             Ok(n) => {
                 set_error(conn, novel_id, None)?;
                 done.push((novel_id, n));
@@ -1452,13 +1190,8 @@ pub fn keep_found(
 }
 
 /// Fills the wiki from the facts kept for the book's chapters not read into it yet,
-/// in reading order, then embeds what changed (when there is an LLM to do it); returns
-/// the changes made.
-pub fn learn_kept(
-    conn: &Connection,
-    llm: Option<&dyn Chat>,
-    novel_id: i64,
-) -> Result<usize, AiError> {
+/// in reading order, with no request; returns the changes made.
+pub fn learn_kept(conn: &Connection, novel_id: i64) -> rusqlite::Result<usize> {
     let mut stmt = conn.prepare(
         "select f.chapter_id, f.lang, f.facts from chapter_wiki_facts f
          join chapters c on c.id = f.chapter_id
@@ -1472,34 +1205,15 @@ pub fn learn_kept(
     let mut changes = 0;
     for (chapter_id, lang, facts) in kept {
         let found: Vec<String> = serde_json::from_str(&facts).unwrap_or_default();
-        changes += apply_found(conn, novel_id, chapter_id, &lang, &found)?.unwrap_or(0);
-    }
-    if let (true, Some(llm)) = (changes > 0, llm) {
-        reindex(conn, llm, novel_id)?;
+        changes += learn_found(conn, novel_id, chapter_id, &lang, &found)?.unwrap_or(0);
     }
     Ok(changes)
 }
 
-/// Puts in the wiki what the translation requests found in a chapter (`extract_prompt`)
-/// and embeds what changed, with no request of its own besides the embeddings. None
-/// when none of `found` reads as JSON, so the chapter is learnt the usual way.
+/// Puts in the wiki what the translation requests found in a chapter (`extract_prompt`),
+/// with no request of its own. None when none of `found` reads as JSON, so the chapter
+/// is learnt the usual way.
 pub fn learn_found(
-    conn: &Connection,
-    llm: &dyn Chat,
-    novel_id: i64,
-    chapter_id: i64,
-    lang: &str,
-    found: &[String],
-) -> Result<Option<usize>, AiError> {
-    let changes = apply_found(conn, novel_id, chapter_id, lang, found)?;
-    if changes.unwrap_or(0) > 0 {
-        reindex(conn, llm, novel_id)?;
-    }
-    Ok(changes)
-}
-
-/// `learn_found` without the embeddings.
-fn apply_found(
     conn: &Connection,
     novel_id: i64,
     chapter_id: i64,
@@ -1565,10 +1279,10 @@ pub fn learn_quietly(
     if !auto(conn, novel_id)? {
         return Ok(());
     }
-    let learnt = match learn_found(conn, llm, novel_id, chapter_id, lang, found) {
+    let learnt = match learn_found(conn, novel_id, chapter_id, lang, found) {
         Ok(None) => learn(conn, llm, novel_id, chapter_id, lang, original, translated),
         Ok(Some(n)) => Ok(n),
-        Err(e) => Err(e),
+        Err(e) => Err(e.into()),
     };
     match learnt {
         Ok(_) => set_error(conn, novel_id, None),
@@ -1620,7 +1334,6 @@ pub fn at_chapter(conn: &Connection, novel_id: i64, number: i64) -> rusqlite::Re
         relations,
         auto,
         last_error,
-        by_meaning: false,
     })
 }
 
@@ -1793,10 +1506,6 @@ pub fn translate_missing(
             changed += 1;
         }
     }
-    if changed > 0 {
-        // Search by meaning finds the new words too; it is a help, not a must.
-        let _ = reindex(conn, llm, novel_id);
-    }
     match unreadable {
         Some(reply) if changed == 0 => Err(AiError::Other(format!(
             "unreadable reply: {}",
@@ -1815,7 +1524,7 @@ fn parse_object<T: serde::de::DeserializeOwned>(reply: &str) -> Option<T> {
 /// Takes what stays on this device out of a copy about to be synced.
 pub fn strip(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
-        "delete from wiki_vectors; delete from wiki_books; delete from wiki_chapters;
+        "delete from wiki_books; delete from wiki_chapters;
          delete from chapter_wiki_facts; delete from cast_people;
          delete from cast_address_raw; delete from cast_address;",
     )
@@ -1868,12 +1577,10 @@ mod tests {
     use crate::library::translate::tests::book;
     use std::sync::Mutex;
 
-    /// A model that calls the wiki tools from a script, then says DONE; and embeds
-    /// texts by which of a few words they hold.
+    /// A model that calls the wiki tools from a script, then says DONE.
     struct Agent {
         script: Mutex<Vec<Value>>,
         seen: Mutex<Vec<Vec<Value>>>,
-        embeds: bool,
     }
 
     fn call(name: &str, args: Value) -> Value {
@@ -1882,7 +1589,7 @@ mod tests {
     }
 
     impl Agent {
-        fn new(rounds: Vec<Vec<Value>>, embeds: bool) -> Self {
+        fn new(rounds: Vec<Vec<Value>>) -> Self {
             let mut script: Vec<Value> = rounds
                 .into_iter()
                 .map(|calls| json!({ "role": "assistant", "content": null, "tool_calls": calls }))
@@ -1892,7 +1599,6 @@ mod tests {
             Self {
                 script: Mutex::new(script),
                 seen: Mutex::default(),
-                embeds,
             }
         }
     }
@@ -1913,59 +1619,32 @@ mod tests {
                 .pop()
                 .unwrap_or(json!({ "content": "DONE" })))
         }
-        fn embed_model(&self) -> Option<&str> {
-            self.embeds.then_some("emb")
-        }
-        fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, AiError> {
-            Ok(texts
-                .iter()
-                .map(|t| {
-                    let t = t.to_lowercase();
-                    ["sword", "sect", "master"]
-                        .iter()
-                        .map(|w| if t.contains(w) { 1.0 } else { 0.05 })
-                        .collect()
-                })
-                .collect())
-        }
-    }
-
-    #[test]
-    fn sqlite_vec_is_built_in() {
-        let (conn, _) = book("vec");
-        let v: String = conn
-            .query_row("select vec_version()", [], |r| r.get(0))
-            .unwrap();
-        assert!(v.starts_with('v'));
     }
 
     #[test]
     fn learns_a_chapter_through_tool_calls() {
         let (conn, novel) = book("learn");
-        let llm = Agent::new(
+        let llm = Agent::new(vec![
+            vec![call("wiki_search", json!({ "query": "林动" }))],
             vec![
-                vec![call("wiki_search", json!({ "query": "林动" }))],
-                vec![
-                    call(
-                        "wiki_upsert",
-                        json!({ "name": "林动", "kind": "character", "translated": "Lâm Động", "summary": "Thiếu niên Lâm gia, cầm kiếm (sword)." }),
-                    ),
-                    call(
-                        "wiki_upsert",
-                        json!({ "name": "道宗", "kind": "faction", "translated": "Đạo Tông", "summary": "Một tông môn (sect)." }),
-                    ),
-                    call(
-                        "wiki_relate",
-                        json!({ "from": "林动", "to": "道宗", "relation": "đệ tử của" }),
-                    ),
-                    call(
-                        "wiki_relate",
-                        json!({ "from": "林动", "to": "nobody", "relation": "x" }),
-                    ),
-                ],
+                call(
+                    "wiki_upsert",
+                    json!({ "name": "林动", "kind": "character", "translated": "Lâm Động", "summary": "Thiếu niên Lâm gia, cầm kiếm (sword)." }),
+                ),
+                call(
+                    "wiki_upsert",
+                    json!({ "name": "道宗", "kind": "faction", "translated": "Đạo Tông", "summary": "Một tông môn (sect)." }),
+                ),
+                call(
+                    "wiki_relate",
+                    json!({ "from": "林动", "to": "道宗", "relation": "đệ tử của" }),
+                ),
+                call(
+                    "wiki_relate",
+                    json!({ "from": "林动", "to": "nobody", "relation": "x" }),
+                ),
             ],
-            true,
-        );
+        ]);
         let n = learn(
             &conn,
             &llm,
@@ -1977,7 +1656,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(n, 3);
-        let w = load(&conn, novel, true).unwrap();
+        let w = load(&conn, novel).unwrap();
         assert_eq!(w.entries.len(), 2);
         let lin = w.entries.iter().find(|e| e.name == "林动").unwrap();
         assert_eq!(lin.names.get("vi").map(String::as_str), Some("Lâm Động"));
@@ -1989,7 +1668,7 @@ mod tests {
             [novel],
         )
         .unwrap();
-        let shown = load(&conn, novel, true).unwrap();
+        let shown = load(&conn, novel).unwrap();
         assert_eq!(
             shown
                 .entries
@@ -2010,12 +1689,8 @@ mod tests {
             .unwrap()
             .contains("wiki_upsert first"));
         drop(seen);
-        // Each entry got its vector, and search by meaning finds the sect.
-        let vectors: i64 = conn
-            .query_row("select count(*) from wiki_vectors", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(vectors, 2);
-        let found = search(&conn, Some(&llm), novel, "which sect?", 1).unwrap();
+        // Search by name finds the sect.
+        let found = search(&conn, novel, "道宗", 1).unwrap();
         assert_eq!(found[0].name, "道宗");
         // A chapter is read once.
         assert_eq!(learn(&conn, &llm, novel, 10, "vi", "林动", "").unwrap(), 0);
@@ -2024,7 +1699,6 @@ mod tests {
     #[test]
     fn the_prompt_gets_the_entries_a_chapter_names() {
         let (conn, novel) = book("ctx");
-        let llm = Agent::new(vec![], false);
         let a = save(
             &conn,
             novel,
@@ -2068,14 +1742,11 @@ mod tests {
         )
         .unwrap();
         add_relation(&conn, novel, &b.uid, &a.uid, "kẻ thù của", "vi", "").unwrap();
-        let ctx = context(&conn, &llm, novel, "动少 看着 林琅天。", "vi").unwrap();
+        let ctx = context(&conn, novel, "动少 看着 林琅天。", "vi").unwrap();
         assert!(ctx.contains("林动 → Lâm Động (character); also called 动少: Nhân vật chính."));
         assert!(ctx.contains("林琅天 — kẻ thù của — 林动"));
         assert!(!ctx.contains("炎城"));
-        assert_eq!(
-            context(&conn, &llm, novel, "nothing here", "vi").unwrap(),
-            ""
-        );
+        assert_eq!(context(&conn, novel, "nothing here", "vi").unwrap(), "");
     }
 
     #[test]
@@ -2255,16 +1926,6 @@ mod tests {
         let again = add_relation(&conn, novel, &b.uid, &a.uid, "godfather", "en", "").unwrap();
         assert_eq!(again, rels[2].uid);
         assert_eq!(relations(&conn, novel).unwrap().len(), 3);
-        // The links are embedded with each end, in every language, the right way round.
-        let all = entries(&conn, novel).unwrap();
-        let by_uid: BTreeMap<&str, &Entry> = all.iter().map(|e| (e.uid.as_str(), e)).collect();
-        let rels = relations(&conn, novel).unwrap();
-        let text = |uid: &str| embed_text_linked(by_uid[uid], &rels, &by_uid);
-        let xiao = text(&b.uid);
-        assert!(xiao.contains("disciple of / đệ tử của 药老"), "{xiao}");
-        assert!(xiao.contains("at level / đạt cảnh giới 斗师"), "{xiao}");
-        assert!(xiao.contains("godfather"), "{xiao}");
-        assert!(text(&a.uid).contains("master of / sư phụ của 萧炎"));
     }
 
     #[test]

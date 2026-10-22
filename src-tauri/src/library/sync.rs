@@ -523,12 +523,14 @@ mod tests {
     }
 
     fn ai_texts(conn: &Connection) -> Vec<String> {
-        conn.prepare("select content from chapter_translations where source = 'ai' order by chapter_id")
-            .unwrap()
-            .query_map([], |r| r.get(0))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap()
+        conn.prepare(
+            "select content from chapter_translations where source = 'ai' order by chapter_id",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
     }
 
     #[test]
@@ -564,22 +566,31 @@ mod tests {
                 base_url: "https://api.openai.com/v1".into(),
                 api_key: "sk-secret".into(),
                 model: "m".into(),
-                embed_model: String::new(),
             }),
         )
         .unwrap();
         send(&a, &pa, &mut b, &pb);
 
         let backup = pa.with_extension("bak.gz");
-        backup_to(&a, &pa.with_extension("bak"), &backup, Some(r#"{"uiLang":"vi"}"#)).unwrap();
+        backup_to(
+            &a,
+            &pa.with_extension("bak"),
+            &backup,
+            Some(r#"{"uiLang":"vi"}"#),
+        )
+        .unwrap();
 
         // Deleted, and the deletion synced: a plain sync doesn't bring it back…
         super::super::delete(&a, id).unwrap();
         send(&a, &pa, &mut b, &pb);
         assert!(super::super::list(&b).unwrap().is_empty());
         // …the backup does, translation included.
-        let restored =
-            restore_from(&mut a, std::fs::File::open(&backup).unwrap(), &pa.with_extension("in")).unwrap();
+        let restored = restore_from(
+            &mut a,
+            std::fs::File::open(&backup).unwrap(),
+            &pa.with_extension("in"),
+        )
+        .unwrap();
         assert_eq!(super::super::list(&a).unwrap().len(), 1);
         // The app's settings come back to be applied.
         assert_eq!(restored.settings.as_deref(), Some(r#"{"uiLang":"vi"}"#));
@@ -600,14 +611,17 @@ mod tests {
             base_url: "https://api.openai.com/v1".into(),
             api_key: "sk-secret".into(),
             model: "m".into(),
-            embed_model: String::new(),
         };
         super::super::llm::save(&a, Some(&config)).unwrap();
         let backup = pa.with_extension("llm.gz");
         backup_to(&a, &pa.with_extension("llm"), &backup, Some("{}")).unwrap();
 
-        let restored =
-            restore_from(&mut c, std::fs::File::open(&backup).unwrap(), &pa.with_extension("llm-in")).unwrap();
+        let restored = restore_from(
+            &mut c,
+            std::fs::File::open(&backup).unwrap(),
+            &pa.with_extension("llm-in"),
+        )
+        .unwrap();
         assert_eq!(restored.settings.as_deref(), Some("{}"));
         let key: String = c
             .query_row("select api_key from llm_config", [], |r| r.get(0))

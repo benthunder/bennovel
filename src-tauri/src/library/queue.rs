@@ -12,7 +12,7 @@
 //!
 //! The wiki has a queue of its own: the translation keeps each chapter's wiki facts and
 //! goes on to the next chapter, while a second task reads the kept facts into the wiki
-//! and embeds them (wiki.rs `learn_pending`), then sends `wiki-updated`.
+//! (wiki.rs `learn_pending`, no LLM request), then sends `wiki-updated`.
 
 use super::db;
 use super::llm::{self, AiError};
@@ -420,14 +420,7 @@ async fn work<R: Runtime>(app: &AppHandle<R>, wake: &Wake) {
 async fn learn_wiki<R: Runtime>(app: &AppHandle<R>, wake: &Wake) {
     let db_file = wake.db.clone();
     let done = tauri::async_runtime::spawn_blocking(move || {
-        let conn = db::open(&db_file)?;
-        let Some(config) = llm::load(&conn)? else {
-            return Ok(Vec::new());
-        };
-        Ok::<_, AiError>(super::wiki::learn_pending(
-            &conn,
-            &llm::OpenAi::new(config),
-        )?)
+        Ok::<_, AiError>(super::wiki::learn_pending(&db::open(&db_file)?)?)
     })
     .await
     .unwrap_or_else(|e| Err(AiError::Other(e.to_string())));
