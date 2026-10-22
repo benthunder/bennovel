@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ask } from '@tauri-apps/plugin-dialog';
 import { Modal } from '../components/Modal';
 import { levelOf, relWords, useWikiT } from '../components/WikiPopup';
@@ -87,17 +87,17 @@ export function WikiScreen({ novelId, title, lang: startLang }: { novelId: numbe
     const rels = relCount.get(e.uid) ?? 0;
     const level = wiki && e.kind === 'character' ? levelOf(wiki, e.uid) : null;
     return (
-      <button key={e.uid} data-entry={e.name} className="novel-row" style={{ alignItems: 'flex-start', gap: 10, padding: '12px 14px', borderRadius: 22, background: 'var(--color-surface)', minWidth: 0, textAlign: 'left', width: '100%' }} onClick={() => setOpen(e)}>
+      <div key={e.uid} data-entry={e.name} role="button" tabIndex={0} className="novel-row" style={{ alignItems: 'flex-start', gap: 10, padding: '12px 14px', borderRadius: 22, background: 'var(--color-surface)', minWidth: 0, textAlign: 'left', width: '100%' }}
+        onClick={() => setOpen(e)} onKeyDown={ev => { if (ev.target === ev.currentTarget && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); setOpen(e); } }}>
         <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 3 }}>
           <span style={{ display: 'flex', gap: 6, alignItems: 'baseline', flexWrap: 'wrap' }}>
             <span style={{ fontSize: 15, fontWeight: 700 }}>{label}</span>
             {label !== e.name && <span className="muted" style={{ fontSize: 12 }}>{e.name}</span>}
           </span>
           {sum.text && (
-            <span style={{ fontSize: 13, color: 'var(--color-neutral-800)', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+            <Summary text={sum.text}>
               {lang !== RAW && !sum.inLang && <span className="tag tag-neutral" style={{ fontSize: 10, marginRight: 6 }}>{sum.from === RAW ? t('wiki.rawTag') : sum.from.toUpperCase()}</span>}
-              {sum.text}
-            </span>
+            </Summary>
           )}
           <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 2 }}>
             <span className="tag tag-neutral" style={{ fontSize: 11 }}>{t(`wiki.kind.${e.kind}`)}</span>
@@ -109,7 +109,7 @@ export function WikiScreen({ novelId, title, lang: startLang }: { novelId: numbe
           {extra}
         </span>
         <ChevronRightIcon size={16} style={{ flex: 'none', marginTop: 4, color: 'var(--color-neutral-500)' }} />
-      </button>
+      </div>
     );
   };
 
@@ -195,6 +195,41 @@ export function WikiScreen({ novelId, title, lang: startLang }: { novelId: numbe
           onClose={() => setOpen(null)} onChanged={reload} />
       )}
     </div>
+  );
+}
+
+/**
+ * An entry's description, two lines at first. When it runs longer, a "Show more" link
+ * opens the whole text in place (and "Show less" folds it back) without opening the entry.
+ */
+function Summary({ text, children }: { text: string; children?: ReactNode }) {
+  const { t } = useI18n();
+  const ref = useRef<HTMLSpanElement>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [long, setLong] = useState(false);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => { if (!expanded) setLong(el.scrollHeight > el.clientHeight + 1); };
+    measure();
+    const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
+    ro?.observe(el);
+    return () => ro?.disconnect();
+  }, [text, expanded]);
+  const clamp = expanded ? {} : { display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' as const, overflow: 'hidden' };
+  return (
+    <>
+      <span ref={ref} data-wiki-summary style={{ fontSize: 13, lineHeight: 1.45, color: 'var(--color-neutral-800)', whiteSpace: 'pre-line', overflowWrap: 'anywhere', ...clamp }}>
+        {children}{text}
+      </span>
+      {(long || expanded) && (
+        <button type="button" aria-expanded={expanded} data-wiki-more
+          onClick={ev => { ev.stopPropagation(); setExpanded(x => !x); }} onKeyDown={ev => ev.stopPropagation()}
+          style={{ alignSelf: 'flex-start', padding: '2px 0', border: 'none', background: 'none', color: 'var(--color-accent-700)', font: 'inherit', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+          {t(expanded ? 'wiki.showLess' : 'wiki.showMore')}
+        </button>
+      )}
+    </>
   );
 }
 
@@ -409,7 +444,7 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
         )}
         <div className="field">
           <label htmlFor="wiki-summary">{t('wiki.summaryIn', { lang: langName(editLang) })}</label>
-          <textarea id="wiki-summary" className="input" rows={4} style={{ borderRadius: 20 }} value={summaries[editLang] ?? ''}
+          <textarea id="wiki-summary" className="input" rows={8} style={{ borderRadius: 20, resize: 'vertical', minHeight: 140 }} value={summaries[editLang] ?? ''}
             placeholder={wikiSummary({ ...(saved ?? entryStub), summaries }, editLang).text}
             onChange={e => setSummaries(s => ({ ...s, [editLang]: e.target.value }))} />
         </div>
