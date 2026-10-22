@@ -10,8 +10,8 @@
 //!   chapter (asked once per book, kept in `ai_books`), and picks the mode: another
 //!   language than the one asked for → translate; the same → rewrite (polish it in
 //!   the chosen style, correct in that language).
-//! - recall: the book's wiki entries the chapter names, and those nearest to it in
-//!   meaning (sqlite-vec), go in the prompt with their relations (wiki.rs).
+//! - recall: the book's wiki entries the chapter names go in the prompt with their
+//!   relations (wiki.rs), found by name (names.rs).
 //! - translate and rewrite each run only in their mode and pass the state on
 //!   otherwise. (rust-langgraph 0.1.1 accepts `add_conditional_edges` but `compile`
 //!   drops them, so the branch is made by the nodes; once fixed upstream it can be a
@@ -47,16 +47,37 @@ const DETECT_WORDS: usize = 50;
 const MAX_STEPS: usize = 8;
 /// Parts of a chapter sent to the LLM at the same time.
 const PARALLEL: usize = 3;
+/// Where a reply's translation ends and the wiki facts of that part begin.
+const WIKI_MARK: &str = "<<<WIKI>>>";
 
 /// Called with (parts done, parts in all) as a chapter's parts come back.
 pub type OnProgress = Arc<dyn Fn(usize, usize) + Send + Sync>;
+
+/// A node of the graph, as the app shows where a chapter is.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Stage {
+    Detect,
+    Recall,
+    Translate,
+    Rewrite,
+    Save,
+    Learn,
+}
+
+/// Called as each node starts its work.
+pub type OnStage = Arc<dyn Fn(Stage) + Send + Sync>;
 
 /// How a run reports and finishes; the default suits the background queue.
 #[derive(Default, Clone)]
 pub struct Hooks {
     pub progress: Option<OnProgress>,
+    pub stage: Option<OnStage>,
     /// Learn the wiki on another thread after the save instead of before returning.
     pub learn_in_background: bool,
+    /// Leave the wiki facts the requests brought (kept by the save node) to the wiki
+    /// queue (queue.rs); learn here only when they brought none.
+    pub learn_found_later: bool,
 }
 
 /// What to do with one chapter.
@@ -105,10 +126,16 @@ struct Flow {
     terms: Vec<(String, String)>,
     /// The wiki part of the prompt (recall).
     wiki: String,
+    /// The cast the chapter names: genders, ages and forms of address found before
+    /// (cast.rs), put in each part's prompt.
+    cast: super::cast::Cast,
     title: String,
     paragraphs: Vec<String>,
     out_title: String,
     out: Vec<String>,
+    /// The wiki facts each request found in its part, one JSON object per part: kept
+    /// with the chapter, and read into the wiki when the book's wiki learns.
+    found: Vec<String>,
 }
 
 impl State for Flow {
@@ -121,6 +148,7 @@ impl State for Flow {
 
 /// Runs the graph for one chapter and saves the result. `conn` must be a library
 /// file on disk (the save node opens it again).
+#[cfg(test)]
 pub fn run(conn: &Connection, llm: Arc<dyn Chat>, req: Request) -> Result<Translated, AiError> {
     run_with(conn, llm, req, Hooks::default())
 }
@@ -135,6 +163,7 @@ pub fn run_with(
     check_request(&req)?;
     let (title, content) = source_text(conn, req.chapter_id)?;
     let (known_lang, sample, guess_lang) = detect_input(conn, req.novel_id)?;
+    let cast = super::cast::load(conn, req.novel_id, &content, &req.lang)?;
     let terms = if req.glossary {
         glossary(conn, req.novel_id, &req.lang)?
     } else {
@@ -150,10 +179,12 @@ pub fn run_with(
         mode: None,
         terms,
         wiki: String::new(),
+        cast,
         title,
         paragraphs: split_paragraphs(&content),
         out_title: String::new(),
         out: Vec::new(),
+        found: Vec::new(),
     };
     let failed: Arc<Mutex<Option<AiError>>> = Arc::default();
     let model = llm.model().to_string();
@@ -202,11 +233,22 @@ fn graph(
         })
     }
 
+    // Tells the hook a node started.
+    let enter = {
+        let hook = hooks.stage.clone();
+        move |s: Stage| {
+            if let Some(h) = &hook {
+                h(s);
+            }
+        }
+    };
+
     let mut g = StateGraph::new();
     {
-        let (llm, failed) = (llm.clone(), failed.clone());
+        let (llm, failed, enter) = (llm.clone(), failed.clone(), enter.clone());
         g.add_node("detect", move |mut f: Flow, _: &Config| {
             let (llm, failed) = (llm.clone(), failed.clone());
+            enter(Stage::Detect);
             async move {
                 let r = (|| {
                     let lang = match (&f.known_lang, &f.sample) {
@@ -229,15 +271,15 @@ fn graph(
         });
     }
     {
-        let (llm, failed) = (llm.clone(), failed.clone());
+        let (failed, enter) = (failed.clone(), enter.clone());
         g.add_node("recall", move |mut f: Flow, _: &Config| {
-            let (llm, failed) = (llm.clone(), failed.clone());
+            let failed = failed.clone();
+            enter(Stage::Recall);
             async move {
                 let r = (|| {
                     let conn = super::db::open(std::path::Path::new(&f.db))?;
                     f.wiki = super::wiki::context(
                         &conn,
-                        llm.as_ref(),
                         f.req.novel_id,
                         &f.paragraphs.join("\n\n"),
                         &f.req.lang,
@@ -250,8 +292,12 @@ fn graph(
     }
     {
         let (llm, failed, progress) = (llm.clone(), failed.clone(), hooks.progress.clone());
+        let enter = enter.clone();
         g.add_node("translate", move |mut f: Flow, _: &Config| {
             let (llm, failed, progress) = (llm.clone(), failed.clone(), progress.clone());
+            if f.mode == Some(Mode::Translate) {
+                enter(Stage::Translate);
+            }
             async move {
                 if f.mode != Some(Mode::Translate) {
                     return Ok(f);
@@ -264,9 +310,11 @@ fn graph(
                         &f.terms,
                         &f.wiki,
                     );
+                    let extract = super::wiki::extract_prompt(&f.req.lang, WIKI_MARK);
+                    let system = |part: &str| format!("{system}{}{extract}", f.cast.prompt(part));
                     let title = (!f.title.trim().is_empty())
                         .then(|| (title_prompt(&f.req.lang), f.title.clone()));
-                    let (out, title) = run_chunks(
+                    let (out, title, found) = run_chunks(
                         llm.as_ref(),
                         &system,
                         &f.paragraphs,
@@ -274,6 +322,7 @@ fn graph(
                         progress.as_deref(),
                     )?;
                     f.out = out;
+                    f.found = found;
                     f.out_title = title
                         .map(|t| clean(&t).lines().next().unwrap_or_default().to_string())
                         .unwrap_or_default();
@@ -285,17 +334,28 @@ fn graph(
     }
     {
         let (llm, failed, progress) = (llm.clone(), failed.clone(), hooks.progress.clone());
+        let enter = enter.clone();
         g.add_node("rewrite", move |mut f: Flow, _: &Config| {
             let (llm, failed, progress) = (llm.clone(), failed.clone(), progress.clone());
+            if f.mode == Some(Mode::Rewrite) {
+                enter(Stage::Rewrite);
+            }
             async move {
                 if f.mode != Some(Mode::Rewrite) {
                     return Ok(f);
                 }
                 let r = (|| {
                     let system = rewrite_prompt(&f.req.lang, &f.req.style, &f.wiki);
-                    f.out =
-                        run_chunks(llm.as_ref(), &system, &f.paragraphs, None, progress.as_deref())?
-                            .0;
+                    let extract = super::wiki::extract_prompt(&f.req.lang, WIKI_MARK);
+                    let system = |part: &str| format!("{system}{}{extract}", f.cast.prompt(part));
+                    let (out, _, found) = run_chunks(
+                        llm.as_ref(),
+                        &system,
+                        &f.paragraphs,
+                        None,
+                        progress.as_deref(),
+                    )?;
+                    (f.out, f.found) = (out, found);
                     // Same language: the chapter keeps its title.
                     f.out_title = f.title.clone();
                     Ok(f)
@@ -305,9 +365,10 @@ fn graph(
         });
     }
     {
-        let (llm, failed) = (llm.clone(), failed.clone());
+        let (llm, failed, enter) = (llm.clone(), failed.clone(), enter.clone());
         g.add_node("save", move |f: Flow, _: &Config| {
             let (llm, failed) = (llm.clone(), failed.clone());
+            enter(Stage::Save);
             async move {
                 let r = (|| {
                     let conn = super::db::open(std::path::Path::new(&f.db))?;
@@ -317,6 +378,14 @@ fn graph(
                         }
                     }
                     save(&conn, &f.req, &f.out_title, &f.out, llm.model())?;
+                    super::wiki::keep_found(&conn, f.req.chapter_id, &f.req.lang, &f.found)?;
+                    super::cast::keep(
+                        &conn,
+                        f.req.novel_id,
+                        f.req.chapter_id,
+                        &f.req.lang,
+                        &f.found,
+                    )?;
                     Ok(f)
                 })();
                 step(&failed, r)
@@ -325,9 +394,17 @@ fn graph(
     }
     {
         let (llm, failed, background) = (llm.clone(), failed.clone(), hooks.learn_in_background);
+        let later = hooks.learn_found_later;
         g.add_node("learn", move |f: Flow, _: &Config| {
             let (llm, failed) = (llm.clone(), failed.clone());
+            let queued = later && super::wiki::has_found(&f.found);
+            if !background && !queued {
+                enter(Stage::Learn);
+            }
             async move {
+                if queued {
+                    return Ok(f);
+                }
                 if background {
                     let later = f.clone();
                     std::thread::spawn(move || {
@@ -363,6 +440,7 @@ fn learn(f: &Flow, llm: &dyn Chat) -> Result<(), AiError> {
         &f.req.lang,
         &f.paragraphs.join("\n\n"),
         &f.out.join("\n\n"),
+        &f.found,
     )?;
     Ok(())
 }
@@ -576,17 +654,22 @@ fn glossary(
     rows.collect()
 }
 
+/// A chapter back from the LLM: its paragraphs, the title's reply, the wiki facts.
+type Parts = (Vec<String>, Option<String>, Vec<String>);
+
 /// Sends the text paragraphs in parts of about `CHUNK_CHARS`, `PARALLEL` at a time,
+/// each with the system prompt `system` makes for it,
 /// and puts the replies back in order; pictures stay where they are. `title` (a
-/// system prompt and the title) is asked alongside the parts. The first error stops
+/// system prompt and the title) is asked alongside the parts. Whatever a part's reply
+/// has after `WIKI_MARK` comes back on its own, one per part. The first error stops
 /// what has not started yet and is returned.
 fn run_chunks(
     llm: &dyn Chat,
-    system: &str,
+    system: &(dyn Fn(&str) -> String + Sync),
     paragraphs: &[String],
     title: Option<(String, String)>,
     progress: Option<&(dyn Fn(usize, usize) + Send + Sync)>,
-) -> Result<(Vec<String>, Option<String>), AiError> {
+) -> Result<Parts, AiError> {
     enum Piece<'a> {
         Picture(&'a str),
         Text(String),
@@ -617,16 +700,16 @@ fn run_chunks(
     }
 
     // The requests: each text part, then the title.
-    let mut asks: Vec<(&str, &str)> = pieces
+    let mut asks: Vec<(String, &str)> = pieces
         .iter()
         .filter_map(|p| match p {
-            Piece::Text(t) => Some((system, t.as_str())),
+            Piece::Text(t) => Some((system(t), t.as_str())),
             Piece::Picture(_) => None,
         })
         .collect();
     let parts = asks.len();
     if let Some((prompt, text)) = &title {
-        asks.push((prompt.as_str(), text.as_str()));
+        asks.push((prompt.clone(), text.as_str()));
     }
     let total = asks.len();
     let replies: Vec<Mutex<Option<String>>> = (0..total).map(|_| Mutex::new(None)).collect();
@@ -669,14 +752,25 @@ fn run_chunks(
         .into_iter()
         .map(|r| r.into_inner().unwrap().unwrap_or_default());
     let mut out = Vec::with_capacity(paragraphs.len());
+    let mut found = Vec::new();
     for piece in &pieces {
         match piece {
             Piece::Picture(p) => out.push(p.to_string()),
-            Piece::Text(_) => out.extend(split_paragraphs(&clean(&replies.next().unwrap_or_default()))),
+            Piece::Text(_) => {
+                let reply = replies.next().unwrap_or_default();
+                let text = match reply.split_once(WIKI_MARK) {
+                    Some((text, facts)) => {
+                        found.push(facts.to_string());
+                        text
+                    }
+                    None => reply.as_str(),
+                };
+                out.extend(split_paragraphs(&clean(text)));
+            }
         }
     }
     let title = (total > parts).then(|| replies.next().unwrap_or_default());
-    Ok((out, title))
+    Ok((out, title, found))
 }
 
 /// A reply without the ``` fence some models put around it.
@@ -977,7 +1071,6 @@ pub(crate) mod tests {
                 base_url: "http://x/v1/".into(),
                 api_key: "sk".into(),
                 model: "m".into(),
-                embed_model: String::new(),
             }),
         )
         .unwrap();
@@ -1053,15 +1146,102 @@ pub(crate) mod tests {
         let llm = std::sync::Arc::new(Fake::new("en"));
         run(&conn, llm.clone(), req(11, "vi")).unwrap();
         let calls = llm.calls.lock().unwrap();
-        let translate = calls.iter().find(|(s, _)| s.contains("novel translator")).unwrap();
+        let translate = calls
+            .iter()
+            .find(|(s, _)| s.contains("novel translator"))
+            .unwrap();
         assert!(translate.0.contains("- Second → Thứ Hai (term)"));
         // Fake has no tools, so the wiki was asked for as JSON after the translation.
         assert!(calls.last().unwrap().0.contains("JSON"));
         drop(calls);
         let done: i64 = conn
-            .query_row("select count(*) from wiki_chapters where chapter_id = 11", [], |r| r.get(0))
+            .query_row(
+                "select count(*) from wiki_chapters where chapter_id = 11",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(done, 1);
+    }
+
+    /// Translates and adds the facts after the mark when the prompt asks for them.
+    struct Both(Fake);
+    impl Chat for Both {
+        fn chat(&self, system: &str, user: &str) -> Result<String, AiError> {
+            let reply = self.0.chat(system, user)?;
+            Ok(if system.contains(WIKI_MARK) {
+                format!("{reply}\n{WIKI_MARK}\n{{\"entries\": [{{\"name\": \"Lina\", \"kind\": \"character\", \"translated\": \"Lina\"}}], \"relations\": []}}")
+            } else {
+                reply
+            })
+        }
+        fn model(&self) -> &str {
+            "both-1"
+        }
+    }
+
+    #[test]
+    fn the_wiki_queue_learns_what_the_translation_queue_left() {
+        let (conn, novel) = book("later");
+        super::super::wiki::set_auto(&conn, novel, true).unwrap();
+        let llm = Arc::new(Both(Fake::new("en")));
+        let hooks = Hooks {
+            learn_found_later: true,
+            ..Default::default()
+        };
+        run_with(&conn, llm.clone(), req(11, "vi"), hooks).unwrap();
+        // The translation went on without learning.
+        assert!(super::super::wiki::entries(&conn, novel)
+            .unwrap()
+            .is_empty());
+        let before = llm.0.count();
+        assert_eq!(
+            super::super::wiki::learn_pending(&conn).unwrap(),
+            vec![(novel, 1)]
+        );
+        assert_eq!(llm.0.count(), before);
+        assert_eq!(
+            super::super::wiki::entries(&conn, novel).unwrap()[0].name,
+            "Lina"
+        );
+        // Nothing is left for the next turn.
+        assert!(super::super::wiki::learn_pending(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_wiki_learns_from_facts_the_translation_requests_bring() {
+        let (conn, novel) = book("found");
+        let llm = Arc::new(Both(Fake::new("en")));
+        let names = || -> Vec<String> {
+            super::super::wiki::entries(&conn, novel)
+                .unwrap()
+                .into_iter()
+                .map(|e| e.name)
+                .collect()
+        };
+        // The wiki off: the facts are kept with the chapter, the wiki stays empty.
+        let out = run(&conn, llm.clone(), req(11, "vi")).unwrap();
+        assert_eq!(out.paragraphs, vec!["[tr] Second chapter."]);
+        assert!(names().is_empty());
+        // Turned on: the kept facts go in with no request.
+        super::super::wiki::set_auto(&conn, novel, true).unwrap();
+        let before = llm.0.count();
+        assert_eq!(super::super::wiki::learn_kept(&conn, novel).unwrap(), 1);
+        assert_eq!(names(), vec!["Lina"]);
+        assert_eq!(llm.0.count(), before);
+        // On while translating: the same requests bring the facts, none is made to learn.
+        let out = run(&conn, llm.clone(), req(10, "vi")).unwrap();
+        assert_eq!(
+            out.paragraphs,
+            vec!["[tr] Once upon a time.", "\u{FFFC}pic1", "[tr] The end."]
+        );
+        // Two text parts and the title.
+        assert_eq!(llm.0.count() - before, 3);
+        assert_eq!(names(), vec!["Lina"]);
+        let learnt: i64 = conn
+            .query_row("select count(*) from wiki_chapters", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(learnt, 2);
     }
 
     #[test]
@@ -1075,9 +1255,9 @@ pub(crate) mod tests {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let log = seen.clone();
         let progress = move |done: usize, total: usize| log.lock().unwrap().push((done, total));
-        let (out, title) = run_chunks(
+        let (out, title, _) = run_chunks(
             &llm,
-            "novel translator",
+            &|_: &str| "novel translator".to_string(),
             &paragraphs,
             Some(("title".into(), "Chapter 1".into())),
             Some(&progress),
@@ -1085,7 +1265,13 @@ pub(crate) mod tests {
         .unwrap();
         let want: Vec<String> = paragraphs
             .iter()
-            .map(|p| if p.starts_with(IMAGE_MARK) { p.clone() } else { format!("[tr] {p}") })
+            .map(|p| {
+                if p.starts_with(IMAGE_MARK) {
+                    p.clone()
+                } else {
+                    format!("[tr] {p}")
+                }
+            })
             .collect();
         assert_eq!(out, want);
         assert_eq!(title.as_deref(), Some("```\n[tr] Chapter 1\n```"));
@@ -1107,7 +1293,7 @@ pub(crate) mod tests {
         }
         let paragraphs = vec!["a".to_string(), "b".to_string()];
         assert!(matches!(
-            run_chunks(&Down, "x", &paragraphs, None, None),
+            run_chunks(&Down, &|_: &str| "x".to_string(), &paragraphs, None, None),
             Err(AiError::Timeout)
         ));
     }

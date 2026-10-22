@@ -4,9 +4,11 @@
 //! through the same windowed reader as a book file (`DbBook`).
 
 pub mod commands;
+pub mod cast;
 pub mod db;
 pub mod folder;
 pub mod llm;
+pub mod names;
 pub mod ocr;
 pub mod queue;
 pub mod rules;

@@ -105,6 +105,8 @@ function useAiQueue(user: string, showToast: (msg: string) => void) {
       const mine = (p: { user: string }) => p.user === user;
       const all = await Promise.all([
         listen<AiProgress & { user: string }>('ai-progress', e => { if (mine(e.payload)) setRev(n => n + 1); }),
+        // The wiki queue read a book's kept facts in.
+        listen<{ user: string }>('wiki-updated', e => { if (mine(e.payload)) setRev(n => n + 1); }),
         listen<AiProgress & { user: string; title: string }>('ai-done', e => {
           if (mine(e.payload)) showToast(tRef.current('ai.done', { title: e.payload.title, n: e.payload.done }));
         }),

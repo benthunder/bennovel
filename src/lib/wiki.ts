@@ -4,11 +4,10 @@ import { AiFailure } from './ai';
 /*
  * The wiki of a book on this device: characters, places, factions, items and terms
  * with their relations (src-tauri/src/library/wiki.rs). The AI fills it while it
- * translates; the user can edit it. Search goes by name, and by meaning (sqlite-vec)
- * when an embedding model is set with the LLM.
+ * translates; the user can edit it. Search goes by name, aliases and notes.
  */
 
-export const WIKI_KINDS = ['character', 'place', 'faction', 'item', 'level', 'term', 'other'] as const;
+export const WIKI_KINDS = ['character', 'place', 'faction', 'item', 'level', 'skill', 'term', 'other'] as const;
 export type WikiKind = (typeof WIKI_KINDS)[number];
 
 /**
@@ -18,7 +17,7 @@ export type WikiKind = (typeof WIKI_KINDS)[number];
  */
 export const REL_TYPES = [
   'master_of', 'disciple_of', 'parent_of', 'child_of', 'sibling_of', 'spouse_of', 'lover_of',
-  'friend_of', 'enemy_of', 'member_of', 'leader_of', 'located_in', 'owns', 'has_level'
+  'friend_of', 'enemy_of', 'member_of', 'leader_of', 'located_in', 'owns', 'has_level', 'has_skill'
 ] as const;
 export type RelType = (typeof REL_TYPES)[number];
 export const isRelType = (k: string): k is RelType => (REL_TYPES as readonly string[]).includes(k);
@@ -55,7 +54,7 @@ export interface WikiRelation {
   note: string; firstChapter: number | null; firstChapterShown?: number | null;
 }
 
-export interface Wiki { entries: WikiEntry[]; relations: WikiRelation[]; auto: boolean; lastError: string | null; byMeaning: boolean }
+export interface Wiki { entries: WikiEntry[]; relations: WikiRelation[]; auto: boolean; lastError: string | null }
 
 export interface WikiEntryInput {
   uid?: string; kind: WikiKind; name: string; names: Record<string, string>; aliases: string[];
@@ -78,7 +77,8 @@ export const removeWikiEntry = (user: string, uid: string) => invoke<void>('wiki
 export const addWikiRelation = (user: string, novelId: number, fromUid: string, toUid: string, kind: string, lang: string, note = '') =>
   invoke<string>('wiki_relate', { user, novelId, fromUid, toUid, kind, lang, note });
 export const removeWikiRelation = (user: string, uid: string) => invoke<void>('wiki_unrelate', { user, uid });
-export const setWikiAuto = (user: string, novelId: number, auto: boolean) => invoke<void>('wiki_set_auto', { user, novelId, auto });
+/** Turning it on reads in the wiki facts kept from earlier translations; returns the changes made. */
+export const setWikiAuto = (user: string, novelId: number, auto: boolean) => invoke<number>('wiki_set_auto', { user, novelId, auto });
 
 /** How many entries and free relations have no words in `lang` yet. */
 export const getWikiMissing = (user: string, novelId: number, lang: string) => invoke<number>('wiki_missing', { user, novelId, lang });

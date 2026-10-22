@@ -396,6 +396,91 @@ drop table offline_glossary;
 drop table offline_chapters;
 drop table offline_novels;
 "#,
+    r#"
+-- Local only: the wiki facts the translation requests found in a chapter (one JSON
+-- array of the replies' JSON objects, see translate.rs WIKI_MARK), kept whether or not
+-- the book's wiki learns, so turning it on later fills the wiki from them with no
+-- request.
+create table chapter_wiki_facts (
+  chapter_id integer not null references chapters (id) on delete cascade,
+  lang       text not null,
+  facts      text not null,
+  created_at integer not null,
+  primary key (chapter_id, lang)
+);
+
+-- Local only (cast.rs): who each character is and how two characters address each
+-- other in a translation, from the same facts; put back in later chapters' prompts so
+-- genders, ages and forms of address stay the same.
+create table cast_people (
+  novel_id   integer not null references novels (id) on delete cascade,
+  -- As written in the original text.
+  name       text not null,
+  gender     text not null default '',
+  age        text not null default '',
+  chapter    integer,
+  updated_at integer not null,
+  primary key (novel_id, name)
+);
+-- How `from_name` refers to themself when speaking to `to_name`, and calls them: as
+-- the original text writes it (raw), and as each translation writes it.
+create table cast_address_raw (
+  novel_id   integer not null references novels (id) on delete cascade,
+  from_name  text not null,
+  to_name    text not null,
+  self_term  text not null default '',
+  other_term text not null default '',
+  tone       text not null default '',
+  chapter    integer,
+  updated_at integer not null,
+  primary key (novel_id, from_name, to_name)
+);
+create table cast_address (
+  novel_id   integer not null references novels (id) on delete cascade,
+  lang       text not null,
+  from_name  text not null,
+  to_name    text not null,
+  self_term  text not null default '',
+  other_term text not null default '',
+  chapter    integer,
+  updated_at integer not null,
+  primary key (novel_id, lang, from_name, to_name)
+);
+"#,
+    r#"
+-- No more embeddings: the wiki is found by name (names.rs) from what the translations
+-- keep in SQLite.
+drop table wiki_vectors;
+alter table llm_config drop column embed_model;
+"#,
+    r#"
+-- Rebuilt to add the `skill` kind (techniques, martial arts, spells, abilities), linked
+-- to who has them by the `has_skill` relation. Same columns and rows as before.
+create table wiki_entries_new (
+  id            integer primary key,
+  uid           text not null unique,
+  novel_id      integer not null references novels (id) on delete cascade,
+  kind          text not null check (kind in ('character', 'place', 'faction', 'item', 'level', 'skill', 'term', 'other')),
+  name          text not null,
+  names         text not null default '{}',
+  aliases       text not null default '[]',
+  summary       text not null default '',
+  summaries     text not null default '{}',
+  rank          integer,
+  first_chapter integer,
+  source        text not null default 'ai' check (source in ('ai', 'user')),
+  deleted       integer not null default 0,
+  updated_at    integer not null,
+  unique (novel_id, name)
+);
+insert into wiki_entries_new (id, uid, novel_id, kind, name, names, aliases, summary, summaries,
+    rank, first_chapter, source, deleted, updated_at)
+  select id, uid, novel_id, kind, name, names, aliases, summary, summaries,
+    rank, first_chapter, source, deleted, updated_at
+  from wiki_entries;
+drop table wiki_entries;
+alter table wiki_entries_new rename to wiki_entries;
+"#,
 ];
 
 /// Epoch milliseconds now.
@@ -428,20 +513,7 @@ pub fn set_state(conn: &Connection, key: &str, value: &str) -> rusqlite::Result<
     Ok(())
 }
 
-/// Builds sqlite-vec (`vec_distance_cosine`…) into every connection opened from here
-/// on; it is compiled into the app, so it works on Android too.
-fn load_vec() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| unsafe {
-        #[allow(clippy::missing_transmute_annotations)]
-        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
-            sqlite_vec::sqlite3_vec_init as *const (),
-        )));
-    });
-}
-
 pub fn open(path: &Path) -> rusqlite::Result<Connection> {
-    load_vec();
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
@@ -508,15 +580,14 @@ mod tests {
         assert_eq!(rows[0], ("a".into(), r#"{"vi":"Nhân vật chính."}"#.into()));
         assert_eq!(rows[1], ("b".into(), r#"{"raw":"A city."}"#.into()));
         assert_eq!(rows[2], ("c".into(), "{}".into()));
-        let kept: (i64, i64, String) = conn
+        let kept: (i64, String) = conn
             .query_row(
-                "select (select count(*) from wiki_relations), (select count(*) from wiki_vectors),
-                   (select labels from wiki_relations)",
+                "select (select count(*) from wiki_relations), (select labels from wiki_relations)",
                 [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap();
-        assert_eq!(kept, (1, 1, "{}".into()));
+        assert_eq!(kept, (1, "{}".into()));
         conn.execute(
             "insert into wiki_entries (uid, novel_id, kind, name, rank, updated_at) values ('d', 1, 'level', '斗师', 2, 1)",
             [],

@@ -61,7 +61,8 @@ export function WikiScreen({ novelId, title, lang: startLang }: { novelId: numbe
 
   const toggleAuto = async () => {
     if (!wiki) return;
-    await setWikiAuto(user, novelId, !wiki.auto).catch(console.error);
+    const n = await setWikiAuto(user, novelId, !wiki.auto).catch(e => { console.error(e); return 0; });
+    if (n > 0) app.showToast(t('wiki.fromKept', { n }));
     reload();
   };
 
@@ -169,7 +170,6 @@ export function WikiScreen({ novelId, title, lang: startLang }: { novelId: numbe
 
             <div>
               <SearchField value={query} onChange={setQuery} placeholder={t('wiki.search')} />
-              <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>{t(wiki.byMeaning ? 'wiki.byMeaning' : 'wiki.byName')}</div>
             </div>
 
             {kinds.length > 0 && (
