@@ -24,7 +24,7 @@ async function nativeApp(page: Page) {
       entries: [
         entry('a', 'character', '林动', 'Lâm Động', 'Thiếu niên Lâm gia ở Thanh Dương trấn, tu luyện nhờ thạch phù bí ẩn.', 1),
         entry('b', 'character', '小貂', 'Tiểu Điêu', 'Yêu thú trong thạch phù, bạn đồng hành của Lâm Động.', 3),
-        entry('c', 'faction', '道宗', 'Đạo Tông', 'Một trong những tông môn lớn nhất Đông Huyền vực.', 40),
+        entry('c', 'faction', '道宗', 'Đạo Tông', 'Một trong những tông môn lớn nhất Đông Huyền vực, chia thành nhiều mạch như Đan Tông, Phù Tông, Thiên Tông và Hoang Điện. Tông chủ là Ứng Huyền Tử. Mỗi lần thi đấu giữa các mạch, đệ tử ưu tú được vào Hoang Điện tu luyện, nơi cất giữ những bí thuật cổ xưa nhất của tông môn.', 40),
         entry('d', 'place', '青阳镇', 'Thanh Dương trấn', 'Thị trấn nhỏ, quê của Lâm gia.', 1),
         entry('e', 'place', '大炎王朝', 'Đại Viêm vương triều', '', 2),
         entry('f', 'level', '地元境', 'Địa Nguyên cảnh', '', 5, { rank: 2 }),
@@ -36,7 +36,7 @@ async function nativeApp(page: Page) {
         { uid: 'r4', fromUid: 'a', toUid: 'g', kind: 'has_level', labels: {}, note: '', firstChapter: 1 },
         { uid: 'r5', fromUid: 'a', toUid: 'f', kind: 'has_level', labels: {}, note: '', firstChapter: 5 }
       ],
-      auto: true, lastError: null, byMeaning: true
+      auto: true, lastError: null
     };
     let next = 1;
     w.isTauri = true;
@@ -51,7 +51,7 @@ async function nativeApp(page: Page) {
           case 'take_opened_files': return [];
           case 'library_list': return [imported];
           case 'library_detail': return { book: imported, sections: [{ label: 'Chương 1', pages: null }, { label: 'Chương 2', pages: null }] };
-          case 'llm_config_get': return { provider: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', embedModel: 'text-embedding-3-small', hasKey: true };
+          case 'llm_config_get': return { provider: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', hasKey: true };
           case 'wiki_get': return wiki;
           case 'library_open': return { book: { id: 9, format: 'txt', title: 'Võ Động Càn Khôn', sections: [{ label: 'Chương 1', pages: null }, { label: 'Chương 2', pages: null }], pageImages: false }, novelId: 1, lang: 'zh', index: 0, progress: 0 };
           case 'book_section':
@@ -107,16 +107,15 @@ test('the book wiki lists, searches and edits entries', async ({ page }, info) =
   await page.getByRole('radio', { name: 'Tiếng Việt' }).click();
   await expect(page.getByText('Lâm Động', { exact: true })).toBeVisible();
   await expect(page.locator('[data-entry="林动"]').getByText('3 quan hệ')).toBeVisible();
-  await expect(page.getByText('Đang tìm theo tên và theo ý nghĩa.')).toBeVisible();
   // A character shows the level it reached last.
   await expect(page.locator('[data-entry="林动"]').getByText('Địa Nguyên cảnh')).toBeVisible();
   await page.screenshot({ path: `test-results/wiki-${info.project.name}-list.png` });
 
-  // Search goes to the native side (by name, then by meaning).
-  await page.getByPlaceholder('Tìm tên, tên khác, mô tả…').fill('tông môn nào');
+  // Search goes to the native side (names, aliases and notes).
+  await page.getByPlaceholder('Tìm tên, tên khác, mô tả…').fill('tông môn');
   await expect(page.getByText('Đạo Tông', { exact: true })).toBeVisible();
   await expect(page.getByText('Lâm Động', { exact: true })).toHaveCount(0);
-  expect((await calls(page)).some(c => c.cmd === 'wiki_search' && c.args.query === 'tông môn nào')).toBe(true);
+  expect((await calls(page)).some(c => c.cmd === 'wiki_search' && c.args.query === 'tông môn')).toBe(true);
   await page.getByPlaceholder('Tìm tên, tên khác, mô tả…').fill('');
 
   // Turning off the update while translating.
@@ -230,4 +229,31 @@ test('a chapter that fails to load says so in words and loads again', async ({ p
   await first.getByRole('button', { name: 'Thử lại' }).click();
   await expect(first).toContainText('动少 笑了。');
   expect((await calls(page)).filter(c => c.cmd === 'book_close').length).toBeGreaterThan(0);
+});
+
+test('a long wiki description folds to two lines and expands in place', async ({ page }, info) => {
+  await nativeApp(page);
+  await page.goto('/');
+  await page.getByText('Võ Động Càn Khôn').filter({ visible: true }).first().click();
+  await page.getByRole('button', { name: /Wiki truyện/ }).filter({ visible: true }).first().click();
+  await page.getByRole('radio', { name: 'Tiếng Việt' }).click();
+
+  const card = page.locator('[data-entry="道宗"]');
+  const summary = card.locator('[data-wiki-summary]');
+  const folded = await summary.evaluate(el => el.clientHeight);
+  // A short description has nothing more to show.
+  await expect(page.locator('[data-entry="青阳镇"] [data-wiki-more]')).toHaveCount(0);
+
+  await card.getByRole('button', { name: 'Xem thêm' }).click();
+  await expect(card.getByRole('button', { name: 'Thu gọn' })).toHaveAttribute('aria-expanded', 'true');
+  expect(await summary.evaluate(el => el.clientHeight)).toBeGreaterThan(folded);
+  await page.screenshot({ path: `test-results/wiki-${info.project.name}-expanded.png` });
+  // Expanding does not open the entry.
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+
+  await card.getByRole('button', { name: 'Thu gọn' }).click();
+  expect(await summary.evaluate(el => el.clientHeight)).toBe(folded);
+  // The card itself still opens the entry.
+  await card.click({ position: { x: 20, y: 14 } });
+  await expect(page.getByRole('dialog', { name: 'Mục wiki' })).toBeVisible();
 });

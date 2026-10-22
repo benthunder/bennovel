@@ -1,7 +1,9 @@
 use super::folder::{self, FolderBook, Opener};
 use super::{db, DbBook, LibraryBook};
 use crate::book::commands::{open_picked, pdfium_dirs, Books, Reopen};
-use crate::book::{detect, open_source, BookError, BookFormat, BookInfo, BookSource, OpenCtx, SectionMeta};
+use crate::book::{
+    detect, open_source, BookError, BookFormat, BookInfo, BookSource, OpenCtx, SectionMeta,
+};
 use serde::Serialize;
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
@@ -664,13 +666,31 @@ pub async fn ai_translate_chapter<R: Runtime>(
         }
         let model = std::sync::Arc::new(llm_for(&conn)?);
         let progress: translate::OnProgress = std::sync::Arc::new(move |done, total| {
-            let _ = app.emit("ai-chapter-progress", ChapterProgress { novel_id, index, done, total });
+            let _ = app.emit(
+                "ai-chapter-progress",
+                ChapterProgress {
+                    novel_id,
+                    index,
+                    done,
+                    total,
+                },
+            );
         });
         translate::run_with(
             &conn,
             model,
-            translate::Request { novel_id, chapter_id, lang, style, glossary },
-            translate::Hooks { progress: Some(progress), learn_in_background: true },
+            translate::Request {
+                novel_id,
+                chapter_id,
+                lang,
+                style,
+                glossary,
+            },
+            translate::Hooks {
+                progress: Some(progress),
+                learn_in_background: true,
+                ..Default::default()
+            },
         )
     })
     .await
@@ -744,7 +764,9 @@ pub async fn ai_translate_book<R: Runtime>(
     let target = lang.clone();
     let (queued, source) = ai_blocking(move || {
         let conn = db::open(&db_file)?;
-        if !translate::LANGS.contains(&lang.as_str()) || !translate::STYLES.contains(&style.as_str()) {
+        if !translate::LANGS.contains(&lang.as_str())
+            || !translate::STYLES.contains(&style.as_str())
+        {
             return Err(AiError::Other(format!("unsupported {lang} / {style}")));
         }
         let model = llm_for(&conn)?;
@@ -756,7 +778,11 @@ pub async fn ai_translate_book<R: Runtime>(
     if queued > 0 {
         queue.kick(path, user, ui_lang);
     }
-    let mode = if source == target { translate::Mode::Rewrite } else { translate::Mode::Translate };
+    let mode = if source == target {
+        translate::Mode::Rewrite
+    } else {
+        translate::Mode::Translate
+    };
     Ok(Queued { queued, mode })
 }
 
@@ -769,6 +795,16 @@ pub async fn ai_progress<R: Runtime>(
 ) -> Result<Vec<queue::Progress>, AiError> {
     let path = db_path(&app, &user)?;
     ai_blocking(move || Ok(queue::progress(&db::open(&path)?, novel_id)?)).await
+}
+
+/// The chapter the background queue is on right now, and where in the pipeline it is.
+#[tauri::command]
+pub fn ai_live<R: Runtime>(
+    app: AppHandle<R>,
+    queue: State<'_, Queue>,
+    user: String,
+) -> Result<Option<queue::Live>, AiError> {
+    Ok(queue.live(&db_path(&app, &user)?))
 }
 
 /// Stops a book's background translation (chapters done so far stay).
@@ -869,20 +905,6 @@ pub async fn library_restore<R: Runtime>(
 
 use super::wiki;
 
-/// The LLM when one is set, for search by meaning; None otherwise.
-fn llm_if_set(conn: &rusqlite::Connection) -> Result<Option<llm::OpenAi>, AiError> {
-    Ok(llm::load(conn)?.map(llm::OpenAi::new))
-}
-
-/// Embeds what the user changed; the wiki works without it, so a failure is ignored.
-fn reindex_quietly(conn: &rusqlite::Connection, novel_id: i64) {
-    if let Ok(Some(model)) = llm_if_set(conn) {
-        if let Err(e) = wiki::reindex(conn, &model, novel_id) {
-            eprintln!("wiki reindex: {e}");
-        }
-    }
-}
-
 /// A book's wiki: entries, relations and its settings.
 #[tauri::command]
 pub async fn wiki_get<R: Runtime>(
@@ -891,12 +913,7 @@ pub async fn wiki_get<R: Runtime>(
     novel_id: i64,
 ) -> Result<wiki::Wiki, AiError> {
     let path = db_path(&app, &user)?;
-    ai_blocking(move || {
-        let conn = db::open(&path)?;
-        let by_meaning = llm::load(&conn)?.is_some_and(|c| !c.embed_model.trim().is_empty());
-        Ok(wiki::load(&conn, novel_id, by_meaning)?)
-    })
-    .await
+    ai_blocking(move || Ok(wiki::load(&db::open(&path)?, novel_id)?)).await
 }
 
 /// What the wiki knew by chapter `number` (from 1), for the reader.
@@ -911,7 +928,7 @@ pub async fn wiki_at<R: Runtime>(
     ai_blocking(move || Ok(wiki::at_chapter(&db::open(&path)?, novel_id, number)?)).await
 }
 
-/// Entries matching `query` by name, then by meaning when an embedding model is set.
+/// Entries whose names or notes match `query`.
 #[tauri::command]
 pub async fn wiki_search<R: Runtime>(
     app: AppHandle<R>,
@@ -920,12 +937,7 @@ pub async fn wiki_search<R: Runtime>(
     query: String,
 ) -> Result<Vec<wiki::Entry>, AiError> {
     let path = db_path(&app, &user)?;
-    ai_blocking(move || {
-        let conn = db::open(&path)?;
-        let model = llm_if_set(&conn)?;
-        wiki::search(&conn, model.as_ref().map(|m| m as &dyn llm::Chat), novel_id, &query, 50)
-    })
-    .await
+    ai_blocking(move || wiki::search(&db::open(&path)?, novel_id, &query, 50)).await
 }
 
 /// Adds or edits an entry (the user's from now on).
@@ -937,13 +949,7 @@ pub async fn wiki_save<R: Runtime>(
     entry: wiki::EntryInput,
 ) -> Result<wiki::Entry, AiError> {
     let path = db_path(&app, &user)?;
-    ai_blocking(move || {
-        let conn = db::open(&path)?;
-        let saved = wiki::save(&conn, novel_id, entry)?;
-        reindex_quietly(&conn, novel_id);
-        Ok(saved)
-    })
-    .await
+    ai_blocking(move || wiki::save(&db::open(&path)?, novel_id, entry)).await
 }
 
 #[tauri::command]
@@ -971,10 +977,7 @@ pub async fn wiki_relate<R: Runtime>(
     let path = db_path(&app, &user)?;
     ai_blocking(move || {
         let conn = db::open(&path)?;
-        let uid = wiki::add_relation(&conn, novel_id, &from_uid, &to_uid, &kind, &lang, &note)?;
-        // Both ends are found by the new link too.
-        reindex_quietly(&conn, novel_id);
-        Ok(uid)
+        wiki::add_relation(&conn, novel_id, &from_uid, &to_uid, &kind, &lang, &note)
     })
     .await
 }
@@ -1007,7 +1010,9 @@ pub async fn wiki_translate<R: Runtime>(
     let path = db_path(&app, &user)?;
     ai_blocking(move || {
         let conn = db::open(&path)?;
-        let model = llm_if_set(&conn)?.ok_or(AiError::NotSet)?;
+        let model = llm::load(&conn)?
+            .map(llm::OpenAi::new)
+            .ok_or(AiError::NotSet)?;
         wiki::translate_missing(&conn, &model, novel_id, &lang)
     })
     .await
@@ -1023,14 +1028,24 @@ pub async fn wiki_unrelate<R: Runtime>(
     ai_blocking(move || Ok(wiki::remove_relation(&db::open(&path)?, &uid)?)).await
 }
 
-/// Whether translating this book updates its wiki.
+/// Whether translating this book updates its wiki; turning it on reads in the facts
+/// the translations kept so far and returns the changes made.
 #[tauri::command]
 pub async fn wiki_set_auto<R: Runtime>(
     app: AppHandle<R>,
     user: String,
     novel_id: i64,
     auto: bool,
-) -> Result<(), AiError> {
+) -> Result<usize, AiError> {
     let path = db_path(&app, &user)?;
-    ai_blocking(move || Ok(wiki::set_auto(&db::open(&path)?, novel_id, auto)?)).await
+    ai_blocking(move || {
+        let conn = db::open(&path)?;
+        wiki::set_auto(&conn, novel_id, auto)?;
+        if !auto {
+            return Ok(0);
+        }
+        // Turned on: what the translations found so far goes in now.
+        Ok(wiki::learn_kept(&conn, novel_id)?)
+    })
+    .await
 }

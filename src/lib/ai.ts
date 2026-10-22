@@ -29,10 +29,9 @@ export const LLM_PROVIDERS = [
 export type LlmProvider = (typeof LLM_PROVIDERS)[number]['id'];
 
 /** The saved LLM, as shown: no key. */
-export interface LlmSettings { provider: string; baseUrl: string; model: string; embedModel: string; hasKey: boolean }
+export interface LlmSettings { provider: string; baseUrl: string; model: string; hasKey: boolean }
 /** LLM settings to save; an empty key keeps the saved one. */
-/** `embedModel`: the API's embedding model for the book wiki's search by meaning; empty for none. */
-export interface LlmConfig { provider: string; baseUrl: string; model: string; embedModel: string; apiKey: string }
+export interface LlmConfig { provider: string; baseUrl: string; model: string; apiKey: string }
 
 export interface AiChapter { title: string; paragraphs: string[]; mode: 'translate' | 'rewrite'; model: string | null }
 export interface AiVersion { lang: AiLang; style: string; chapters: number }
@@ -113,6 +112,24 @@ export async function aiTranslateBook(user: string, novelId: number, fromIndex: 
 }
 
 export const getAiProgress = (user: string, novelId: number) => invoke<AiProgress[]>('ai_progress', { user, novelId });
+/** A node of the translation graph (translate.rs), in the order a chapter goes through them. */
+export const AI_STAGES = ['detect', 'recall', 'translate', 'rewrite', 'save', 'learn'] as const;
+export type AiStage = (typeof AI_STAGES)[number];
+/** The chapter the background queue is on: `index` in reading order, its node, parts back from the LLM. */
+export interface AiLive { novelId: number; lang: AiLang; style: string; index: number; stage: AiStage; partsDone: number; partsTotal: number }
+export const getAiLive = (user: string) => invoke<AiLive | null>('ai_live', { user });
+
+/** Listens to the queue's `ai-live` (null once it stops); returns the way to stop listening. */
+export async function onAiLive(user: string, cb: (l: AiLive | null) => void): Promise<() => void> {
+  try {
+    const { listen } = await import('@tauri-apps/api/event');
+    return await listen<{ user: string; live: AiLive | null }>('ai-live', e => { if (e.payload.user === user) cb(e.payload.live); });
+  } catch (e) {
+    console.warn(e);
+    return () => {};
+  }
+}
+
 export const cancelAiTranslation = (user: string, novelId: number) => invoke<number>('ai_cancel', { user, novelId });
 export const resumeAiQueue = (user: string, uiLang: UiLang) => invoke<void>('ai_resume', { user, uiLang });
 

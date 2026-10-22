@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { ask } from '@tauri-apps/plugin-dialog';
 import { AiTag, ChapterSheet, useSectionName } from '../components/ChapterSheet';
 import { EditBookDialog } from '../components/EditBookDialog';
@@ -8,11 +8,11 @@ import { TranslateFields, defaultTranslation, type Translation } from '../compon
 import { Spinner } from '../components/ui';
 import { useI18n, useT } from '../i18n';
 import {
-  AI_LANGS, AiFailure, aiTranslateBook, aiViewKey, cancelAiTranslation, getAiMarks, getAiProgress, getAiVersions, getLlmSettings, getReadingLang, styleOf,
-  type AiChoice, type AiLang, type AiView, type AiMark, type AiProgress, type AiVersion
+  AI_LANGS, AiFailure, aiTranslateBook, aiViewKey, cancelAiTranslation, getAiLive, getAiMarks, getAiProgress, getAiVersions, getLlmSettings, getReadingLang, onAiLive, styleOf,
+  type AiChoice, type AiLang, type AiLive, type AiView, type AiMark, type AiProgress, type AiVersion
 } from '../lib/ai';
 import { save as store } from '../lib/storage';
-import { deleteLibraryBook, getLibraryDetail, libraryCoverUrl, localCover, openLibraryBook, updateLibraryBook } from '../lib/localBook';
+import { deleteLibraryBook, getLibraryDetail, libraryCoverUrl, localCover, openLibraryBook, updateLibraryBook, type LocalSectionMeta } from '../lib/localBook';
 import { useAsync } from '../lib/useAsync';
 import { getWiki } from '../lib/wiki';
 import { useLayout } from '../lib/useLayout';
@@ -38,6 +38,7 @@ export function BookDetailScreen({ novelId }: { novelId: number }) {
     return m;
   }, [user, novelId, app.aiRev]);
   const marks = marksQ.status === 'ready' ? marksQ.data : undefined;
+  const live = useAiLive(user, novelId);
   const [editing, setEditing] = useState(false);
   const [toc, setToc] = useState(false);
   const [opening, setOpening] = useState(false);
@@ -126,13 +127,13 @@ export function BookDetailScreen({ novelId }: { novelId: number }) {
             <Stat value={b.format?.toUpperCase() ?? '—'} label={t('bookDetail.format')} />
           </div>
           {lay.wide && startBtn}
-          {lay.wide && <AiBox novelId={novelId} lang={b.lang} onRead={read} />}
+          {lay.wide && <AiBox novelId={novelId} lang={b.lang} sections={sections} live={live} onRead={read} />}
           {lay.wide && <WikiButton novelId={novelId} title={b.title} />}
         </div>
 
         <div style={{ padding: lay.wide ? 0 : '20px 20px 0', display: 'flex', flexDirection: 'column', gap: lay.wide ? 22 : 20, minWidth: 0 }}>
           {lay.isPhone && startBtn}
-          {!lay.wide && <AiBox novelId={novelId} lang={b.lang} onRead={read} />}
+          {!lay.wide && <AiBox novelId={novelId} lang={b.lang} sections={sections} live={live} onRead={read} />}
           {!lay.wide && <WikiButton novelId={novelId} title={b.title} />}
 
           <div>
@@ -158,7 +159,7 @@ export function BookDetailScreen({ novelId }: { novelId: number }) {
                         {done ? t(i === last ? 'bookDetail.lastRead' : 'bookDetail.read') : s.label ? name : s.pages ? t('book.pages', { from: s.pages[0], to: s.pages[1] }) : ''}
                       </span>
                     </span>
-                    <AiTag marks={marks?.get(i)} />
+                    {live?.index === i ? <span title={t('ai.liveChapter')} style={{ flex: 'none', display: 'grid' }}><Spinner size={14} /></span> : <AiTag marks={marks?.get(i)} />}
                     <ChevronRightIcon size={16} style={{ flex: 'none', color: 'var(--color-neutral-500)' }} />
                   </button>
                 );
@@ -184,6 +185,18 @@ export function BookDetailScreen({ novelId }: { novelId: number }) {
       )}
     </div>
   );
+}
+
+/** The chapter of this book the background queue is on now, kept up to date. */
+function useAiLive(user: string, novelId: number) {
+  const [live, setLive] = useState<AiLive | null>(null);
+  useEffect(() => {
+    let gone = false;
+    const stop = onAiLive(user, l => { if (!gone) setLive(l); });
+    getAiLive(user).then(l => { if (!gone) setLive(l); }).catch(() => {});
+    return () => { gone = true; void stop.then(s => s()); };
+  }, [user]);
+  return live?.novelId === novelId ? live : null;
 }
 
 /** Opens the book's wiki, with how many entries it has. */
@@ -214,8 +227,11 @@ function Stat({ value, label }: { value: React.ReactNode; label: string }) {
  * AI translation of the whole book with the user's own LLM: the chapters in the
  * background queue, the AI versions made so far, and a button to queue more.
  */
-function AiBox({ novelId, lang, onRead }: { novelId: number; lang: string; onRead: (at?: number) => void }) {
+function AiBox({ novelId, lang, sections, live, onRead }: {
+  novelId: number; lang: string; sections: LocalSectionMeta[]; live: AiLive | null; onRead: (at?: number) => void;
+}) {
   const { t, uiLang } = useI18n();
+  const sectionName = useSectionName();
   const app = useApp();
   const user = app.libKey;
   const llmQ = useAsync(() => getLlmSettings(user), [user]);
@@ -262,18 +278,34 @@ function AiBox({ novelId, lang, onRead }: { novelId: number; lang: string; onRea
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
-      {active.map(p => (
-        <div key={`${p.lang}.${p.style}`} className="import-progress" role="status">
-          {p.queued + p.running > 0 ? <Spinner size={14} /> : <SparklesIcon size={14} />}
-          <span style={{ flex: 1 }}>
-            {t('ai.progress', { lang: langName(p.lang), style: t(`tr.style.${styleOf(p.style)}`), done: p.done, total: p.total })}
-            {p.queued + p.running > 0 && ` · ${t('tr.waiting', { n: p.queued + p.running })}`}
-            {p.failed > 0 && ` · ${t('tr.failedCount', { n: p.failed })}`}
-          </span>
-          {p.queued > 0 && <button className="btn btn-ghost" style={{ height: 30, padding: '0 10px', fontSize: 12 }} onClick={stop}>{t('ai.cancel')}</button>}
-          <div className="import-progress__bar"><div style={{ width: `${p.total ? Math.round((p.done / p.total) * 100) : 0}%` }} /></div>
-        </div>
-      ))}
+      {active.map(p => {
+        const key = `${p.lang}.${p.style}`;
+        const mine = live && live.lang === p.lang && live.style === p.style ? live : null;
+        const s = mine ? sections[mine.index] : undefined;
+        const name = mine ? sectionName(s, mine.index, sections.length) : '';
+        return (
+          <Fragment key={key}>
+            <div className="import-progress" role="status">
+              {p.queued + p.running > 0 ? <Spinner size={14} /> : <SparklesIcon size={14} />}
+              <span style={{ flex: 1 }}>
+                {t('ai.progress', { lang: langName(p.lang), style: t(`tr.style.${styleOf(p.style)}`), done: p.done, total: p.total })}
+                {p.queued + p.running > 0 && ` · ${t('tr.waiting', { n: p.queued + p.running })}`}
+                {p.failed > 0 && ` · ${t('tr.failedCount', { n: p.failed })}`}
+              </span>
+              {p.queued > 0 && <button className="btn btn-ghost" style={{ height: 30, padding: '0 10px', fontSize: 12 }} onClick={stop}>{t('ai.cancel')}</button>}
+              <div className="import-progress__bar"><div style={{ width: `${p.total ? Math.round((p.done / p.total) * 100) : 0}%` }} /></div>
+            </div>
+            {mine
+              ? (
+                <div className="muted" style={{ fontSize: 12, paddingLeft: 24, overflowWrap: 'anywhere' }}>
+                  {t(mine.stage === 'rewrite' || (lang === p.lang && mine.stage !== 'translate') ? 'ai.liveRewriting' : 'ai.liveTranslating', { name: s?.label ? `${name} · ${s.label}` : name })}
+                  {mine.partsTotal > 0 && ` · ${t('ai.parts', { done: mine.partsDone, total: mine.partsTotal })}`}
+                </div>
+              )
+              : p.queued > 0 && <div className="muted" style={{ fontSize: 12, paddingLeft: 24 }}>{t('ai.liveWaiting')}</div>}
+          </Fragment>
+        );
+      })}
       {versions.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           <div style={{ fontSize: 12, fontWeight: 700 }}>{t('ai.versions')}</div>

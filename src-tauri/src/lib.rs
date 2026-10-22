@@ -100,6 +100,7 @@ pub fn run() {
             library::commands::ai_versions,
             library::commands::ai_translate_book,
             library::commands::ai_progress,
+            library::commands::ai_live,
             library::commands::ai_cancel,
             library::commands::ai_resume,
             library::commands::wiki_get,

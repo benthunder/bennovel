@@ -564,7 +564,6 @@ mod tests {
                 base_url: "https://api.openai.com/v1".into(),
                 api_key: "sk-secret".into(),
                 model: "m".into(),
-                embed_model: String::new(),
             }),
         )
         .unwrap();
@@ -600,7 +599,6 @@ mod tests {
             base_url: "https://api.openai.com/v1".into(),
             api_key: "sk-secret".into(),
             model: "m".into(),
-            embed_model: String::new(),
         };
         super::super::llm::save(&a, Some(&config)).unwrap();
         let backup = pa.with_extension("llm.gz");
