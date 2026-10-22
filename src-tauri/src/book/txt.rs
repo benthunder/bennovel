@@ -148,7 +148,13 @@ fn scan(mut r: impl Read, enc: &'static Encoding) -> Result<Scan, BookError> {
     // The current line, while it is short enough to be a heading.
     let (mut line_start, mut line) = (0u64, Vec::with_capacity(MAX_HEADING_BYTES));
     let mut check_line = |line: &mut Vec<u8>, line_start: u64, end: u64| {
-        if !line.is_empty() && line.len() <= MAX_HEADING_BYTES {
+        // UTF-16 has zero bytes in its characters; other encodings keep ASCII as is.
+        let worth = !line.is_empty()
+            && line.len() <= MAX_HEADING_BYTES
+            && (utf16 || headings::may_be_heading(line));
+        // The first few characters rule out most lines without decoding the rest.
+        let start = &line[..line.len().min(if utf16 { 96 } else { 48 })];
+        if worth && headings::may_start(&enc.decode_without_bom_handling(start).0) {
             let (text, _) = enc.decode_without_bom_handling(line);
             if let Some(c) = headings::candidate(&text, line_start, end) {
                 found.push(c);
@@ -424,6 +430,19 @@ mod tests {
             book.load(0).unwrap().paragraphs[..2],
             ["Truyện ngắn", "Chương 1"]
         );
+    }
+
+    #[test]
+    fn finds_headings_drawn_with_long_decoration() {
+        let mut text = String::new();
+        for i in 1..=3 {
+            text.push_str(&format!(
+                "==================== Chương {i} ====================\n{}",
+                body(10)
+            ));
+        }
+        let book = TxtBook::open(Cursor::new(text.into_bytes()), None).unwrap();
+        assert_eq!(labels(&book)[2].as_deref(), Some("Chương 3"));
     }
 
     #[test]

@@ -104,11 +104,52 @@ pub fn heading(line: &str) -> Option<String> {
     let label = line
         .trim_matches(|c: char| c.is_whitespace() || DECOR.contains(&c))
         .trim();
-    if label.is_empty() || label.chars().count() > MAX_HEADING_CHARS {
+    if !may_start(label) || label.chars().count() > MAX_HEADING_CHARS {
         return None;
     }
-    let ok = han_numbered(label) || word_numbered(label) || named(label);
+    // Only the start decides; lowercasing a few characters is enough.
+    let lower: String = label
+        .chars()
+        .take(32)
+        .flat_map(char::to_lowercase)
+        .collect();
+    let ok = han_numbered(label) || word_numbered(&lower) || named(&lower);
     ok.then(|| label.to_string())
+}
+
+/// Whether `text` (the start of a line, at least two characters of it) can start a
+/// heading: its first two letters, lowercased, begin one of the heading words. Most
+/// story lines fail here, before any other work.
+pub fn may_start(text: &str) -> bool {
+    let mut chars = text
+        .trim_start_matches(|c: char| c.is_whitespace() || DECOR.contains(&c))
+        .chars()
+        .flat_map(char::to_lowercase);
+    let Some(a) = chars.next() else {
+        return false;
+    };
+    if a == '第' {
+        return true;
+    }
+    let b = chars.next();
+    NUMBERED.iter().chain(NAMED).any(|w| {
+        let mut w = w.chars();
+        w.next() == Some(a) && (b.is_none() || w.next().is_none_or(|c| Some(c) == b))
+    })
+}
+
+/// Whether a line of an ASCII-compatible encoding may hold a heading, from its raw
+/// bytes: false when it starts (after spaces and decoration) with an ASCII
+/// character no heading starts with, such as a quote or a lowercase story word.
+/// Saves decoding most lines.
+pub fn may_be_heading(line: &[u8]) -> bool {
+    let Some(&b) = line
+        .iter()
+        .find(|b| !(b.is_ascii_whitespace() || b"=*#-_~[]()<>".contains(b)))
+    else {
+        return false;
+    };
+    !b.is_ascii() || b.is_ascii_alphabetic()
 }
 
 /// The candidate for a line, when it reads like a heading.
@@ -151,8 +192,7 @@ const SEP: &[char] = &[' ', '\u{a0}', '\u{3000}', '.', ':', '_', '#'];
 
 /// A chapter word, a number (digits, Roman, Chinese or Vietnamese number words),
 /// then the end of the line or a separator before the title.
-fn word_numbered(s: &str) -> bool {
-    let lower = s.to_lowercase();
+fn word_numbered(lower: &str) -> bool {
     for word in NUMBERED {
         let Some(after) = lower.strip_prefix(word) else {
             continue;
@@ -237,8 +277,7 @@ fn vi_number_len(s: &str) -> Option<usize> {
 
 /// "Lời mở đầu", "Prologue: …", "番外一 …": the word alone or followed by a
 /// separator; Chinese titles follow without one.
-fn named(s: &str) -> bool {
-    let lower = s.to_lowercase();
+fn named(lower: &str) -> bool {
     NAMED.iter().any(|w| {
         lower.strip_prefix(w).is_some_and(|rest| {
             let han = w.chars().all(|c| c > '\u{2e80}');
