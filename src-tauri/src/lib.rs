@@ -64,7 +64,12 @@ pub fn run() {
             let path = request.uri().path().to_string();
             // Decoding and drawing pages is slow; keep it off the webview's thread.
             std::thread::spawn(move || {
-                responder.respond(book::commands::serve_image(&app, &path));
+                let response = if path.starts_with("/cover/") {
+                    library::commands::serve_cover(&app, &path)
+                } else {
+                    book::commands::serve_image(&app, &path)
+                };
+                responder.respond(response);
             });
         })
         .invoke_handler(tauri::generate_handler![

@@ -34,6 +34,8 @@ pub struct LibraryBook {
     pub source_name: Option<String>,
     pub chapter_count: i64,
     pub created_at: String,
+    /// A cover picture was found in the book (served as `bookimg:` `cover/{id}/{user}`).
+    pub has_cover: bool,
     pub last_read: Option<LastRead>,
 }
 
@@ -151,24 +153,27 @@ pub fn import(
         .ok()
         .and_then(|v| v.as_str().map(String::from));
 
+    let author = source.author().unwrap_or_default();
+    let cover = source.cover();
+    let description = source.description().unwrap_or_default();
+
     let tx = conn.transaction()?;
-    tx.execute(
-        "insert or ignore into authors (slug, name) values ('unknown', 'Unknown')",
-        [],
-    )?;
-    let author_id: i64 =
-        tx.query_row("select id from authors where slug = 'unknown'", [], |r| {
-            r.get(0)
-        })?;
+    let author_id = author_id(&tx, &author)?;
     tx.execute(
         "insert into novels (slug, author_id, original_lang, chapter_count, source_format, source_name, book_key)
          values (?1, ?2, ?3, ?4, ?5, ?6, lower(hex(randomblob(16))))",
         params![slug(&title), author_id, lang, total as i64, format_name, file_name],
     )?;
     let novel_id = tx.last_insert_rowid();
+    if let Some(img) = cover {
+        tx.execute(
+            "insert into chapter_images (novel_id, key, mime, data) values (?1, ?2, ?3, ?4)",
+            params![novel_id, COVER_KEY, img.mime, img.bytes],
+        )?;
+    }
     tx.execute(
-        "insert into novel_translations (novel_id, lang, title) values (?1, ?2, ?3)",
-        params![novel_id, lang, title],
+        "insert into novel_translations (novel_id, lang, title, description) values (?1, ?2, ?3, ?4)",
+        params![novel_id, lang, title, description],
     )?;
     {
         let mut chapter = tx.prepare(
@@ -265,7 +270,8 @@ fn urlish_decode(s: &str) -> String {
 const LIST_SQL: &str = "
     select n.id, t.title, n.original_lang, n.source_format, n.source_name, n.chapter_count,
            n.created_at, h.chapter_number, h.progress, h.last_read_at,
-           nullif(a.slug, 'unknown'), a.name, t.description
+           nullif(a.slug, 'unknown'), a.name, t.description,
+           exists (select 1 from chapter_images c where c.novel_id = n.id and c.key = ':cover')
     from novels n
     join novel_translations t on t.novel_id = n.id and t.lang = n.original_lang
     join authors a on a.id = n.author_id
@@ -286,6 +292,7 @@ fn row_to_book(r: &rusqlite::Row) -> rusqlite::Result<LibraryBook> {
         source_name: r.get(4)?,
         chapter_count: r.get(5)?,
         created_at: r.get(6)?,
+        has_cover: r.get(13)?,
         last_read: match number {
             Some(n) => Some(LastRead {
                 index: (n - 1).max(0) as usize,
@@ -330,6 +337,51 @@ pub fn save_progress(
     Ok(())
 }
 
+/// Key of a book's cover in `chapter_images` (not a path any book uses).
+pub const COVER_KEY: &str = ":cover";
+
+/// The cover picture of library book `novel_id`.
+pub fn cover(conn: &Connection, novel_id: i64) -> Result<Image, BookError> {
+    conn.query_row(
+        "select data from chapter_images where novel_id = ?1 and key = ?2",
+        params![novel_id, COVER_KEY],
+        |r| Ok(Image::sniff(r.get::<_, Vec<u8>>(0)?)),
+    )
+    .optional()?
+    .ok_or_else(|| BookError::NoImage(COVER_KEY.into()))
+}
+
+/// The id of author `name` (the shared "Unknown" row when empty), added if new.
+fn author_id(conn: &Connection, name: &str) -> rusqlite::Result<i64> {
+    let name = name.trim();
+    if name.is_empty() {
+        conn.execute(
+            "insert or ignore into authors (slug, name) values ('unknown', 'Unknown')",
+            [],
+        )?;
+        return conn.query_row("select id from authors where slug = 'unknown'", [], |r| {
+            r.get(0)
+        });
+    }
+    let found: Option<i64> = conn
+        .query_row(
+            "select id from authors where name = ?1 and slug <> 'unknown' order by id limit 1",
+            [name],
+            |r| r.get(0),
+        )
+        .optional()?;
+    match found {
+        Some(id) => Ok(id),
+        None => {
+            conn.execute(
+                "insert into authors (slug, name) values (?1, ?2)",
+                params![slug(name), name],
+            )?;
+            Ok(conn.last_insert_rowid())
+        }
+    }
+}
+
 /// Changes a book's title, author and description (in its original language).
 /// An empty author makes it "Unknown"; authors left with no books are dropped.
 pub fn update_details(
@@ -342,33 +394,7 @@ pub fn update_details(
     let title = title.trim();
     let author = author.trim();
     let tx = conn.transaction()?;
-    let author_id: i64 = if author.is_empty() {
-        tx.execute(
-            "insert or ignore into authors (slug, name) values ('unknown', 'Unknown')",
-            [],
-        )?;
-        tx.query_row("select id from authors where slug = 'unknown'", [], |r| {
-            r.get(0)
-        })?
-    } else {
-        let found: Option<i64> = tx
-            .query_row(
-                "select id from authors where name = ?1 and slug <> 'unknown' order by id limit 1",
-                [author],
-                |r| r.get(0),
-            )
-            .optional()?;
-        match found {
-            Some(id) => id,
-            None => {
-                tx.execute(
-                    "insert into authors (slug, name) values (?1, ?2)",
-                    params![slug(author), author],
-                )?;
-                tx.last_insert_rowid()
-            }
-        }
-    };
+    let author_id = author_id(&tx, author)?;
     tx.execute(
         "update novels set author_id = ?2, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
          where id = ?1",
@@ -727,6 +753,58 @@ mod tests {
             source.load(0).unwrap().paragraphs
         );
         std::fs::remove_file(file).unwrap();
+    }
+
+    struct WithDetails(Fake);
+
+    impl BookSource for WithDetails {
+        fn title(&self) -> Option<String> {
+            Some("Sách có tác giả".into())
+        }
+        fn author(&self) -> Option<String> {
+            Some("Nguyễn Du".into())
+        }
+        fn description(&self) -> Option<String> {
+            Some("Truyện thơ.".into())
+        }
+        fn cover(&mut self) -> Option<Image> {
+            Some(Image::sniff(b"\x89PNG bia".to_vec()))
+        }
+        fn sections(&self) -> Vec<SectionMeta> {
+            self.0.sections()
+        }
+        fn load(&mut self, index: usize) -> Result<Section, BookError> {
+            self.0.load(index)
+        }
+    }
+
+    #[test]
+    fn imports_author_and_description() {
+        let path = temp_db("details");
+        let mut conn = db::open(&path).unwrap();
+        let mut book = WithDetails(Fake(vec![(None, vec!["Trăm năm trong cõi người ta"])]));
+        let a = import(&mut conn, BookFormat::Epub, &mut book, "a.epub", |_, _| {}).unwrap();
+        let b = import(&mut conn, BookFormat::Epub, &mut book, "b.epub", |_, _| {}).unwrap();
+        let got = get(&conn, a).unwrap().unwrap();
+        assert_eq!(got.author.as_deref(), Some("Nguyễn Du"));
+        assert_eq!(got.description, "Truyện thơ.");
+        assert!(got.has_cover);
+        assert_eq!(cover(&conn, a).unwrap().bytes, b"\x89PNG bia");
+        // The cover is not a picture of the text.
+        let (_, mut db_book) = DbBook::open(&path, a, None).unwrap();
+        assert_eq!(
+            db_book.load(0).unwrap().paragraphs,
+            ["Trăm năm trong cõi người ta"]
+        );
+        // The second book shares the author row.
+        let authors: i64 = conn
+            .query_row(
+                "select count(distinct author_id) from novels where id in (?1, ?2)",
+                [a, b],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(authors, 1);
     }
 
     #[test]

@@ -8,7 +8,7 @@ import { useT } from '../i18n';
 import { useApp } from '../store/AppStore';
 import { useLayout } from '../lib/useLayout';
 import {
-  canOpenLocalBooks, deleteLibraryBook, importLocalBook, importLocalFolder, canPickFolder, listLibrary, localCover, pickLocalBook, updateLibraryBook,
+  canOpenLocalBooks, deleteLibraryBook, importLocalBook, importLocalFolder, canPickFolder, libraryCoverUrl, listLibrary, localCover, pickLocalBook, updateLibraryBook,
   type LibraryBook
 } from '../lib/localBook';
 import { runOcr, useOcrStatus } from '../lib/ocr';
@@ -122,7 +122,7 @@ function DeviceBooks({ onOpenFile }: { onOpenFile: () => void }) {
         {books?.map(b => (
           <div key={b.novelId} style={{ position: 'relative', minWidth: 0 }}>
             <button className="shelf-item" style={{ minWidth: 0, width: '100%' }} onClick={() => app.push({ s: 'bookDetail', novelId: b.novelId })}>
-              <NovelCover novel={{ title: b.title, cover: localCover(b.title) }} w="100%" h="auto" fs={lay.libFs} style={{ aspectRatio: 0.7 }} />
+              <NovelCover novel={{ title: b.title, cover: localCover(b.title), image: libraryCoverUrl(user, b) }} w="100%" h="auto" fs={lay.libFs} style={{ aspectRatio: 0.7 }} />
               <div className="shelf-item__title" style={{ fontSize: 12 }}>{b.title}</div>
               <div className="shelf-item__author muted">{b.author ?? [b.format?.toUpperCase(), b.lang.toUpperCase()].filter(Boolean).join(' · ')}</div>
             </button>
