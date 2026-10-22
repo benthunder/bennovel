@@ -277,6 +277,8 @@ export const vi: Record<MessageKey, string> = {
   'wiki.failed': 'Không lưu được wiki.',
   'wiki.asOf': 'Thông tin tới {chapter}, không có gì từ các chương sau.',
   'wiki.noSummary': 'Chưa có mô tả.',
+  'wiki.showMore': 'Xem thêm',
+  'wiki.showLess': 'Thu gọn',
   'wiki.tab.map': 'Bản đồ',
   'wiki.langAria': 'Ngôn ngữ wiki',
   'wiki.missing': '{n} mục chưa có chữ {lang}, đang hiện chữ Raw.',

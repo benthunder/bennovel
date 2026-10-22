@@ -275,6 +275,8 @@ export const en = {
   'wiki.failed': 'Could not save the wiki.',
   'wiki.asOf': 'As known by {chapter}; nothing from later chapters.',
   'wiki.noSummary': 'No description yet.',
+  'wiki.showMore': 'Show more',
+  'wiki.showLess': 'Show less',
   'wiki.tab.map': 'Map',
   'wiki.langAria': 'Wiki language',
   'wiki.missing': '{n} entries have no {lang} words yet; they show the raw text.',
