@@ -217,20 +217,18 @@ test('the whole book goes to the background queue from its page', async ({ page 
   expect(req?.args).toMatchObject({ novelId: 1, fromIndex: 0, lang: 'vi', style: 'natural', uiLang: 'en' });
 });
 
-test('the book page shows the chapter the queue is on and its pipeline', async ({ page }, info) => {
+test('the book page shows the chapter the queue is on', async ({ page }, info) => {
   await nativeApp(page, { queue: true });
   await page.goto('/');
   await page.getByText('Device Diary').filter({ visible: true }).first().click();
-  const pipeline = page.getByRole('group', { name: 'Pipeline' }).filter({ visible: true }).first();
-  await expect(pipeline.getByText('Now on Part 2 of 2 · Part two')).toBeVisible();
-  await expect(pipeline.locator('[aria-current="step"]')).toHaveText('Look up the wiki');
+  const status = page.getByText(/^Translating Part 2 of 2 · Part two/).filter({ visible: true }).first();
+  await expect(status).toBeVisible();
   await page.evaluate(() => (window as unknown as { __live: (l: unknown) => void }).__live(
     { novelId: 1, lang: 'vi', style: 'natural', index: 1, stage: 'translate', partsDone: 2, partsTotal: 5 }));
-  await expect(pipeline.locator('[aria-current="step"]')).toContainText('Translate');
-  await expect(pipeline.getByText('2/5 parts')).toBeVisible();
+  await expect(status).toContainText('2/5 parts');
   await page.screenshot({ path: `test-results/pipeline-${info.project.name}.png` });
   await page.evaluate(() => (window as unknown as { __live: (l: unknown) => void }).__live(null));
-  await expect(pipeline).toHaveCount(0);
+  await expect(page.getByText(/^Translating Part 2/)).toHaveCount(0);
 });
 
 test('without an LLM the book page points to the settings', async ({ page }) => {

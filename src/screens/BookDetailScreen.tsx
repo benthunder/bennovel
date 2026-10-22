@@ -2,14 +2,14 @@ import { Fragment, useEffect, useState } from 'react';
 import { ask } from '@tauri-apps/plugin-dialog';
 import { AiTag, ChapterSheet, useSectionName } from '../components/ChapterSheet';
 import { EditBookDialog } from '../components/EditBookDialog';
-import { BookOpenIcon, CheckIcon, ChevronLeftIcon, ChevronRightIcon, PencilIcon, PlayIcon, SparklesIcon, XIcon } from '../components/Icons';
+import { BookOpenIcon, ChevronLeftIcon, ChevronRightIcon, PencilIcon, PlayIcon, SparklesIcon, XIcon } from '../components/Icons';
 import { NovelCover } from '../components/NovelCover';
 import { TranslateFields, defaultTranslation, type Translation } from '../components/ReaderTools';
 import { Spinner } from '../components/ui';
 import { useI18n, useT } from '../i18n';
 import {
   AI_LANGS, AiFailure, aiTranslateBook, aiViewKey, cancelAiTranslation, getAiLive, getAiMarks, getAiProgress, getAiVersions, getLlmSettings, getReadingLang, onAiLive, styleOf,
-  type AiChoice, type AiLang, type AiLive, type AiStage, type AiView, type AiMark, type AiProgress, type AiVersion
+  type AiChoice, type AiLang, type AiLive, type AiView, type AiMark, type AiProgress, type AiVersion
 } from '../lib/ai';
 import { save as store } from '../lib/storage';
 import { deleteLibraryBook, getLibraryDetail, libraryCoverUrl, localCover, openLibraryBook, updateLibraryBook, type LocalSectionMeta } from '../lib/localBook';
@@ -159,7 +159,7 @@ export function BookDetailScreen({ novelId }: { novelId: number }) {
                         {done ? t(i === last ? 'bookDetail.lastRead' : 'bookDetail.read') : s.label ? name : s.pages ? t('book.pages', { from: s.pages[0], to: s.pages[1] }) : ''}
                       </span>
                     </span>
-                    {live?.index === i ? <span title={t('ai.pipeline')} style={{ flex: 'none', display: 'grid' }}><Spinner size={14} /></span> : <AiTag marks={marks?.get(i)} />}
+                    {live?.index === i ? <span title={t('ai.liveChapter')} style={{ flex: 'none', display: 'grid' }}><Spinner size={14} /></span> : <AiTag marks={marks?.get(i)} />}
                     <ChevronRightIcon size={16} style={{ flex: 'none', color: 'var(--color-neutral-500)' }} />
                   </button>
                 );
@@ -197,39 +197,6 @@ function useAiLive(user: string, novelId: number) {
     return () => { gone = true; void stop.then(s => s()); };
   }, [user]);
   return live?.novelId === novelId ? live : null;
-}
-
-/**
- * Where the chapter being worked on is: the graph's nodes in order, done ones ticked,
- * the current one spinning, with the parts back from the LLM while it translates.
- */
-function Pipeline({ live, rewrite, name }: { live: AiLive; rewrite: boolean; name: string }) {
-  const t = useT();
-  const stages: AiStage[] = ['detect', 'recall', live.stage === 'rewrite' || (rewrite && live.stage !== 'translate') ? 'rewrite' : 'translate', 'save', 'learn'];
-  const at = stages.indexOf(live.stage);
-  return (
-    <div role="group" aria-label={t('ai.pipeline')} style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '10px 12px', borderRadius: 20, background: 'var(--color-bg)' }}>
-      <div style={{ fontSize: 13, fontWeight: 700, overflowWrap: 'anywhere' }}>{t('ai.liveChapter', { name })}</div>
-      {stages.map((s, i) => {
-        const now = i === at;
-        const parts = now && live.partsTotal > 0;
-        return (
-          <div key={s} aria-current={now ? 'step' : undefined} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: i > at ? 'var(--color-neutral-500)' : 'var(--color-text)', fontWeight: now ? 700 : 400 }}>
-            <span style={{ width: 16, height: 16, flex: 'none', display: 'grid', placeItems: 'center', color: 'var(--color-accent)' }}>
-              {i < at ? <CheckIcon size={12} /> : now ? <Spinner size={12} /> : <span style={{ width: 6, height: 6, borderRadius: 3, background: 'var(--color-neutral-300)' }} />}
-            </span>
-            <span style={{ flex: parts ? 'none' : 1 }}>{t(`ai.stage.${s}`)}</span>
-            {parts && (
-              <>
-                <div className="import-progress__bar" style={{ maxWidth: 140 }}><div style={{ width: `${Math.round((live.partsDone / live.partsTotal) * 100)}%` }} /></div>
-                <span className="muted" style={{ fontSize: 11 }}>{t('ai.parts', { done: live.partsDone, total: live.partsTotal })}</span>
-              </>
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
 }
 
 /** Opens the book's wiki, with how many entries it has. */
@@ -329,7 +296,12 @@ function AiBox({ novelId, lang, sections, live, onRead }: {
               <div className="import-progress__bar"><div style={{ width: `${p.total ? Math.round((p.done / p.total) * 100) : 0}%` }} /></div>
             </div>
             {mine
-              ? <Pipeline live={mine} rewrite={lang === p.lang} name={s?.label ? `${name} · ${s.label}` : name} />
+              ? (
+                <div className="muted" style={{ fontSize: 12, paddingLeft: 24, overflowWrap: 'anywhere' }}>
+                  {t(mine.stage === 'rewrite' || (lang === p.lang && mine.stage !== 'translate') ? 'ai.liveRewriting' : 'ai.liveTranslating', { name: s?.label ? `${name} · ${s.label}` : name })}
+                  {mine.partsTotal > 0 && ` · ${t('ai.parts', { done: mine.partsDone, total: mine.partsTotal })}`}
+                </div>
+              )
               : p.queued > 0 && <div className="muted" style={{ fontSize: 12, paddingLeft: 24 }}>{t('ai.liveWaiting')}</div>}
           </Fragment>
         );

@@ -5,7 +5,8 @@
 //!
 //! Events for the app: `ai-progress` after each chapter, `ai-paused` when the LLM
 //! can't be used (no settings, key turned down, no connection…), `ai-done` once the
-//! last chapter of a request is through, which also shows a system notification.
+//! last chapter of a request is through. A system notification shows when a request
+//! starts its first chapter and when its last one is through.
 //! `ai-live` as the chapter being worked on moves through the graph's nodes (null once
 //! the worker stops), so the book's page can show the pipeline.
 
@@ -227,6 +228,8 @@ struct LiveEvent {
 
 /// Where the worker's state goes: kept in the queue and sent to the app.
 type Report = Arc<dyn Fn(Option<Live>) + Send + Sync>;
+/// Called with the book's title as a request starts its first chapter.
+type Started = Arc<dyn Fn(String, Progress) + Send + Sync>;
 
 /// A chapter's place in reading order.
 fn index_of(conn: &Connection, chapter_id: i64) -> rusqlite::Result<i64> {
@@ -320,9 +323,13 @@ async fn work<R: Runtime>(app: &AppHandle<R>, wake: &Wake) {
             );
         })
     };
+    let started: Started = {
+        let (app, db) = (app.clone(), wake.db.clone());
+        Arc::new(move |title: String, p: Progress| notify(&app, &db, Note::Started, &title, &p))
+    };
     loop {
-        let (db_file, r) = (wake.db.clone(), report.clone());
-        let step = tauri::async_runtime::spawn_blocking(move || step(&db_file, r))
+        let (db_file, r, s) = (wake.db.clone(), report.clone(), started.clone());
+        let step = tauri::async_runtime::spawn_blocking(move || step(&db_file, r, s))
             .await
             .unwrap_or_else(|e| Err(AiError::Other(e.to_string())));
         if !matches!(step, Ok(Step::Did(..))) {
@@ -339,7 +346,7 @@ async fn work<R: Runtime>(app: &AppHandle<R>, wake: &Wake) {
                     },
                 );
                 if let Some(title) = finished {
-                    notify(app, wake, &title, &p);
+                    notify(app, &wake.db, Note::Done, &title, &p);
                     let _ = app.emit(
                         "ai-done",
                         DoneEvent {
@@ -370,11 +377,19 @@ async fn work<R: Runtime>(app: &AppHandle<R>, wake: &Wake) {
 }
 
 /// Translates the next queued chapter of a library file.
-fn step(db_file: &std::path::Path, report: Report) -> Result<Step, AiError> {
+fn step(db_file: &std::path::Path, report: Report, started: Started) -> Result<Step, AiError> {
     let conn = db::open(db_file)?;
     let Some(job) = claim(&conn)? else {
         return Ok(Step::Idle);
     };
+    // The request's first chapter: nothing done or failed yet.
+    if let Some(p) = progress_of(&conn, &job)? {
+        if p.done + p.failed == 0 {
+            if let Some(title) = book_title(&conn, job.novel_id)? {
+                started(title, p);
+            }
+        }
+    }
     let live = Arc::new(Mutex::new(Live {
         novel_id: job.novel_id,
         lang: job.lang.clone(),
@@ -427,26 +442,38 @@ fn step(db_file: &std::path::Path, report: Report) -> Result<Step, AiError> {
     let p = progress_of(&conn, &job)?.ok_or(AiError::Other("job vanished".into()))?;
     // The last chapter of this request: the book's title for the notification.
     let finished = if p.queued + p.running == 0 {
-        conn.query_row(
-            "select t.title from novels n join novel_translations t
-               on t.novel_id = n.id and t.lang = n.original_lang where n.id = ?1",
-            [job.novel_id],
-            |r| r.get(0),
-        )
-        .optional()?
+        book_title(&conn, job.novel_id)?
     } else {
         None
     };
     Ok(Step::Did(p, finished))
 }
 
-/// "Translation done" as a system notification, in the app's language.
-fn notify<R: Runtime>(app: &AppHandle<R>, wake: &Wake, title: &str, p: &Progress) {
+/// The book's title in its own language, for the notifications.
+fn book_title(conn: &Connection, novel_id: i64) -> rusqlite::Result<Option<String>> {
+    conn.query_row(
+        "select t.title from novels n join novel_translations t
+           on t.novel_id = n.id and t.lang = n.original_lang where n.id = ?1",
+        [novel_id],
+        |r| r.get(0),
+    )
+    .optional()
+}
+
+/// Which notification to show.
+#[derive(Clone, Copy, PartialEq)]
+enum Note {
+    Started,
+    Done,
+}
+
+/// "Translation started" or "done" as a system notification, in the app's language.
+fn notify<R: Runtime>(app: &AppHandle<R>, db: &PathBuf, note: Note, title: &str, p: &Progress) {
     use tauri::Manager;
     use tauri_plugin_notification::NotificationExt;
     let vi = app
         .try_state::<Queue>()
-        .map(|q| q.ui_lang(&wake.db) == "vi")
+        .map(|q| q.ui_lang(db) == "vi")
         .unwrap_or(true);
     let lang = match (p.lang.as_str(), vi) {
         ("vi", true) => "tiếng Việt",
@@ -454,7 +481,19 @@ fn notify<R: Runtime>(app: &AppHandle<R>, wake: &Wake, title: &str, p: &Progress
         ("vi", false) => "Vietnamese",
         _ => "English",
     };
-    let (head, body) = if vi {
+    let (head, body) = if note == Note::Started {
+        if vi {
+            (
+                format!("Đang dịch: {title}"),
+                format!("{} chương sang {lang}, chạy nền.", p.total),
+            )
+        } else {
+            (
+                format!("Translating: {title}"),
+                format!("{} chapters into {lang}, in the background.", p.total),
+            )
+        }
+    } else if vi {
         (
             format!("Đã dịch xong: {title}"),
             if p.failed > 0 {
