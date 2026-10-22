@@ -1174,9 +1174,10 @@ fn json_prompt(lang: &str) -> String {
 /// translated text, `mark` on its own line and the facts of that part as JSON.
 pub fn extract_prompt(lang: &str, mark: &str) -> String {
     format!(
-        "\n\nAlso keep the novel's wiki. {} After the translated text, write a line with only {mark}, then one JSON object and nothing else: {}. When the text shows nothing worth keeping, write {{\"entries\": [], \"relations\": []}}.",
+        "\n\nAlso keep the novel's wiki. {} After the translated text, write a line with only {mark}, then one JSON object and nothing else: {}, with two more lists in it: {}. When the text shows nothing worth keeping, write {{\"entries\": [], \"relations\": []}}.",
         learn_rules(lang),
-        json_shape(lang)
+        json_shape(lang),
+        super::cast::shape(lang)
     )
 }
 
@@ -1812,7 +1813,8 @@ fn parse_object<T: serde::de::DeserializeOwned>(reply: &str) -> Option<T> {
 pub fn strip(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "delete from wiki_vectors; delete from wiki_books; delete from wiki_chapters;
-         delete from chapter_wiki_facts;",
+         delete from chapter_wiki_facts; delete from cast_people;
+         delete from cast_address_raw; delete from cast_address;",
     )
 }
 

@@ -408,6 +408,44 @@ create table chapter_wiki_facts (
   created_at integer not null,
   primary key (chapter_id, lang)
 );
+
+-- Local only (cast.rs): who each character is and how two characters address each
+-- other in a translation, from the same facts; put back in later chapters' prompts so
+-- genders, ages and forms of address stay the same.
+create table cast_people (
+  novel_id   integer not null references novels (id) on delete cascade,
+  -- As written in the original text.
+  name       text not null,
+  gender     text not null default '',
+  age        text not null default '',
+  chapter    integer,
+  updated_at integer not null,
+  primary key (novel_id, name)
+);
+-- How `from_name` refers to themself when speaking to `to_name`, and calls them: as
+-- the original text writes it (raw), and as each translation writes it.
+create table cast_address_raw (
+  novel_id   integer not null references novels (id) on delete cascade,
+  from_name  text not null,
+  to_name    text not null,
+  self_term  text not null default '',
+  other_term text not null default '',
+  tone       text not null default '',
+  chapter    integer,
+  updated_at integer not null,
+  primary key (novel_id, from_name, to_name)
+);
+create table cast_address (
+  novel_id   integer not null references novels (id) on delete cascade,
+  lang       text not null,
+  from_name  text not null,
+  to_name    text not null,
+  self_term  text not null default '',
+  other_term text not null default '',
+  chapter    integer,
+  updated_at integer not null,
+  primary key (novel_id, lang, from_name, to_name)
+);
 "#,
 ];
 

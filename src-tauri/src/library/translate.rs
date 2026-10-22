@@ -126,6 +126,8 @@ struct Flow {
     terms: Vec<(String, String)>,
     /// The wiki part of the prompt (recall).
     wiki: String,
+    /// The cast part: genders, ages and forms of address found before (cast.rs).
+    cast: String,
     title: String,
     paragraphs: Vec<String>,
     out_title: String,
@@ -160,6 +162,7 @@ pub fn run_with(
     check_request(&req)?;
     let (title, content) = source_text(conn, req.chapter_id)?;
     let (known_lang, sample, guess_lang) = detect_input(conn, req.novel_id)?;
+    let cast = super::cast::context(conn, req.novel_id, &content, &req.lang)?;
     let terms = if req.glossary {
         glossary(conn, req.novel_id, &req.lang)?
     } else {
@@ -175,6 +178,7 @@ pub fn run_with(
         mode: None,
         terms,
         wiki: String::new(),
+        cast,
         title,
         paragraphs: split_paragraphs(&content),
         out_title: String::new(),
@@ -306,6 +310,7 @@ fn graph(
                         &f.terms,
                         &f.wiki,
                     );
+                    system += &f.cast;
                     system += &super::wiki::extract_prompt(&f.req.lang, WIKI_MARK);
                     let title = (!f.title.trim().is_empty())
                         .then(|| (title_prompt(&f.req.lang), f.title.clone()));
@@ -341,6 +346,7 @@ fn graph(
                 }
                 let r = (|| {
                     let mut system = rewrite_prompt(&f.req.lang, &f.req.style, &f.wiki);
+                    system += &f.cast;
                     system += &super::wiki::extract_prompt(&f.req.lang, WIKI_MARK);
                     let (out, _, found) =
                         run_chunks(llm.as_ref(), &system, &f.paragraphs, None, progress.as_deref())?;
@@ -368,6 +374,7 @@ fn graph(
                     }
                     save(&conn, &f.req, &f.out_title, &f.out, llm.model())?;
                     super::wiki::keep_found(&conn, f.req.chapter_id, &f.req.lang, &f.found)?;
+                    super::cast::keep(&conn, f.req.novel_id, f.req.chapter_id, &f.req.lang, &f.found)?;
                     Ok(f)
                 })();
                 step(&failed, r)
