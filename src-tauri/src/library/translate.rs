@@ -47,6 +47,8 @@ const DETECT_WORDS: usize = 50;
 const MAX_STEPS: usize = 8;
 /// Parts of a chapter sent to the LLM at the same time.
 const PARALLEL: usize = 3;
+/// Where a reply's translation ends and the wiki facts of that part begin.
+const WIKI_MARK: &str = "<<<WIKI>>>";
 
 /// Called with (parts done, parts in all) as a chapter's parts come back.
 pub type OnProgress = Arc<dyn Fn(usize, usize) + Send + Sync>;
@@ -125,6 +127,10 @@ struct Flow {
     paragraphs: Vec<String>,
     out_title: String,
     out: Vec<String>,
+    /// Ask each request for the wiki facts of its part too (the book's wiki learns).
+    extract: bool,
+    /// Those facts, one JSON object per part, for the learn node.
+    found: Vec<String>,
 }
 
 impl State for Flow {
@@ -157,6 +163,7 @@ pub fn run_with(
     } else {
         Vec::new()
     };
+    let extract = super::wiki::auto(conn, req.novel_id)?;
     let flow = Flow {
         db: conn.path().unwrap_or_default().to_string(),
         req,
@@ -171,6 +178,8 @@ pub fn run_with(
         paragraphs: split_paragraphs(&content),
         out_title: String::new(),
         out: Vec::new(),
+        extract,
+        found: Vec::new(),
     };
     let failed: Arc<Mutex<Option<AiError>>> = Arc::default();
     let model = llm.model().to_string();
@@ -290,16 +299,19 @@ fn graph(
                     return Ok(f);
                 }
                 let r = (|| {
-                    let system = translate_prompt(
+                    let mut system = translate_prompt(
                         f.source_lang.as_deref().unwrap_or("auto"),
                         &f.req.lang,
                         &f.req.style,
                         &f.terms,
                         &f.wiki,
                     );
+                    if f.extract {
+                        system += &super::wiki::extract_prompt(&f.req.lang, WIKI_MARK);
+                    }
                     let title = (!f.title.trim().is_empty())
                         .then(|| (title_prompt(&f.req.lang), f.title.clone()));
-                    let (out, title) = run_chunks(
+                    let (out, title, found) = run_chunks(
                         llm.as_ref(),
                         &system,
                         &f.paragraphs,
@@ -307,6 +319,7 @@ fn graph(
                         progress.as_deref(),
                     )?;
                     f.out = out;
+                    f.found = found;
                     f.out_title = title
                         .map(|t| clean(&t).lines().next().unwrap_or_default().to_string())
                         .unwrap_or_default();
@@ -329,10 +342,13 @@ fn graph(
                     return Ok(f);
                 }
                 let r = (|| {
-                    let system = rewrite_prompt(&f.req.lang, &f.req.style, &f.wiki);
-                    f.out =
-                        run_chunks(llm.as_ref(), &system, &f.paragraphs, None, progress.as_deref())?
-                            .0;
+                    let mut system = rewrite_prompt(&f.req.lang, &f.req.style, &f.wiki);
+                    if f.extract {
+                        system += &super::wiki::extract_prompt(&f.req.lang, WIKI_MARK);
+                    }
+                    let (out, _, found) =
+                        run_chunks(llm.as_ref(), &system, &f.paragraphs, None, progress.as_deref())?;
+                    (f.out, f.found) = (out, found);
                     // Same language: the chapter keeps its title.
                     f.out_title = f.title.clone();
                     Ok(f)
@@ -404,6 +420,7 @@ fn learn(f: &Flow, llm: &dyn Chat) -> Result<(), AiError> {
         &f.req.lang,
         &f.paragraphs.join("\n\n"),
         &f.out.join("\n\n"),
+        &f.found,
     )?;
     Ok(())
 }
@@ -617,9 +634,13 @@ fn glossary(
     rows.collect()
 }
 
+/// A chapter back from the LLM: its paragraphs, the title's reply, the wiki facts.
+type Parts = (Vec<String>, Option<String>, Vec<String>);
+
 /// Sends the text paragraphs in parts of about `CHUNK_CHARS`, `PARALLEL` at a time,
 /// and puts the replies back in order; pictures stay where they are. `title` (a
-/// system prompt and the title) is asked alongside the parts. The first error stops
+/// system prompt and the title) is asked alongside the parts. Whatever a part's reply
+/// has after `WIKI_MARK` comes back on its own, one per part. The first error stops
 /// what has not started yet and is returned.
 fn run_chunks(
     llm: &dyn Chat,
@@ -627,7 +648,7 @@ fn run_chunks(
     paragraphs: &[String],
     title: Option<(String, String)>,
     progress: Option<&(dyn Fn(usize, usize) + Send + Sync)>,
-) -> Result<(Vec<String>, Option<String>), AiError> {
+) -> Result<Parts, AiError> {
     enum Piece<'a> {
         Picture(&'a str),
         Text(String),
@@ -710,14 +731,25 @@ fn run_chunks(
         .into_iter()
         .map(|r| r.into_inner().unwrap().unwrap_or_default());
     let mut out = Vec::with_capacity(paragraphs.len());
+    let mut found = Vec::new();
     for piece in &pieces {
         match piece {
             Piece::Picture(p) => out.push(p.to_string()),
-            Piece::Text(_) => out.extend(split_paragraphs(&clean(&replies.next().unwrap_or_default()))),
+            Piece::Text(_) => {
+                let reply = replies.next().unwrap_or_default();
+                let text = match reply.split_once(WIKI_MARK) {
+                    Some((text, facts)) => {
+                        found.push(facts.to_string());
+                        text
+                    }
+                    None => reply.as_str(),
+                };
+                out.extend(split_paragraphs(&clean(text)));
+            }
         }
     }
     let title = (total > parts).then(|| replies.next().unwrap_or_default());
-    Ok((out, title))
+    Ok((out, title, found))
 }
 
 /// A reply without the ``` fence some models put around it.
@@ -1106,6 +1138,47 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_wiki_learns_from_the_translation_requests_themselves() {
+        /// Translates and adds the facts after the mark when the prompt asks for them.
+        struct Both(Fake);
+        impl Chat for Both {
+            fn chat(&self, system: &str, user: &str) -> Result<String, AiError> {
+                let reply = self.0.chat(system, user)?;
+                Ok(if system.contains(WIKI_MARK) {
+                    format!("{reply}\n{WIKI_MARK}\n{{\"entries\": [{{\"name\": \"Lina\", \"kind\": \"character\", \"translated\": \"Lina\"}}], \"relations\": []}}")
+                } else {
+                    reply
+                })
+            }
+            fn model(&self) -> &str {
+                "both-1"
+            }
+        }
+        let (conn, novel) = book("found");
+        let llm = Arc::new(Both(Fake::new("en")));
+        // The wiki off: no facts asked for, nothing learnt.
+        let out = run(&conn, llm.clone(), req(11, "vi")).unwrap();
+        assert_eq!(out.paragraphs, vec!["[tr] Second chapter."]);
+        assert!(super::super::wiki::entries(&conn, novel).unwrap().is_empty());
+        // On: the same requests bring the facts, and no request is made to learn.
+        super::super::wiki::set_auto(&conn, novel, true).unwrap();
+        let before = llm.0.count();
+        let out = run(&conn, llm.clone(), req(10, "vi")).unwrap();
+        assert_eq!(
+            out.paragraphs,
+            vec!["[tr] Once upon a time.", "\u{FFFC}pic1", "[tr] The end."]
+        );
+        // Two text parts and the title.
+        assert_eq!(llm.0.count() - before, 3);
+        let names: Vec<String> = super::super::wiki::entries(&conn, novel)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
+        assert_eq!(names, vec!["Lina"]);
+    }
+
+    #[test]
     fn long_chapters_go_in_parts_at_once_and_come_back_in_order() {
         let paragraphs: Vec<String> = (0..12)
             .map(|i| format!("p{i} {}", "x".repeat(1200)))
@@ -1116,7 +1189,7 @@ pub(crate) mod tests {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let log = seen.clone();
         let progress = move |done: usize, total: usize| log.lock().unwrap().push((done, total));
-        let (out, title) = run_chunks(
+        let (out, title, _) = run_chunks(
             &llm,
             "novel translator",
             &paragraphs,

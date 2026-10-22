@@ -1151,14 +1151,32 @@ fn learn_prompt(lang: &str) -> String {
     )
 }
 
-fn json_prompt(lang: &str) -> String {
+/// The JSON object the AI answers with when it does not use the tools.
+fn json_shape(lang: &str) -> String {
     format!(
-        "{} Reply with only one JSON object and nothing else: {{\"entries\": [{{\"name\": original name, \"kind\": one of {}, \"translated\": name in the translation, \"aliases\": [other names], \"summary\": at most three sentences in {}, \"rank\": number for a level only}}], \"relations\": [{{\"from\": original name, \"to\": original name, \"relation\": one of {} (else a few words in {}), \"note\": \"\"}}]}}",
-        learn_rules(lang),
+        "{{\"entries\": [{{\"name\": original name, \"kind\": one of {}, \"translated\": name in the translation, \"aliases\": [other names], \"summary\": at most three sentences in {}, \"rank\": number for a level only}}], \"relations\": [{{\"from\": original name, \"to\": original name, \"relation\": one of {} (else a few words in {}), \"note\": \"\"}}]}}",
         KINDS.join(", "),
         super::translate::lang_name(lang),
         REL_TYPES.join(", "),
         super::translate::lang_name(lang),
+    )
+}
+
+fn json_prompt(lang: &str) -> String {
+    format!(
+        "{} Reply with only one JSON object and nothing else: {}",
+        learn_rules(lang),
+        json_shape(lang)
+    )
+}
+
+/// What a translation prompt adds so the same request also feeds the wiki: after the
+/// translated text, `mark` on its own line and the facts of that part as JSON.
+pub fn extract_prompt(lang: &str, mark: &str) -> String {
+    format!(
+        "\n\nAlso keep the novel's wiki. {} After the translated text, write a line with only {mark}, then one JSON object and nothing else: {}. When the text shows nothing worth keeping, write {{\"entries\": [], \"relations\": []}}.",
+        learn_rules(lang),
+        json_shape(lang)
     )
 }
 
@@ -1377,8 +1395,66 @@ pub fn learn(
     Ok(changes)
 }
 
-/// `learn` as the translation graph runs it: a failure is kept for the wiki screen
-/// and never fails the translation.
+/// Puts in the wiki what the translation requests found in a chapter (`extract_prompt`)
+/// and embeds what changed, with no request of its own besides the embeddings. None
+/// when none of `found` reads as JSON, so the chapter is learnt the usual way.
+pub fn learn_found(
+    conn: &Connection,
+    llm: &dyn Chat,
+    novel_id: i64,
+    chapter_id: i64,
+    lang: &str,
+    found: &[String],
+) -> Result<Option<usize>, AiError> {
+    let answers: Vec<AiAnswer> = found.iter().filter_map(|f| parse_object(f)).collect();
+    if answers.is_empty() {
+        return Ok(None);
+    }
+    let done: bool = conn.query_row(
+        "select exists (select 1 from wiki_chapters where chapter_id = ?1)",
+        [chapter_id],
+        |r| r.get(0),
+    )?;
+    if done {
+        return Ok(Some(0));
+    }
+    let chapter: Option<i64> = conn
+        .query_row(
+            "select number from chapters where id = ?1",
+            [chapter_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let mut changes = 0;
+    // All entries first, so a relation can name an entry from a later part.
+    let (entries, relations): (Vec<_>, Vec<_>) = answers
+        .into_iter()
+        .map(|a| (a.entries, a.relations))
+        .unzip();
+    for item in entries.into_iter().flatten() {
+        if upsert_ai(conn, novel_id, lang, chapter, item)?.is_some() {
+            changes += 1;
+        }
+    }
+    for item in relations.iter().flatten() {
+        if relate_ai(conn, novel_id, lang, chapter, item)?.is_ok() {
+            changes += 1;
+        }
+    }
+    conn.execute(
+        "insert or replace into wiki_chapters (chapter_id, done_at) values (?1, ?2)",
+        params![chapter_id, super::db::now_ms()],
+    )?;
+    if changes > 0 {
+        reindex(conn, llm, novel_id)?;
+    }
+    Ok(Some(changes))
+}
+
+/// `learn` as the translation graph runs it: from what the translation found when
+/// there is something, else with requests of its own. A failure is kept for the wiki
+/// screen and never fails the translation.
+#[allow(clippy::too_many_arguments)]
 pub fn learn_quietly(
     conn: &Connection,
     llm: &dyn Chat,
@@ -1387,11 +1463,17 @@ pub fn learn_quietly(
     lang: &str,
     original: &str,
     translated: &str,
+    found: &[String],
 ) -> rusqlite::Result<()> {
     if !auto(conn, novel_id)? {
         return Ok(());
     }
-    match learn(conn, llm, novel_id, chapter_id, lang, original, translated) {
+    let learnt = match learn_found(conn, llm, novel_id, chapter_id, lang, found) {
+        Ok(None) => learn(conn, llm, novel_id, chapter_id, lang, original, translated),
+        Ok(Some(n)) => Ok(n),
+        Err(e) => Err(e),
+    };
+    match learnt {
         Ok(_) => set_error(conn, novel_id, None),
         Err(e) => set_error(conn, novel_id, Some(&e.to_string())),
     }
