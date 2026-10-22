@@ -240,6 +240,7 @@ export const vi: Record<MessageKey, string> = {
   'wiki.count': '{n} mục',
   'wiki.title': 'Wiki',
   'wiki.add': 'Thêm',
+  'wiki.fromKept': 'Đã nạp {n} mục wiki từ các chương đã dịch.',
   'wiki.auto': 'Tự cập nhật khi dịch AI',
   'wiki.autoSub': 'AI ghi lại nhân vật, địa danh và quan hệ từ mỗi chương đã dịch, rồi dùng chúng để giữ tên gọi nhất quán.',
   'wiki.lastError': 'Lần cập nhật wiki gần nhất bị lỗi: {error}',

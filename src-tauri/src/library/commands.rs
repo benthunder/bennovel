@@ -1033,14 +1033,25 @@ pub async fn wiki_unrelate<R: Runtime>(
     ai_blocking(move || Ok(wiki::remove_relation(&db::open(&path)?, &uid)?)).await
 }
 
-/// Whether translating this book updates its wiki.
+/// Whether translating this book updates its wiki; turning it on reads in the facts
+/// the translations kept so far and returns the changes made.
 #[tauri::command]
 pub async fn wiki_set_auto<R: Runtime>(
     app: AppHandle<R>,
     user: String,
     novel_id: i64,
     auto: bool,
-) -> Result<(), AiError> {
+) -> Result<usize, AiError> {
     let path = db_path(&app, &user)?;
-    ai_blocking(move || Ok(wiki::set_auto(&db::open(&path)?, novel_id, auto)?)).await
+    ai_blocking(move || {
+        let conn = db::open(&path)?;
+        wiki::set_auto(&conn, novel_id, auto)?;
+        if !auto {
+            return Ok(0);
+        }
+        // Turned on: what the translations found so far goes in now.
+        let llm = llm::load(&conn)?.map(llm::OpenAi::new);
+        wiki::learn_kept(&conn, llm.as_ref().map(|l| l as &dyn llm::Chat), novel_id)
+    })
+    .await
 }

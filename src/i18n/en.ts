@@ -238,6 +238,7 @@ export const en = {
   'wiki.count': '{n} entries',
   'wiki.title': 'Wiki',
   'wiki.add': 'Add',
+  'wiki.fromKept': 'Filled {n} wiki items from the chapters already translated.',
   'wiki.auto': 'Update while translating with AI',
   'wiki.autoSub': 'The AI adds characters, places and relationships from each translated chapter, and uses them to keep names consistent.',
   'wiki.lastError': 'The last wiki update failed: {error}',

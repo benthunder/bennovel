@@ -61,7 +61,8 @@ export function WikiScreen({ novelId, title, lang: startLang }: { novelId: numbe
 
   const toggleAuto = async () => {
     if (!wiki) return;
-    await setWikiAuto(user, novelId, !wiki.auto).catch(console.error);
+    const n = await setWikiAuto(user, novelId, !wiki.auto).catch(e => { console.error(e); return 0; });
+    if (n > 0) app.showToast(t('wiki.fromKept', { n }));
     reload();
   };
 

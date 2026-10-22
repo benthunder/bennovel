@@ -396,6 +396,19 @@ drop table offline_glossary;
 drop table offline_chapters;
 drop table offline_novels;
 "#,
+    r#"
+-- Local only: the wiki facts the translation requests found in a chapter (one JSON
+-- array of the replies' JSON objects, see translate.rs WIKI_MARK), kept whether or not
+-- the book's wiki learns, so turning it on later fills the wiki from them with no
+-- request but the embeddings.
+create table chapter_wiki_facts (
+  chapter_id integer not null references chapters (id) on delete cascade,
+  lang       text not null,
+  facts      text not null,
+  created_at integer not null,
+  primary key (chapter_id, lang)
+);
+"#,
 ];
 
 /// Epoch milliseconds now.

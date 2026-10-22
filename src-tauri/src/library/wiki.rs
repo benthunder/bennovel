@@ -1395,6 +1395,53 @@ pub fn learn(
     Ok(changes)
 }
 
+/// Keeps what the translation requests found in a chapter, for when the wiki learns.
+pub fn keep_found(
+    conn: &Connection,
+    chapter_id: i64,
+    lang: &str,
+    found: &[String],
+) -> rusqlite::Result<()> {
+    if found.is_empty() {
+        return Ok(());
+    }
+    conn.execute(
+        "insert or replace into chapter_wiki_facts (chapter_id, lang, facts, created_at)
+         values (?1, ?2, ?3, ?4)",
+        params![chapter_id, lang, to_json(&found, "[]"), super::db::now_ms()],
+    )?;
+    Ok(())
+}
+
+/// Fills the wiki from the facts kept for the book's chapters not read into it yet,
+/// in reading order, then embeds what changed (when there is an LLM to do it); returns
+/// the changes made.
+pub fn learn_kept(
+    conn: &Connection,
+    llm: Option<&dyn Chat>,
+    novel_id: i64,
+) -> Result<usize, AiError> {
+    let mut stmt = conn.prepare(
+        "select f.chapter_id, f.lang, f.facts from chapter_wiki_facts f
+         join chapters c on c.id = f.chapter_id
+         where c.novel_id = ?1
+           and not exists (select 1 from wiki_chapters w where w.chapter_id = f.chapter_id)
+         order by c.number, f.created_at desc",
+    )?;
+    let kept: Vec<(i64, String, String)> = stmt
+        .query_map([novel_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut changes = 0;
+    for (chapter_id, lang, facts) in kept {
+        let found: Vec<String> = serde_json::from_str(&facts).unwrap_or_default();
+        changes += apply_found(conn, novel_id, chapter_id, &lang, &found)?.unwrap_or(0);
+    }
+    if let (true, Some(llm)) = (changes > 0, llm) {
+        reindex(conn, llm, novel_id)?;
+    }
+    Ok(changes)
+}
+
 /// Puts in the wiki what the translation requests found in a chapter (`extract_prompt`)
 /// and embeds what changed, with no request of its own besides the embeddings. None
 /// when none of `found` reads as JSON, so the chapter is learnt the usual way.
@@ -1406,6 +1453,21 @@ pub fn learn_found(
     lang: &str,
     found: &[String],
 ) -> Result<Option<usize>, AiError> {
+    let changes = apply_found(conn, novel_id, chapter_id, lang, found)?;
+    if changes.unwrap_or(0) > 0 {
+        reindex(conn, llm, novel_id)?;
+    }
+    Ok(changes)
+}
+
+/// `learn_found` without the embeddings.
+fn apply_found(
+    conn: &Connection,
+    novel_id: i64,
+    chapter_id: i64,
+    lang: &str,
+    found: &[String],
+) -> rusqlite::Result<Option<usize>> {
     let answers: Vec<AiAnswer> = found.iter().filter_map(|f| parse_object(f)).collect();
     if answers.is_empty() {
         return Ok(None);
@@ -1445,9 +1507,6 @@ pub fn learn_found(
         "insert or replace into wiki_chapters (chapter_id, done_at) values (?1, ?2)",
         params![chapter_id, super::db::now_ms()],
     )?;
-    if changes > 0 {
-        reindex(conn, llm, novel_id)?;
-    }
     Ok(Some(changes))
 }
 
@@ -1718,7 +1777,8 @@ fn parse_object<T: serde::de::DeserializeOwned>(reply: &str) -> Option<T> {
 /// Takes what stays on this device out of a copy about to be synced.
 pub fn strip(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
-        "delete from wiki_vectors; delete from wiki_books; delete from wiki_chapters;",
+        "delete from wiki_vectors; delete from wiki_books; delete from wiki_chapters;
+         delete from chapter_wiki_facts;",
     )
 }
 

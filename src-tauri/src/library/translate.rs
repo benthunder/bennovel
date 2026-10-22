@@ -127,9 +127,8 @@ struct Flow {
     paragraphs: Vec<String>,
     out_title: String,
     out: Vec<String>,
-    /// Ask each request for the wiki facts of its part too (the book's wiki learns).
-    extract: bool,
-    /// Those facts, one JSON object per part, for the learn node.
+    /// The wiki facts each request found in its part, one JSON object per part: kept
+    /// with the chapter, and read into the wiki when the book's wiki learns.
     found: Vec<String>,
 }
 
@@ -163,7 +162,6 @@ pub fn run_with(
     } else {
         Vec::new()
     };
-    let extract = super::wiki::auto(conn, req.novel_id)?;
     let flow = Flow {
         db: conn.path().unwrap_or_default().to_string(),
         req,
@@ -178,7 +176,6 @@ pub fn run_with(
         paragraphs: split_paragraphs(&content),
         out_title: String::new(),
         out: Vec::new(),
-        extract,
         found: Vec::new(),
     };
     let failed: Arc<Mutex<Option<AiError>>> = Arc::default();
@@ -306,9 +303,7 @@ fn graph(
                         &f.terms,
                         &f.wiki,
                     );
-                    if f.extract {
-                        system += &super::wiki::extract_prompt(&f.req.lang, WIKI_MARK);
-                    }
+                    system += &super::wiki::extract_prompt(&f.req.lang, WIKI_MARK);
                     let title = (!f.title.trim().is_empty())
                         .then(|| (title_prompt(&f.req.lang), f.title.clone()));
                     let (out, title, found) = run_chunks(
@@ -343,9 +338,7 @@ fn graph(
                 }
                 let r = (|| {
                     let mut system = rewrite_prompt(&f.req.lang, &f.req.style, &f.wiki);
-                    if f.extract {
-                        system += &super::wiki::extract_prompt(&f.req.lang, WIKI_MARK);
-                    }
+                    system += &super::wiki::extract_prompt(&f.req.lang, WIKI_MARK);
                     let (out, _, found) =
                         run_chunks(llm.as_ref(), &system, &f.paragraphs, None, progress.as_deref())?;
                     (f.out, f.found) = (out, found);
@@ -371,6 +364,7 @@ fn graph(
                         }
                     }
                     save(&conn, &f.req, &f.out_title, &f.out, llm.model())?;
+                    super::wiki::keep_found(&conn, f.req.chapter_id, &f.req.lang, &f.found)?;
                     Ok(f)
                 })();
                 step(&failed, r)
@@ -1138,7 +1132,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_wiki_learns_from_the_translation_requests_themselves() {
+    fn the_wiki_learns_from_facts_the_translation_requests_bring() {
         /// Translates and adds the facts after the mark when the prompt asks for them.
         struct Both(Fake);
         impl Chat for Both {
@@ -1156,13 +1150,24 @@ pub(crate) mod tests {
         }
         let (conn, novel) = book("found");
         let llm = Arc::new(Both(Fake::new("en")));
-        // The wiki off: no facts asked for, nothing learnt.
+        let names = || -> Vec<String> {
+            super::super::wiki::entries(&conn, novel)
+                .unwrap()
+                .into_iter()
+                .map(|e| e.name)
+                .collect()
+        };
+        // The wiki off: the facts are kept with the chapter, the wiki stays empty.
         let out = run(&conn, llm.clone(), req(11, "vi")).unwrap();
         assert_eq!(out.paragraphs, vec!["[tr] Second chapter."]);
-        assert!(super::super::wiki::entries(&conn, novel).unwrap().is_empty());
-        // On: the same requests bring the facts, and no request is made to learn.
+        assert!(names().is_empty());
+        // Turned on: the kept facts go in with no request.
         super::super::wiki::set_auto(&conn, novel, true).unwrap();
         let before = llm.0.count();
+        assert_eq!(super::super::wiki::learn_kept(&conn, None, novel).unwrap(), 1);
+        assert_eq!(names(), vec!["Lina"]);
+        assert_eq!(llm.0.count(), before);
+        // On while translating: the same requests bring the facts, none is made to learn.
         let out = run(&conn, llm.clone(), req(10, "vi")).unwrap();
         assert_eq!(
             out.paragraphs,
@@ -1170,12 +1175,11 @@ pub(crate) mod tests {
         );
         // Two text parts and the title.
         assert_eq!(llm.0.count() - before, 3);
-        let names: Vec<String> = super::super::wiki::entries(&conn, novel)
-            .unwrap()
-            .into_iter()
-            .map(|e| e.name)
-            .collect();
-        assert_eq!(names, vec!["Lina"]);
+        assert_eq!(names(), vec!["Lina"]);
+        let learnt: i64 = conn
+            .query_row("select count(*) from wiki_chapters", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(learnt, 2);
     }
 
     #[test]

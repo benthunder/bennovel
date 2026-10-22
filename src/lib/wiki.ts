@@ -78,7 +78,8 @@ export const removeWikiEntry = (user: string, uid: string) => invoke<void>('wiki
 export const addWikiRelation = (user: string, novelId: number, fromUid: string, toUid: string, kind: string, lang: string, note = '') =>
   invoke<string>('wiki_relate', { user, novelId, fromUid, toUid, kind, lang, note });
 export const removeWikiRelation = (user: string, uid: string) => invoke<void>('wiki_unrelate', { user, uid });
-export const setWikiAuto = (user: string, novelId: number, auto: boolean) => invoke<void>('wiki_set_auto', { user, novelId, auto });
+/** Turning it on reads in the wiki facts kept from earlier translations; returns the changes made. */
+export const setWikiAuto = (user: string, novelId: number, auto: boolean) => invoke<number>('wiki_set_auto', { user, novelId, auto });
 
 /** How many entries and free relations have no words in `lang` yet. */
 export const getWikiMissing = (user: string, novelId: number, lang: string) => invoke<number>('wiki_missing', { user, novelId, lang });
