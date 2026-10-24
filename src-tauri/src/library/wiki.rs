@@ -56,8 +56,14 @@ pub const REL_TYPES: &[&str] = &[
 ];
 /// The key of the descriptions written in the book's own language.
 pub const RAW: &str = "raw";
-/// Entries or relations put in one request of `translate_missing`.
-const TRANSLATE_BATCH: usize = 10;
+/// Text of the entries or relations put in one request of `translate_missing`, in
+/// characters (about 1,500 tokens): the reply is about as long, so both stay well inside
+/// any model's limits however long the descriptions are.
+const TRANSLATE_CHARS: usize = 5_000;
+/// Entries or relations put in one request at most, however short.
+const TRANSLATE_BATCH: usize = 25;
+/// Requests of `translate_missing` running at once.
+const TRANSLATE_PARALLEL: usize = 4;
 /// Tool-call rounds allowed for one chapter.
 const MAX_ROUNDS: usize = 12;
 /// Entries put in a translation prompt at most.
@@ -1414,10 +1420,13 @@ fn loose_id<'de, D: serde::Deserializer<'de>>(d: D) -> Result<usize, D::Error> {
     .ok_or_else(|| serde::de::Error::custom("id"))
 }
 
-/// Fills in what `lang` is missing (see `missing`) with the LLM, a batch at a time.
+/// Fills in what `lang` is missing (see `missing`) with the LLM. Each section (a kind of
+/// entry, the relations) goes in batches of about `TRANSLATE_CHARS`, `TRANSLATE_PARALLEL`
+/// requests at a time; a batch the model can't answer whole is asked again in halves.
 /// Only adds: a name or description already in `lang` stays as it is. Returns how many
-/// entries and relations changed. A reply that can't be read is an error when nothing
-/// at all could be filled in, so the user hears of it instead of seeing nothing change.
+/// entries and relations changed. A failed batch is an error only when nothing at all
+/// could be filled in, so the user hears of it instead of seeing nothing change; what
+/// is still missing goes in on the next try.
 pub fn translate_missing(
     conn: &Connection,
     llm: &dyn Chat,
@@ -1432,34 +1441,72 @@ pub fn translate_missing(
         "You translate the wiki of a novel into {}. For each entry, give its name as a translation of this novel would write it (keep established forms; Sino-Vietnamese readings for Chinese names in Vietnamese) and its description in {0}; for each relation, its words in {0}. Fill only the fields asked for. Reply with only one JSON object and nothing else: {{\"entries\": [{{\"id\": number, \"name\": \"...\", \"summary\": \"...\"}}], \"relations\": [{{\"id\": number, \"label\": \"...\"}}]}}",
         super::translate::lang_name(target)
     );
+
+    // The sections: one per kind of entry, then the relations.
+    let mut kinds: BTreeMap<&str, Vec<(usize, Value)>> = BTreeMap::new();
+    for (i, e) in entries.iter().enumerate() {
+        let mut v = json!({ "original_name": e.name, "kind": e.kind });
+        if !raw && !e.names.contains_key(lang) {
+            v["name"] = json!("?");
+        }
+        if !e.summaries.is_empty() && !e.summaries.contains_key(lang) {
+            v["summary"] = json!("?");
+            v["summary_now"] = json!(e.summary_in(lang));
+        }
+        if let Some(n) = e.names.values().next() {
+            v["known_as"] = json!(n);
+        }
+        kinds.entry(e.kind.as_str()).or_default().push((i, v));
+    }
+    let rels: Vec<(usize, Value)> = relations
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            (
+                i,
+                json!({ "label": "?", "words_now": r.labels.values().next().unwrap_or(&r.kind) }),
+            )
+        })
+        .collect();
+    let mut jobs: Vec<(Section, Vec<(usize, Value)>)> = Vec::new();
+    for items in kinds.into_values() {
+        jobs.extend(batches(items).into_iter().map(|b| (Section::Entries, b)));
+    }
+    jobs.extend(batches(rels).into_iter().map(|b| (Section::Relations, b)));
+
+    // The requests, a few at a time; a failure that would fail every request stops the rest.
+    let answers: Vec<std::sync::Mutex<Option<Translated>>> =
+        jobs.iter().map(|_| Default::default()).collect();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let failed: std::sync::Mutex<Option<AiError>> = Default::default();
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    std::thread::scope(|s| {
+        for _ in 0..TRANSLATE_PARALLEL.min(jobs.len()) {
+            s.spawn(|| loop {
+                if stop.load(std::sync::atomic::Ordering::SeqCst) {
+                    return;
+                }
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let Some((section, items)) = jobs.get(i) else {
+                    return;
+                };
+                let (answer, error) = ask_batch(llm, &system, *section, items);
+                *answers[i].lock().unwrap() = Some(answer);
+                if let Some(e) = error {
+                    if matches!(e, AiError::Auth(_) | AiError::NotSet | AiError::Network(_)) {
+                        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    failed.lock().unwrap().get_or_insert(e);
+                }
+            });
+        }
+    });
+
+    // Written here, one at a time: the connection stays on this thread.
     let mut changed = 0;
-    let mut unreadable: Option<String> = None;
-    for batch in entries.chunks(TRANSLATE_BATCH) {
-        let items: Vec<Value> = batch
-            .iter()
-            .enumerate()
-            .map(|(i, e)| {
-                let mut v = json!({ "id": i, "original_name": e.name, "kind": e.kind });
-                if !raw && !e.names.contains_key(lang) {
-                    v["name"] = json!("?");
-                }
-                if !e.summaries.is_empty() && !e.summaries.contains_key(lang) {
-                    v["summary"] = json!("?");
-                    v["summary_now"] = json!(e.summary_in(lang));
-                }
-                if let Some(n) = e.names.values().next() {
-                    v["known_as"] = json!(n);
-                }
-                v
-            })
-            .collect();
-        let reply = llm.chat(&system, &json!({ "entries": items }).to_string())?;
-        let Some(answer) = parse_object::<Translated>(&reply) else {
-            unreadable = Some(reply);
-            continue;
-        };
+    for answer in answers.into_iter().filter_map(|a| a.into_inner().unwrap()) {
         for t in answer.entries {
-            let Some(e) = batch.get(t.id) else { continue };
+            let Some(e) = entries.get(t.id) else { continue };
             let mut names = e.names.clone();
             let mut summaries = e.summaries.clone();
             if !raw && !t.name.trim().is_empty() {
@@ -1480,20 +1527,8 @@ pub fn translate_missing(
                 changed += 1;
             }
         }
-    }
-    for batch in relations.chunks(TRANSLATE_BATCH) {
-        let items: Vec<Value> = batch
-            .iter()
-            .enumerate()
-            .map(|(i, r)| json!({ "id": i, "label": "?", "words_now": r.labels.values().next().unwrap_or(&r.kind) }))
-            .collect();
-        let reply = llm.chat(&system, &json!({ "relations": items }).to_string())?;
-        let Some(answer) = parse_object::<Translated>(&reply) else {
-            unreadable = Some(reply);
-            continue;
-        };
         for t in answer.relations {
-            let (Some(r), label) = (batch.get(t.id), t.label.trim()) else {
+            let (Some(r), label) = (relations.get(t.id), t.label.trim()) else {
                 continue;
             };
             if label.is_empty() {
@@ -1508,12 +1543,117 @@ pub fn translate_missing(
             changed += 1;
         }
     }
-    match unreadable {
-        Some(reply) if changed == 0 => Err(AiError::Other(format!(
-            "unreadable reply: {}",
-            reply.chars().take(200).collect::<String>()
-        ))),
+    match failed.into_inner().unwrap() {
+        Some(e) if changed == 0 => Err(e),
         _ => Ok(changed),
+    }
+}
+
+/// Which list of a `translate_missing` request the items go in.
+#[derive(Debug, Clone, Copy)]
+enum Section {
+    Entries,
+    Relations,
+}
+
+/// `items` in batches of about `TRANSLATE_CHARS` and at most `TRANSLATE_BATCH`, in
+/// order; one longer than that goes alone.
+fn batches(items: Vec<(usize, Value)>) -> Vec<Vec<(usize, Value)>> {
+    let mut out: Vec<Vec<(usize, Value)>> = Vec::new();
+    let mut size = 0;
+    for item in items {
+        let len = item.1.to_string().chars().count();
+        match out.last_mut() {
+            Some(b) if b.len() < TRANSLATE_BATCH && size + len <= TRANSLATE_CHARS => {
+                b.push(item);
+                size += len;
+            }
+            _ => {
+                out.push(vec![item]);
+                size = len;
+            }
+        }
+    }
+    out
+}
+
+/// Asks the LLM for one batch; the answer's ids are those of `items` (their place in
+/// what `missing` found). A reply that can't be read, or a request or reply too long
+/// for the model, is asked again in two halves, so a long batch keeps what can be had.
+/// Returns what was translated and the first failure, if any.
+fn ask_batch(
+    llm: &dyn Chat,
+    system: &str,
+    section: Section,
+    items: &[(usize, Value)],
+) -> (Translated, Option<AiError>) {
+    let list: Vec<Value> = items
+        .iter()
+        .enumerate()
+        .map(|(i, (_, v))| {
+            let mut v = v.clone();
+            v["id"] = json!(i);
+            v
+        })
+        .collect();
+    let user = match section {
+        Section::Entries => json!({ "entries": list }),
+        Section::Relations => json!({ "relations": list }),
+    };
+    let error = match llm.chat(system, &user.to_string()) {
+        Ok(reply) => match parse_object::<Translated>(&reply) {
+            Some(mut t) => {
+                let id = |i: usize| items.get(i).map(|(id, _)| *id);
+                t.entries = t
+                    .entries
+                    .into_iter()
+                    .filter_map(|e| Some(TranslatedEntry { id: id(e.id)?, ..e }))
+                    .collect();
+                t.relations = t
+                    .relations
+                    .into_iter()
+                    .filter_map(|r| Some(TranslatedRelation { id: id(r.id)?, ..r }))
+                    .collect();
+                return (t, None);
+            }
+            None => AiError::Other(format!(
+                "unreadable reply: {}",
+                reply.chars().take(200).collect::<String>()
+            )),
+        },
+        Err(e) => e,
+    };
+    if items.len() < 2 || !too_big(&error) {
+        return (Translated::default(), Some(error));
+    }
+    let (a, b) = items.split_at(items.len() / 2);
+    let (mut first, e1) = ask_batch(llm, system, section, a);
+    let (second, e2) = ask_batch(llm, system, section, b);
+    first.entries.extend(second.entries);
+    first.relations.extend(second.relations);
+    (first, e1.or(e2))
+}
+
+/// Whether a failed request may go through in smaller pieces: a reply cut short or
+/// unreadable, a slow answer, or the API saying the request is too long.
+fn too_big(e: &AiError) -> bool {
+    match e {
+        AiError::Other(_) | AiError::Empty | AiError::Timeout => true,
+        AiError::Http(413, _) => true,
+        AiError::Http(400 | 422, msg) => {
+            let m = msg.to_ascii_lowercase();
+            [
+                "token",
+                "context",
+                "too long",
+                "length",
+                "maximum",
+                "too large",
+            ]
+            .iter()
+            .any(|w| m.contains(w))
+        }
+        _ => false,
     }
 }
 
@@ -1944,8 +2084,10 @@ mod tests {
                 self.0.lock().unwrap().push(user.to_string());
                 Ok(if user.contains("\"relations\"") {
                     r#"{"relations":[{"id":0,"label":"godfather"}]}"#.into()
+                } else if user.contains("林动") {
+                    r#"{"entries":[{"id":"0","name":"Lin Dong","summary":"The hero."}]}"#.into()
                 } else {
-                    r#"{"entries":[{"id":"0","name":"Lin Dong","summary":"The hero."},{"id":1,"name":"Yan City"}]}"#.into()
+                    r#"{"entries":[{"id":0,"name":"Yan City"}]}"#.into()
                 })
             }
             fn model(&self) -> &str {
@@ -2006,7 +2148,8 @@ mod tests {
         let (e, r) = missing(&conn, novel, "en").unwrap();
         assert_eq!((e.len(), r.len()), (0, 0));
         assert_eq!(translate_missing(&conn, &llm, novel, "en").unwrap(), 0);
-        assert_eq!(llm.0.lock().unwrap().len(), 2);
+        // One request per section: the characters, the places, the relations.
+        assert_eq!(llm.0.lock().unwrap().len(), 3);
         // A reply that is no JSON fills nothing in, and says so.
         struct Chatty;
         impl Chat for Chatty {
@@ -2021,6 +2164,113 @@ mod tests {
             translate_missing(&conn, &Chatty, novel, "vi"),
             Err(AiError::Other(_))
         ));
+    }
+
+    #[test]
+    fn translates_a_big_wiki_in_small_batches() {
+        // Answers every entry it is sent, but can't take more than 6 at once (the reply
+        // is cut short), and counts how many requests run together.
+        struct Small {
+            asked: Mutex<Vec<usize>>,
+            running: std::sync::atomic::AtomicUsize,
+            most: std::sync::atomic::AtomicUsize,
+        }
+        impl Chat for Small {
+            fn chat(&self, _: &str, user: &str) -> Result<String, AiError> {
+                use std::sync::atomic::Ordering::SeqCst;
+                let now = self.running.fetch_add(1, SeqCst) + 1;
+                self.most.fetch_max(now, SeqCst);
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                self.running.fetch_sub(1, SeqCst);
+                let v: Value = serde_json::from_str(user).unwrap();
+                let list = v["entries"].as_array().unwrap();
+                self.asked.lock().unwrap().push(list.len());
+                if list.len() > 6 {
+                    return Ok(r#"{"entries":[{"id":0,"name":"cut"#.into());
+                }
+                let out: Vec<Value> = list
+                    .iter()
+                    .map(|e| json!({ "id": e["id"], "name": format!("EN {}", e["original_name"].as_str().unwrap()), "summary": "Done." }))
+                    .collect();
+                Ok(json!({ "entries": out }).to_string())
+            }
+            fn model(&self) -> &str {
+                "t"
+            }
+        }
+        let (conn, novel) = book("big");
+        conn.execute("update novels set original_lang = 'zh'", [])
+            .unwrap();
+        let long = "长".repeat(900);
+        for (i, kind) in ["character", "place", "skill"].iter().enumerate() {
+            for n in 0..20 {
+                save(
+                    &conn,
+                    novel,
+                    EntryInput {
+                        uid: None,
+                        kind: kind.to_string(),
+                        name: format!("{kind}{i}-{n}"),
+                        names: BTreeMap::new(),
+                        aliases: vec![],
+                        summaries: BTreeMap::from([("raw".into(), long.clone())]),
+                        rank: None,
+                    },
+                )
+                .unwrap();
+            }
+        }
+        let llm = Small {
+            asked: Mutex::default(),
+            running: Default::default(),
+            most: Default::default(),
+        };
+        assert_eq!(translate_missing(&conn, &llm, novel, "en").unwrap(), 60);
+        let asked = llm.asked.lock().unwrap().clone();
+        // About 5,000 characters a request: 5 long entries, never one big request.
+        assert!(asked.iter().all(|n| *n <= 6), "{asked:?}");
+        assert_eq!(asked.iter().sum::<usize>(), 60);
+        let most = llm.most.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(most > 1 && most <= TRANSLATE_PARALLEL, "{most}");
+        let (e, _) = missing(&conn, novel, "en").unwrap();
+        assert!(e.is_empty());
+
+        // Short entries go 25 to a request; one the model can't take whole is split.
+        let (conn, novel) = book("split");
+        conn.execute("update novels set original_lang = 'zh'", [])
+            .unwrap();
+        for n in 0..30 {
+            entry_in(&conn, novel, &format!("人{n}"));
+        }
+        let llm = Small {
+            asked: Mutex::default(),
+            running: Default::default(),
+            most: Default::default(),
+        };
+        assert_eq!(translate_missing(&conn, &llm, novel, "en").unwrap(), 30);
+        let asked = llm.asked.lock().unwrap().clone();
+        assert!(asked.contains(&25) && asked.contains(&5), "{asked:?}");
+        let lin = entries(&conn, novel).unwrap();
+        assert!(lin
+            .iter()
+            .all(|e| e.names["en"] == format!("EN {}", e.name)));
+    }
+
+    fn entry_in(conn: &Connection, novel: i64, name: &str) {
+        save(
+            conn,
+            novel,
+            EntryInput {
+                uid: None,
+                kind: "character".into(),
+                name: name.into(),
+                names: BTreeMap::new(),
+                aliases: vec![],
+                summaries: BTreeMap::new(),
+                rank: None,
+            },
+        )
+        .unwrap();
     }
 
     #[test]
