@@ -1,7 +1,6 @@
 //! The reader's replace rules ("find → replace" applied to the text), one list per
 //! novel and language, kept in the library file so they work offline and travel with
-//! a sync. Online novels are keyed by their Supabase id, imported books by `book_key`
-//! (their local id differs on each device).
+//! a sync. Books are keyed by their `book_key` (their local id differs on each device).
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -12,40 +11,20 @@ pub struct Rule {
     pub replace: String,
 }
 
-/// Which novel a list belongs to: an online novel or an imported book (local id).
-#[derive(Debug, Deserialize, Clone, Copy)]
-#[serde(rename_all = "lowercase")]
-pub enum Kind {
-    Online,
-    Book,
-}
-
-/// (scope, key) of a list, or None for a book that isn't in the library.
-fn target(
-    conn: &Connection,
-    kind: Kind,
-    id: i64,
-) -> rusqlite::Result<Option<(&'static str, String)>> {
-    Ok(match kind {
-        Kind::Online => Some(("online", id.to_string())),
-        Kind::Book => conn
-            .query_row("select book_key from novels where id = ?1", [id], |r| {
-                r.get::<_, Option<String>>(0)
-            })
-            .optional()?
-            .flatten()
-            .map(|key| ("book", key)),
-    })
+/// (scope, key) of a book's list, or None for a book that isn't in the library.
+fn target(conn: &Connection, id: i64) -> rusqlite::Result<Option<(&'static str, String)>> {
+    Ok(conn
+        .query_row("select book_key from novels where id = ?1", [id], |r| {
+            r.get::<_, Option<String>>(0)
+        })
+        .optional()?
+        .flatten()
+        .map(|key| ("book", key)))
 }
 
 /// The saved list, or None when this novel and language never had one here.
-pub fn get(
-    conn: &Connection,
-    kind: Kind,
-    id: i64,
-    lang: &str,
-) -> rusqlite::Result<Option<Vec<Rule>>> {
-    let Some((scope, key)) = target(conn, kind, id)? else {
+pub fn get(conn: &Connection, id: i64, lang: &str) -> rusqlite::Result<Option<Vec<Rule>>> {
+    let Some((scope, key)) = target(conn, id)? else {
         return Ok(None);
     };
     let json: Option<String> = conn
@@ -59,14 +38,8 @@ pub fn get(
 }
 
 /// Replaces the list (an empty one is kept, so the removal syncs).
-pub fn set(
-    conn: &Connection,
-    kind: Kind,
-    id: i64,
-    lang: &str,
-    rules: &[Rule],
-) -> rusqlite::Result<()> {
-    let Some((scope, key)) = target(conn, kind, id)? else {
+pub fn set(conn: &Connection, id: i64, lang: &str, rules: &[Rule]) -> rusqlite::Result<()> {
+    let Some((scope, key)) = target(conn, id)? else {
         return Ok(());
     };
     let json = serde_json::to_string(rules).unwrap_or_else(|_| "[]".into());
@@ -100,24 +73,23 @@ mod tests {
     #[test]
     fn saves_per_novel_and_language() {
         let c = conn();
-        assert_eq!(get(&c, Kind::Online, 5, "vi").unwrap(), None);
-        set(
-            &c,
-            Kind::Online,
-            5,
-            "vi",
-            &[rule("Lâm", "Lin"), rule("a", "")],
+        c.execute_batch(
+            "insert into authors (id, slug, name) values (1, 'a', 'A');
+             insert into novels (id, slug, author_id, original_lang, book_key) values (5, 'b', 1, 'vi', 'k5');",
         )
         .unwrap();
+        let book = 5;
+        assert_eq!(get(&c, book, "vi").unwrap(), None);
+        set(&c, book, "vi", &[rule("Lâm", "Lin"), rule("a", "")]).unwrap();
         assert_eq!(
-            get(&c, Kind::Online, 5, "vi").unwrap(),
+            get(&c, book, "vi").unwrap(),
             Some(vec![rule("Lâm", "Lin"), rule("a", "")])
         );
-        assert_eq!(get(&c, Kind::Online, 5, "en").unwrap(), None);
-        set(&c, Kind::Online, 5, "vi", &[]).unwrap();
-        assert_eq!(get(&c, Kind::Online, 5, "vi").unwrap(), Some(vec![]));
+        assert_eq!(get(&c, book, "en").unwrap(), None);
+        set(&c, book, "vi", &[]).unwrap();
+        assert_eq!(get(&c, book, "vi").unwrap(), Some(vec![]));
         // A book that isn't in the library has no list.
-        set(&c, Kind::Book, 99, "vi", &[rule("x", "y")]).unwrap();
-        assert_eq!(get(&c, Kind::Book, 99, "vi").unwrap(), None);
+        set(&c, 99, "vi", &[rule("x", "y")]).unwrap();
+        assert_eq!(get(&c, 99, "vi").unwrap(), None);
     }
 }

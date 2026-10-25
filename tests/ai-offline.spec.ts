@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 
 // AI translation of books on the device with the user's own LLM. The native side
 // (src-tauri/src/library/llm.rs, translate.rs, queue.rs) is stood in for here; it
-// has its own Rust tests. These never reach Supabase.
+// has its own Rust tests. These never reach a server.
 
 const imported = {
   novelId: 1, title: 'Device Diary', author: null, description: '', lang: 'en', format: 'txt', sourceName: 'diary.txt', chapterCount: 2,

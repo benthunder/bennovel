@@ -418,7 +418,7 @@ mod tests {
 
     #[test]
     fn replace_rules_follow_the_novel_and_the_latest_edit_wins() {
-        use super::super::rules::{self, Kind, Rule};
+        use super::super::rules::{self, Rule};
         let r = |f: &str| {
             vec![Rule {
                 find: f.into(),
@@ -429,28 +429,20 @@ mod tests {
         let (mut b, pb) = device("rules-b");
         let book =
             super::super::import(&mut a, BookFormat::Txt, &mut Book, "thu.txt", |_, _| {}).unwrap();
-        rules::set(&a, Kind::Online, 9, "vi", &r("a1")).unwrap();
-        rules::set(&a, Kind::Book, book, "vi", &r("book")).unwrap();
+        rules::set(&a, book, "vi", &r("book")).unwrap();
         send(&a, &pa, &mut b, &pb);
         // The book has another id on B; its rules came along by book_key.
         let b_book = super::super::list(&b).unwrap()[0].novel_id;
-        assert_eq!(
-            rules::get(&b, Kind::Book, b_book, "vi").unwrap(),
-            Some(r("book"))
-        );
-        assert_eq!(
-            rules::get(&b, Kind::Online, 9, "vi").unwrap(),
-            Some(r("a1"))
-        );
+        assert_eq!(rules::get(&b, b_book, "vi").unwrap(), Some(r("book")));
 
         // A edits, then B empties the list later: B's empty list wins on both.
-        rules::set(&a, Kind::Online, 9, "vi", &r("a2")).unwrap();
+        rules::set(&a, book, "vi", &r("a2")).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(3));
-        rules::set(&b, Kind::Online, 9, "vi", &[]).unwrap();
+        rules::set(&b, b_book, "vi", &[]).unwrap();
         send(&a, &pa, &mut b, &pb);
         send(&b, &pb, &mut a, &pa);
-        assert_eq!(rules::get(&a, Kind::Online, 9, "vi").unwrap(), Some(vec![]));
-        assert_eq!(rules::get(&b, Kind::Online, 9, "vi").unwrap(), Some(vec![]));
+        assert_eq!(rules::get(&a, book, "vi").unwrap(), Some(vec![]));
+        assert_eq!(rules::get(&b, b_book, "vi").unwrap(), Some(vec![]));
 
         // Deleting the book drops its rules on the other device too.
         super::super::delete(&a, book).unwrap();

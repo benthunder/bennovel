@@ -10,10 +10,10 @@ import type { ContentLang, ReplaceRule } from './types';
  * An empty legacy list is not written, so it can't replace another device's list on sync.
  */
 async function libraryRulesOr(user: string, novelId: number, lang: ContentLang, legacy: () => Promise<ReplaceRule[]>) {
-  const stored = await invoke<ReplaceRule[] | null>('replace_rules_get', { user, kind: 'book', id: novelId, lang });
+  const stored = await invoke<ReplaceRule[] | null>('replace_rules_get', { user, id: novelId, lang });
   if (stored) return stored;
   const old = await legacy().catch(() => []);
-  if (old.length) await invoke<void>('replace_rules_set', { user, kind: 'book', id: novelId, lang, rules: old });
+  if (old.length) await invoke<void>('replace_rules_set', { user, id: novelId, lang, rules: old });
   return old;
 }
 
@@ -28,7 +28,7 @@ export async function getBookRules(user: string, novelId: number, lang: ContentL
 }
 
 export const saveBookRules = (user: string, novelId: number, lang: ContentLang, rules: ReplaceRule[]) =>
-  invoke<void>('replace_rules_set', { user, kind: 'book', id: novelId, lang, rules });
+  invoke<void>('replace_rules_set', { user, id: novelId, lang, rules });
 
 /** Applies each rule to `text` in order, replacing every occurrence (case-sensitive, plain text). */
 export const applyReplaceRules = (text: string, rules: ReplaceRule[]) =>
