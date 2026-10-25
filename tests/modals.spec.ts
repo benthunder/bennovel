@@ -2,7 +2,7 @@ import { expect, test, type Locator, type Page } from '@playwright/test';
 
 // Every dialog and bottom sheet opens over the whole window, even when the page that
 // opens it is long and scrolled down, and a tall one scrolls inside itself. The native
-// side is stood in for with a long book on the device; nothing reaches Supabase.
+// side is stood in for with a long book on the device; nothing reaches a server.
 
 const CHAPTERS = 60;
 const imported = {

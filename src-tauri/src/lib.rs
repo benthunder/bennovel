@@ -5,8 +5,7 @@ mod opened;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut builder = tauri::Builder::default();
-    // Registered first: a second launch hands its sign-in link (to the deep-link plugin)
-    // or its book files to the running app, and ends.
+    // Registered first: a second launch hands its book files to the running app, and ends.
     #[cfg(desktop)]
     {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
@@ -26,7 +25,6 @@ pub fn run() {
         }));
     }
     builder
-        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
@@ -50,12 +48,6 @@ pub fn run() {
                         let _ = env.call_method(webview, "requestFocus", "()Z", &[]);
                     });
                 });
-            }
-            // Linux (and Windows dev builds) register the bennovel:// sign-in links at run time.
-            #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
-            {
-                use tauri_plugin_deep_link::DeepLinkExt;
-                _app.deep_link().register_all()?;
             }
             Ok(())
         })

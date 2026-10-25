@@ -1,6 +1,5 @@
-//! The on-device library: one SQLite file per user, with the novel tables shaped
-//! like the Supabase catalog (`supabase/migrations/*_catalog.sql`) so imported books
-//! can later be synced or uploaded as they are.
+//! The on-device library: one SQLite file per user, holding the imported books, their
+//! chapters and translations, history, replace rules and the wiki.
 
 use rusqlite::Connection;
 use std::path::Path;
@@ -8,8 +7,8 @@ use std::path::Path;
 /// Bump when adding a migration below; `PRAGMA user_version` records what ran.
 const MIGRATIONS: &[&str] = &[
     r#"
--- Same tables and columns as Supabase (Postgres types mapped to SQLite ones),
--- minus the server-only parts (RLS, published flags for the catalog, counters).
+-- The novel catalog tables (once shaped like a server catalog, minus its
+-- server-only parts: RLS, published flags, counters).
 create table languages (
   code        text primary key,
   name        text not null,
@@ -76,7 +75,7 @@ create table chapter_translations (
   source     text not null check (source in ('original', 'human', 'ai')),
   state      text not null default 'draft' check (state in ('draft', 'published')),
   title      text not null,
-  -- Plain text, paragraphs separated by a blank line (as in Supabase).
+  -- Plain text, paragraphs separated by a blank line.
   content    text not null,
   word_count integer not null default 0,
   model      text,
@@ -98,7 +97,7 @@ create table glossary_entries (
   unique (novel_id, term_key, lang)
 );
 
--- Supabase keys these by user_id; here the whole file belongs to one user.
+-- No user_id: the whole file belongs to one user.
 create table reading_history (
   novel_id       integer primary key references novels (id) on delete cascade,
   chapter_id     integer not null references chapters (id) on delete cascade,
@@ -134,8 +133,8 @@ create table chapter_images (
 alter table chapters add column display_number real;
 "#,
     r#"
--- Local only: online (Supabase) novels the reader saved or read, so favourites and
--- history show without a connection. Ids are Supabase novel ids, a separate space
+-- Local only: online novels the reader saved or read, so favourites and
+-- history show without a connection. Ids are server novel ids, a separate space
 -- from the imported books in `novels`; `data` is the app's snapshot of the catalog
 -- row (title, author, cover…) as JSON.
 create table online_novels (
@@ -144,7 +143,7 @@ create table online_novels (
   updated_at text not null default (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
--- Like Supabase `favorites` and `reading_history`, for online novels. Times are
+-- Favourites and reading history for online novels. Times are
 -- epoch milliseconds, as the app keeps them.
 create table online_favorites (
   novel_id   integer primary key references online_novels (id) on delete cascade,
@@ -158,7 +157,7 @@ create table online_history (
 );
 "#,
     r#"
--- Sync (see sync.rs): the library file is merged with the copy in Supabase Storage.
+-- Sync (see sync.rs): the library file is merged with another copy of it.
 -- A book is the same on every device by its key, since ids are only local.
 alter table novels add column book_key text;
 update novels set book_key = lower(hex(randomblob(16)));
@@ -184,7 +183,7 @@ create table sync_state (
 "#,
     r#"
 -- Local only, never synced (see offline.rs): online novels downloaded to read
--- offline. Ids are Supabase novel ids; `data` is the app's snapshot of the novel.
+-- offline. Ids are server novel ids; `data` is the app's snapshot of the novel.
 create table offline_novels (
   id            integer primary key,
   data          text not null,
@@ -194,7 +193,7 @@ create table offline_novels (
   downloaded_at integer
 );
 
--- One chapter in one language, as in Supabase `chapter_translations`.
+-- One chapter in one language, like `chapter_translations`.
 create table offline_chapters (
   novel_id   integer not null references offline_novels (id) on delete cascade,
   number     integer not null,
@@ -217,7 +216,7 @@ create table offline_glossary (
 "#,
     r#"
 -- The reader's replace rules (see rules.rs), one list per novel and language, synced.
--- `scope` 'online': `key` is the Supabase novel id; 'book': `key` is the imported
+-- `scope` 'online': `key` is a server novel id (no longer used); 'book': `key` is the imported
 -- book's book_key. `rules` is a JSON array of {find, replace}; an emptied list stays
 -- as '[]' so the removal reaches other devices. `updated_at` is epoch ms.
 create table rule_lists (
