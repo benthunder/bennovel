@@ -19,7 +19,7 @@ import { useLayout } from '../lib/useLayout';
 import { useApp } from '../store/AppStore';
 
 /**
- * The page of a book in the on-device library, laid out like an online novel's:
+ * The page of a book in the on-device library:
  * cover, details, Start/Continue, description and chapters. Works offline.
  */
 export function BookDetailScreen({ novelId }: { novelId: number }) {

@@ -528,40 +528,29 @@ pub async fn library_ocr_save<R: Runtime>(
         .await
 }
 
-/// The reader's replace rules for a novel ("online": Supabase id; "book": library id)
-/// in one language; null when none were ever saved on this device.
+/// The reader's replace rules for a book (library id) in one language; null when none
+/// were ever saved on this device.
 #[tauri::command]
 pub async fn replace_rules_get<R: Runtime>(
     app: AppHandle<R>,
     user: String,
-    kind: super::rules::Kind,
     id: i64,
     lang: String,
 ) -> Result<Option<Vec<super::rules::Rule>>, BookError> {
     let path = db_path(&app, &user)?;
-    blocking(move || Ok(super::rules::get(&db::open(&path)?, kind, id, &lang)?)).await
+    blocking(move || Ok(super::rules::get(&db::open(&path)?, id, &lang)?)).await
 }
 
 #[tauri::command]
 pub async fn replace_rules_set<R: Runtime>(
     app: AppHandle<R>,
     user: String,
-    kind: super::rules::Kind,
     id: i64,
     lang: String,
     rules: Vec<super::rules::Rule>,
 ) -> Result<(), BookError> {
     let path = db_path(&app, &user)?;
-    blocking(move || {
-        Ok(super::rules::set(
-            &db::open(&path)?,
-            kind,
-            id,
-            &lang,
-            &rules,
-        )?)
-    })
-    .await
+    blocking(move || Ok(super::rules::set(&db::open(&path)?, id, &lang, &rules)?)).await
 }
 
 /* ---------- AI translation with the user's own LLM (llm.rs, translate.rs, queue.rs) ---------- */

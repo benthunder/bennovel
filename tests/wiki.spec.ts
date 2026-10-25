@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 
 // The wiki of a book on the device (src-tauri/src/library/wiki.rs, with its own Rust
-// tests). The native side is stood in for; these never reach Supabase.
+// tests). The native side is stood in for; these never reach a server.
 
 const imported = {
   novelId: 1, title: 'Võ Động Càn Khôn', author: null, description: '', lang: 'zh', format: 'txt', sourceName: 'wdqk.txt', chapterCount: 2,

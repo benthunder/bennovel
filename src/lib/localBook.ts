@@ -196,7 +196,7 @@ const COVER_SHADES = [[200, 800, 400], [300, 900, 500], [100, 700, 300]] as cons
 export const libraryCoverUrl = (user: string, b: Pick<LibraryBook, 'novelId' | 'hasCover'>) =>
   b.hasCover ? convertFileSrc(`cover/${b.novelId}/${user}`, 'bookimg') : null;
 
-/** A placeholder cover like the online novels have, picked from the title so it stays the same. */
+/** A placeholder cover, picked from the title so it stays the same. */
 export function localCover(title: string) {
   let h = 0;
   for (const c of title) h = (h * 31 + c.charCodeAt(0)) >>> 0;

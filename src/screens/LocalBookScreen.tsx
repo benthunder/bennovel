@@ -34,7 +34,7 @@ const MAX_PARTS = 6;
 /**
  * Reads a book file opened from the device, or a book from the on-device library
  * (`place` set: it resumes where it was left and saves the position as you read).
- * Same layout and tools as the online reader; the replace list is kept on the device.
+ * The reader for an imported book; the replace list is kept on the device.
  * A file opened without saving (`path` set) can be imported from here; the reader then
  * switches to the library copy at the same place.
  */
@@ -321,7 +321,7 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
   }, [index]);
   useEffect(() => () => flush(), []);
 
-  // The bar shows how far into the part at the top, like the online reader.
+  // The bar shows how far into the part at the top.
   const onScroll = (e: React.UIEvent<HTMLDivElement>) => {
     immersive.onScroll(e.currentTarget);
     const m = measure();
