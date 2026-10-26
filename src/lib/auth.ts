@@ -13,7 +13,7 @@ import { load, save } from './storage';
 /** Production builds talk to production; `npm run dev` to staging. VITE_API_URL overrides both. */
 export const API_URL: string =
   (import.meta.env.VITE_API_URL as string | undefined) ||
-  (import.meta.env.PROD ? 'https://bennovel-api.ledinhthang102.workers.dev' : 'https://bennovel-api-staging.ledinhthang102.workers.dev');
+  (import.meta.env.PROD ? 'https://api.benthunder.io.vn' : 'https://api-staging.benthunder.io.vn');
 
 /** The plan the account has now (free, pro or cloud). */
 export interface Plan {
