@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { GlobeIcon, LanguagesIcon, SparklesIcon } from '../components/Icons';
+import { GlobeIcon, LanguagesIcon, LogOutIcon, SparklesIcon } from '../components/Icons';
 import { Modal } from '../components/Modal';
 import { NovelCover, type Cover } from '../components/NovelCover';
 import { UiLangDialog, uiLangLabel } from '../components/UiLangDialog';
@@ -33,7 +33,8 @@ export function ProfileScreen() {
         gridTemplateAreas: lay.wide ? '"card content" "settings content" ". content"' : '"card" "content" "settings"',
         gridTemplateRows: lay.wide ? 'auto auto 1fr' : 'auto'
       }}>
-        <div style={{ gridArea: 'card' }}>
+        <div style={{ gridArea: 'card', display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <AccountCard />
           {canOpenLocalBooks() && <BackupCard />}
         </div>
 
@@ -75,10 +76,49 @@ export function ProfileScreen() {
               <span className="muted" style={{ fontSize: 13, maxWidth: '45%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{llm ? llm.model : t('ai.notSet')} ›</span>
             </button>
           )}
+          {app.user && (
+            <button className="menu-row menu-row--danger" onClick={app.logout}>
+              <LogOutIcon />
+              <span style={{ flex: 1, fontSize: 14, fontWeight: 700 }}>{t('profile.logout')}</span>
+            </button>
+          )}
         </div>
       </div>
       {uiLangOpen && <UiLangDialog onClose={() => setUiLangOpen(false)} />}
       {llmOpen && <LlmDialog saved={llm} onClose={() => setLlmOpen(false)} onSaved={() => setLlmRev(n => n + 1)} />}
+    </div>
+  );
+}
+
+/** Who is signed in and their plan, or the way in for a guest. */
+function AccountCard() {
+  const { t, uiLang } = useI18n();
+  const app = useApp();
+  const lay = useLayout();
+  const user = app.user;
+  if (!user) {
+    return (
+      <div style={{ borderRadius: 34, background: 'var(--color-surface)', padding: 22, display: 'flex', flexDirection: 'column', gap: 10, alignItems: 'flex-start' }}>
+        <div className="display" style={{ fontSize: 22 }}>{t('profile.guestTitle')}</div>
+        <div style={{ fontSize: 13, color: 'var(--color-neutral-800)' }}>{t('profile.guestBody')}</div>
+        <button className="btn btn-primary" style={{ height: 44, padding: '0 22px' }} onClick={() => app.push({ s: 'login' })}>{t('profile.loginCta')}</button>
+      </div>
+    );
+  }
+  const initials = user.name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
+  const plan = app.plan;
+  const until = plan?.expiresAt ? new Date(plan.expiresAt * 1000).toLocaleDateString(uiLang) : null;
+  return (
+    <div style={{ borderRadius: 34, background: 'var(--color-surface)', padding: 22, display: 'flex', flexDirection: lay.wide ? 'column' : 'row', gap: 16, alignItems: lay.wide ? 'flex-start' : 'center' }}>
+      <span className="display" style={{ width: 72, height: 72, flex: 'none', borderRadius: '50%', background: 'var(--color-accent-2-300)', color: 'var(--color-accent-2-900)', display: 'grid', placeItems: 'center', fontSize: 26 }}>{initials}</span>
+      <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-start' }}>
+        <div className="display" style={{ fontSize: 22, lineHeight: 1.1 }}>{user.name}</div>
+        <div className="muted" style={{ fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%' }}>{user.email}</div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 2 }}>
+          <span className="tag tag-accent-2">{t('profile.signedInWith', { p: user.provider === 'email' ? t('auth.email') : user.provider })}</span>
+          {plan && <span className="tag tag-accent">{until ? t('profile.planUntil', { name: plan.name, date: until }) : t('profile.plan', { name: plan.name })}</span>}
+        </div>
+      </div>
     </div>
   );
 }
