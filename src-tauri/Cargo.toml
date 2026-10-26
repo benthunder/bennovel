@@ -31,6 +31,7 @@ djvu-rs = { version = "0.41.0", features = ["mmap"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 flate2 = "1"
 tauri-plugin-folder-picker = { path = "plugins/folder-picker" }
+tauri-plugin-deep-link = "2"
 tauri-plugin-opener = "2"
 ureq = { version = "2", default-features = false, features = ["tls"] }
 tokio = { version = "1", features = ["sync", "rt"] }
@@ -38,9 +39,9 @@ rust-langgraph = { version = "0.1.1", default-features = false }
 tauri-plugin-notification = "2"
 aho-corasick = "1"
 
-# Sends a second launch (a file to open) to the running app.
+# Sends a second launch (a sign-in link, a file to open) to the running app.
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
-tauri-plugin-single-instance = "2"
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 
 # Calls into the Android WebView (focus it so the first tap opens the keyboard).
 [target.'cfg(target_os = "android")'.dependencies]
