@@ -4,7 +4,7 @@ import { expect, test, type Page, type Route } from '@playwright/test';
 // register, log in, forgot password, refresh and log out. The web build runs here; the
 // native app differs only in how Google comes back.
 
-const API = 'https://bennovel-api-staging.ledinhthang102.workers.dev';
+const API = 'https://api-staging.benthunder.io.vn';
 const USER = { id: 'u1', email: 'lina@example.com', name: 'Lina Hart', hasPassword: true, google: false };
 const FREE = { code: 'free', name: 'Free', expiresAt: null, features: ['catalog'] };
 const tokens = (n: number) => ({ accessToken: `access-${n}`, expiresIn: 3600, refreshToken: `refresh-${n}` });
