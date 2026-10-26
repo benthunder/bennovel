@@ -2,13 +2,16 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import { load, save } from '../lib/storage';
 import type { ContentLang, User } from '../data/types';
 import { useI18n, useT } from '../i18n';
+import type { MessageKey } from '../i18n/en';
 import { aiErrorKey, resumeAiQueue, type AiProgress } from '../lib/ai';
 import { canOpenLocalBooks, libraryUser, type LibraryPlace, type LocalBook } from '../lib/localBook';
 import { runOcr } from '../lib/ocr';
+import { currentUser, finishWebSignIn, getPlan, listenForSignInLinks, onAccountChange, signOut, type Plan } from '../lib/auth';
 
 export type Tab = 'library' | 'profile';
 
 export type Route =
+  | { s: 'login' }
   | { s: 'library' }
   | { s: 'profile' }
   /** A book in the on-device library. */
@@ -124,6 +127,65 @@ function useAiQueue(user: string, showToast: (msg: string) => void) {
   return rev;
 }
 
+/**
+ * The signed-in account (null for a guest) and its plan. Signing in or out leaves the
+ * library alone: books stay the device's.
+ */
+function useAccount(
+  showToast: (msg: string) => void,
+  setStack: (f: (s: Route[]) => Route[]) => void,
+  setTab: (f: (t: Tab | null) => Tab | null) => void
+) {
+  const tr = useT();
+  const [user, setUser] = useState<User | null>(currentUser);
+  const [plan, setPlan] = useState<Plan | null>(null);
+  useEffect(() => onAccountChange(setUser), []);
+
+  const refreshPlan = useCallback(() => {
+    getPlan().then(setPlan, e => console.error(e));
+  }, []);
+  // Known plan, fetched again for each account; offline keeps the last one shown.
+  useEffect(() => {
+    if (user) refreshPlan();
+    else setPlan(null);
+  }, [user?.id, refreshPlan]);
+
+  /** After signing in: back to where the reader was. */
+  const signedIn = useCallback(async (u: User, welcome: string) => {
+    setUser(u);
+    save('onboarded', true);
+    setStack(s => (s.length > 1 ? s.slice(0, -1) : [{ s: 'library' }]));
+    setTab(t => t ?? 'library');
+    showToast(welcome);
+  }, [setStack, setTab, showToast]);
+
+  const logout = useCallback(() => {
+    void signOut();
+    showToast(tr('auth.loggedOut'));
+  }, [showToast, tr]);
+
+  // Google sends the reader back with a one-time code: a bennovel:// link in the
+  // native app, the /auth/callback page on the web.
+  const signedInRef = useRef(signedIn);
+  signedInRef.current = signedIn;
+  const trRef = useRef(tr);
+  trRef.current = tr;
+  useEffect(() => {
+    const done = (u: User) => signedInRef.current(u, trRef.current('auth.welcome', { name: u.name.split(' ')[0] }));
+    const failed = (key: MessageKey) => showToast(trRef.current(key));
+    if (!canOpenLocalBooks()) {
+      finishWebSignIn().then(u => u && done(u), e => failed(e?.key ?? 'auth.err.generic'));
+      return;
+    }
+    let stop: (() => void) | undefined;
+    let gone = false;
+    listenForSignInLinks(done, failed).then(un => { if (gone) un(); else stop = un; }, console.error);
+    return () => { gone = true; stop?.(); };
+  }, [showToast]);
+
+  return { user, plan, refreshPlan, signedIn, logout };
+}
+
 function useAppState() {
   const tr = useT();
   // No accounts: the library is the device's own. A library made while signed in to an
@@ -134,9 +196,9 @@ function useAppState() {
   const [readerPrefs, setReaderPrefs] = useStored<ReaderPrefs>('readerPrefs', DEFAULT_READER_PREFS);
   const [localLast, setLocalLast] = useStored<LocalLast | null>('localLast', null);
 
-  // The app opens on the library (books on the device).
-  const [stack, setStack] = useState<Route[]>([{ s: 'library' }]);
-  const [tab, setTab] = useState<Tab | null>('library');
+  // The app opens on the library (books on the device); the very first launch asks to sign in.
+  const [stack, setStack] = useState<Route[]>(() => [load('onboarded', false) || currentUser() ? { s: 'library' } : { s: 'login' }]);
+  const [tab, setTab] = useState<Tab | null>(() => (stack[0].s === 'library' ? 'library' : null));
   const [langDialogOpen, setLangDialogOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -166,6 +228,14 @@ function useAppState() {
   /** Lists everything again after the library file changed (a backup brought back). */
   const reloadLibrary = useCallback(() => setLibraryRev(n => n + 1), []);
 
+  const account = useAccount(showToast, setStack, setTab);
+
+  const skipLogin = useCallback(() => {
+    save('onboarded', true);
+    if (stack.length > 1) back();
+    else switchTab('library');
+  }, [stack.length, back, switchTab]);
+
   const markLocalRead = useCallback((e: Omit<LocalLast, 'at'>) => setLocalLast({ ...e, at: Date.now() }), [setLocalLast]);
   const forgetLocal = useCallback((novelId: number) => setLocalLast(l => (l?.novelId === novelId ? null : l)), [setLocalLast]);
 
@@ -176,7 +246,7 @@ function useAppState() {
     top: stack[stack.length - 1], canBack: stack.length > 1,
     push, back, switchTab,
     setContentLang, openLangDialog: () => setLangDialogOpen(true), closeLangDialog: () => setLangDialogOpen(false), setReaderPrefs,
-    showToast, markLocalRead, forgetLocal,
+    showToast, markLocalRead, forgetLocal, skipLogin, ...account,
     libraryRev, aiRev, reloadLibrary
   };
 }

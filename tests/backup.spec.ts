@@ -9,6 +9,7 @@ async function boot(page: Page) {
   // Set once, so settings a restore brings back survive the restart.
   await page.addInitScript(() => {
     if (!localStorage.getItem('bennovel.uiLang')) localStorage.setItem('bennovel.uiLang', JSON.stringify('en'));
+    localStorage.setItem('bennovel.onboarded', 'true');
   });
 }
 
