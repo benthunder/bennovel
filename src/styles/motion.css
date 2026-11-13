@@ -1,0 +1,141 @@
+/* Glass surfaces and motion, layered over app.css.
+ *
+ * Glass: bars and sheets are translucent and blur what scrolls under them. The blur
+ * radius stays small and is only used on surfaces that sit still (nav, sheets, dialogs,
+ * toasts), never on anything that moves while it scrolls, so Android WebViews keep up.
+ * Where backdrop-filter is missing the same surfaces fall back to solid colours.
+ *
+ * Motion: only transform and opacity are animated, so every animation stays on the
+ * compositor. prefers-reduced-motion turns it all off.
+ */
+
+:root {
+  --ease-out: cubic-bezier(.22, 1, .36, 1);
+  --ease-in: cubic-bezier(.4, 0, 1, 1);
+  --ease-spring: cubic-bezier(.34, 1.36, .64, 1);
+  --dur-fast: .16s;
+  --dur: .26s;
+  --dur-slow: .36s;
+
+  --glass-blur: blur(18px) saturate(170%);
+  --glass-bg: color-mix(in srgb, var(--color-bg) 72%, transparent);
+  --glass-bg-strong: color-mix(in srgb, var(--color-bg) 84%, transparent);
+  --glass-surface: color-mix(in srgb, var(--color-surface) 62%, transparent);
+  --glass-edge: color-mix(in srgb, #ffffff 65%, transparent);
+  --glass-shadow: 0 10px 34px color-mix(in srgb, #16264a 16%, transparent), 0 1px 0 var(--glass-edge) inset;
+}
+
+/* A soft blue wash behind everything, so the glass has colour to pick up. Static: costs nothing on scroll. */
+.app {
+  background:
+    radial-gradient(120% 60% at 100% 0%, color-mix(in srgb, var(--color-accent-300) 45%, transparent), transparent 60%),
+    radial-gradient(90% 50% at 0% 100%, color-mix(in srgb, var(--color-accent-2-300) 40%, transparent), transparent 65%),
+    var(--color-bg);
+}
+body { background: var(--color-neutral-200); }
+
+/* — glass surfaces — */
+.bottom-nav, .rail, .side, .sheet, .dialog, .toast, .glass {
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+}
+.bottom-nav {
+  background: var(--glass-bg);
+  border-top: 1px solid var(--glass-edge);
+  box-shadow: 0 -6px 24px color-mix(in srgb, #16264a 10%, transparent);
+}
+.bottom-nav__fab-circle {
+  background: linear-gradient(145deg, var(--color-accent-500), var(--color-accent-700));
+  border-color: color-mix(in srgb, var(--color-bg) 90%, transparent);
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--color-accent) 40%, transparent);
+}
+.rail, .side {
+  background: var(--glass-surface);
+  border-right: 1px solid var(--glass-edge);
+}
+.side__continue { background: var(--glass-bg-strong); }
+.sheet, .dialog {
+  background: var(--glass-bg-strong);
+  border: 1px solid var(--glass-edge);
+  box-shadow: var(--glass-shadow);
+}
+/* The sticky buttons fade the list out under them instead of sitting on a hard block. */
+.dialog--sheet > .dialog-actions {
+  background: linear-gradient(to top, var(--color-bg) 55%, color-mix(in srgb, var(--color-bg) 0%, transparent));
+}
+.toast {
+  background: color-mix(in srgb, var(--color-neutral-900) 78%, transparent);
+  border: 1px solid color-mix(in srgb, #ffffff 14%, transparent);
+}
+.scrim, .dialog-backdrop {
+  background: color-mix(in srgb, var(--color-neutral-900) 34%, transparent);
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .bottom-nav, .sheet, .dialog, .side__continue { background: var(--color-bg); }
+  .rail, .side { background: var(--color-surface); }
+  .toast { background: var(--color-neutral-900); }
+}
+
+/* — controls: smooth hover, a little give on press — */
+button, .chip, .btn, .seg-opt, .input, a { touch-action: manipulation; }
+.btn, .icon-btn, .chip, .text-link, .menu-row, .novel-row, .top-row, .shelf-item, .seg-opt,
+.bottom-nav__item, .rail__item, .side__item, .search__clear, .input, .check__box, .import-action {
+  transition:
+    background-color var(--dur-fast) ease, color var(--dur-fast) ease, border-color var(--dur-fast) ease,
+    box-shadow var(--dur) ease, opacity var(--dur-fast) ease, transform var(--dur-fast) var(--ease-out);
+}
+.btn:active:not(:disabled), .icon-btn:active, .chip:active, .search__clear:active, .seg-opt:active { transform: scale(.95); }
+.menu-row:active, .novel-row:active, .top-row:active, .side__item:active { transform: scale(.985); }
+.shelf-item:active .cover { transform: scale(.97); }
+.cover { transition: transform var(--dur) var(--ease-out), box-shadow var(--dur) ease; }
+@media (hover: hover) {
+  .shelf-item:hover .cover { transform: translateY(-3px); box-shadow: var(--shadow-md); }
+  .btn-primary:hover { box-shadow: 0 6px 16px color-mix(in srgb, var(--color-accent) 30%, transparent); }
+}
+.btn-primary { background: linear-gradient(145deg, var(--color-accent-500), var(--color-accent-600)); }
+.btn-primary:hover { background: linear-gradient(145deg, var(--color-accent-500), var(--color-accent-700)); }
+
+.bottom-nav__item svg, .rail__item svg { transition: transform var(--dur) var(--ease-spring); }
+.bottom-nav__item[aria-current='page'] svg, .rail__item[aria-current='page'] .rail__pill svg { transform: translateY(-2px) scale(1.08); }
+.bottom-nav__fab:active .bottom-nav__fab-circle, .rail__continue:active .rail__fab { transform: scale(.92); }
+.bottom-nav__fab-circle, .rail__fab { transition: transform var(--dur-fast) var(--ease-out), box-shadow var(--dur) ease; }
+.rail__pill { transition: background-color var(--dur) ease; }
+.progress > div, .import-progress__bar > div { transition: width var(--dur-slow) var(--ease-out); }
+
+/* — screen changes — */
+@keyframes page-push { from { opacity: 0; transform: translate3d(28px, 0, 0); } to { opacity: 1; transform: none; } }
+@keyframes page-pop { from { opacity: 0; transform: translate3d(-28px, 0, 0); } to { opacity: 1; transform: none; } }
+@keyframes page-fade { from { opacity: 0; transform: translate3d(0, 10px, 0); } to { opacity: 1; transform: none; } }
+.page[data-enter='push'] { animation: page-push var(--dur) var(--ease-out); }
+.page[data-enter='pop'] { animation: page-pop var(--dur) var(--ease-out); }
+.page[data-enter='fade'] { animation: page-fade var(--dur) var(--ease-out); }
+
+/* — sheets and dialogs: in with a glide, out with a quick drop — */
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes fade-out { from { opacity: 1; } to { opacity: 0; } }
+@keyframes sheet-in { from { opacity: 0; transform: translate3d(0, 56px, 0); } to { opacity: 1; transform: none; } }
+@keyframes sheet-out { from { opacity: 1; transform: none; } to { opacity: 0; transform: translate3d(0, 48px, 0); } }
+@keyframes pop-in { from { opacity: 0; transform: scale(.94) translate3d(0, 8px, 0); } to { opacity: 1; transform: none; } }
+@keyframes pop-out { from { opacity: 1; transform: none; } to { opacity: 0; transform: scale(.96); } }
+@keyframes side-in { from { opacity: 0; transform: translate3d(48px, 0, 0); } to { opacity: 1; transform: none; } }
+@keyframes toast-in { from { opacity: 0; transform: translate3d(0, 16px, 0) scale(.96); } to { opacity: 1; transform: none; } }
+
+.dialog-backdrop--sheet, .scrim { animation: fade-in var(--dur) ease-out; }
+.dialog--sheet, .sheet { animation: sheet-in var(--dur-slow) var(--ease-out); }
+.sheet--side { animation: side-in var(--dur-slow) var(--ease-out); }
+.app[data-device='tablet'] .dialog--sheet, .app[data-device='desktop'] .dialog--sheet { animation: pop-in var(--dur) var(--ease-out); }
+.toast { animation: toast-in var(--dur) var(--ease-spring); }
+
+/* The still copy Modal.tsx leaves behind while a sheet closes. */
+.dialog-backdrop.is-leaving { pointer-events: none; animation: fade-out .22s ease-in forwards; }
+.dialog-backdrop.is-leaving > * { animation: sheet-out .22s var(--ease-in) forwards; }
+.app[data-device='tablet'] .dialog-backdrop.is-leaving > *, .app[data-device='desktop'] .dialog-backdrop.is-leaving > * { animation-name: pop-out; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important; animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important; scroll-behavior: auto !important;
+  }
+  .spinner { animation-duration: .8s !important; animation-iteration-count: infinite !important; }
+}

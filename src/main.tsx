@@ -12,6 +12,7 @@ import '@fontsource/be-vietnam-pro/latin-700.css';
 import '@fontsource/be-vietnam-pro/latin-800.css';
 import './styles/organic.css';
 import './styles/app.css';
+import './styles/motion.css';
 import App from './App';
 import { I18nProvider } from './i18n';
 import { AppStoreProvider } from './store/AppStore';

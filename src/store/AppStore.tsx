@@ -43,9 +43,10 @@ export interface ReaderThemeStyle {
 const PAPER_GRAIN = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 .09 0 0 0 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")`;
 
 export const READER_THEMES: Record<ReaderTheme, ReaderThemeStyle> = {
-  cream: { bg: 'var(--color-bg)', fg: 'var(--color-text)' },
+  // Cream and sage keep their own warm colours: the app theme is blue, a reading page need not be.
+  cream: { bg: '#f5ead8', fg: '#201e1d' },
   paper: { bg: 'var(--color-neutral-100)', fg: 'var(--color-text)' },
-  sage: { bg: 'var(--color-accent-2-200)', fg: 'var(--color-accent-2-900)' },
+  sage: { bg: '#e1eecc', fg: '#272e1b' },
   night: { bg: 'var(--color-neutral-900)', fg: 'var(--color-neutral-200)' },
   eink: {
     bg: `${PAPER_GRAIN} #ecebe6`,
@@ -59,7 +60,7 @@ export const READER_THEMES: Record<ReaderTheme, ReaderThemeStyle> = {
   }
 };
 
-export const DEFAULT_READER_PREFS: ReaderPrefs = { fontSize: 18, theme: 'cream', lineH: 1.75, gap: 'normal', margin: 'normal', align: 'left' };
+export const DEFAULT_READER_PREFS: ReaderPrefs = { fontSize: 18, theme: 'paper', lineH: 1.75, gap: 'normal', margin: 'normal', align: 'left' };
 
 /** The imported book read last, so Continue can reopen it. */
 export interface LocalLast {

@@ -1,3 +1,4 @@
+import { useRef } from 'react';
 import { BottomNav } from './components/BottomNav';
 import { LangDialog } from './components/LangDialog';
 import { NavRail, Sidebar } from './components/SideNav';
@@ -28,13 +29,19 @@ export default function App() {
   const top = app.top;
   // Keyed by stack depth + route, so each pushed screen starts fresh (scroll, search, filters).
   const key = `${app.stack.length}:${JSON.stringify(top)}`;
+  // Each new screen slides in: forward when pushed, back when popped, a fade between tabs.
+  const depth = app.stack.length;
+  const last = useRef({ key, depth, enter: 'fade' });
+  if (last.current.key !== key) {
+    last.current = { key, depth, enter: depth > last.current.depth ? 'push' : depth < last.current.depth ? 'pop' : 'fade' };
+  }
   const showNav = top.s !== 'book';
   // Tablet gets a navigation rail and desktop a sidebar; content starts to their right.
   const contentLeft = showNav ? lay.navLeft : 0;
 
   return (
     <div className="app" data-device={lay.device}>
-      <div key={key} style={{ position: 'absolute', top: 0, bottom: 0, right: 0, left: contentLeft }}>{renderRoute(top)}</div>
+      <div key={key} className="page" data-enter={last.current.enter} style={{ position: 'absolute', top: 0, bottom: 0, right: 0, left: contentLeft }}>{renderRoute(top)}</div>
       {showNav && (lay.isPhone ? <BottomNav /> : lay.isTablet ? <NavRail /> : <Sidebar />)}
       {app.langDialogOpen && <LangDialog onClose={app.closeLangDialog} />}
       {app.toast && (
