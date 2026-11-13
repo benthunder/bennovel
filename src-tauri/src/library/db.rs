@@ -513,6 +513,13 @@ create table ai_parts (
   primary key (chapter_id, lang, style, part)
 );
 "#,
+    r#"
+-- First and last page (1-based) of a PDF/DjVu chapter, kept with the chapter so its
+-- pages are the same on a device without the kept original (a restored backup) or
+-- with an app that groups pages differently.
+alter table chapters add column page_from integer;
+alter table chapters add column page_to integer;
+"#,
 ];
 
 /// Epoch milliseconds now.
