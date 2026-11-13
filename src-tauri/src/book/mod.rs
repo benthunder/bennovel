@@ -11,7 +11,6 @@ pub mod commands;
 mod djvu;
 mod epub;
 mod extract;
-mod headings;
 mod html;
 pub mod image;
 mod markdown;

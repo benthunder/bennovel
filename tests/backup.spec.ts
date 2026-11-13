@@ -19,7 +19,8 @@ async function boot(page: Page) {
 async function nativeApp(page: Page, settings: string | null = null) {
   await page.addInitScript(settings => {
     const w = window as unknown as Record<string, unknown>;
-    const calls: { cmd: string; args: unknown }[] = [];
+    // Kept across the reload that follows a restore.
+    const calls: { cmd: string; args: unknown }[] = JSON.parse(sessionStorage.getItem('__calls') ?? '[]');
     w.__calls = calls;
     w.isTauri = true;
     w.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => undefined };
@@ -29,9 +30,11 @@ async function nativeApp(page: Page, settings: string | null = null) {
       convertFileSrc: (p: string, proto: string) => `${proto}://localhost/${p}`,
       invoke: async (cmd: string, args: Record<string, unknown>) => {
         calls.push({ cmd, args });
+        sessionStorage.setItem('__calls', JSON.stringify(calls));
         switch (cmd) {
           case 'library_list': return [];
           case 'take_opened_files': return [];
+          case 'plugin:dialog|message': return 'Yes';
           case 'plugin:dialog|save':
           case 'plugin:dialog|open': return '/home/mai/b.bnbackup';
           case 'library_restore': return settings;

@@ -13,6 +13,7 @@ concurrency:
 
 jobs:
   playwright:
+    # Playwright 1.56 has no browser build for Ubuntu 26.04, which ubuntu-latest now is.
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4

@@ -35,7 +35,11 @@ export interface LlmConfig { provider: string; baseUrl: string; model: string; a
 
 export interface AiChapter { title: string; paragraphs: string[]; mode: 'translate' | 'rewrite'; model: string | null }
 export interface AiVersion { lang: AiLang; style: string; chapters: number }
-export interface AiProgress { novelId: number; lang: AiLang; style: string; total: number; done: number; failed: number; queued: number; running: number }
+/** A book's background translation per language and style. `paused` chapters wait for the user, or for the LLM when `error` says why. */
+export interface AiProgress {
+  novelId: number; lang: AiLang; style: string; total: number; done: number; failed: number; queued: number; running: number;
+  paused: number; error: string | null;
+}
 
 /** A request as the app keeps it; the native side takes the style in lower case. */
 export interface AiChoice { lang: AiLang; style: TranslateStyle; dict: boolean }
@@ -131,6 +135,11 @@ export async function onAiLive(user: string, cb: (l: AiLive | null) => void): Pr
 }
 
 export const cancelAiTranslation = (user: string, novelId: number) => invoke<number>('ai_cancel', { user, novelId });
+/** Pauses a book's queue; the chapter being translated keeps the parts it has. */
+export const pauseAiTranslation = (user: string, novelId: number) => invoke<number>('ai_pause', { user, novelId });
+/** Carries on a book's paused chapters and, with `failed`, tries the failed ones again from the parts they have. */
+export const resumeAiTranslation = (user: string, novelId: number, failed: boolean, uiLang: UiLang) =>
+  invoke<number>('ai_resume_book', { user, novelId, failed, uiLang });
 export const resumeAiQueue = (user: string, uiLang: UiLang) => invoke<void>('ai_resume', { user, uiLang });
 
 /** Lets the "translation done" notification show (Android 13+ and macOS ask once). */

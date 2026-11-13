@@ -100,14 +100,11 @@ function BackupCard() {
       if (job === 'backup') {
         if (await createBackup(user)) app.showToast(t('backup.done'));
       } else {
-        const restored = await restoreBackup(user);
-        if (restored === 'settings') {
-          // Language and reader settings are read at start: start again with them.
+        if (await restoreBackup(user, t('backup.replaceAsk'))) {
+          // The whole library changed (and maybe the language and reader settings,
+          // read at start): start again with it.
           save('restoredNotice', true);
           window.location.reload();
-        } else if (restored) {
-          app.reloadLibrary();
-          app.showToast(t('backup.restored'));
         }
       }
     } catch (e) {

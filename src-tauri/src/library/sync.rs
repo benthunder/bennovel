@@ -1,10 +1,16 @@
-//! Backups of the library: the library file is exported as a gzipped snapshot, and a
-//! backup brought back is merged into it row by row, so nothing made since is lost
-//! (the file goes where the user picks). The merge rules:
+//! Backups of the library: the library file is exported as a gzipped SQLite copy (the
+//! file goes where the user picks), and restoring one puts that copy back as it is:
+//! the library becomes exactly what the backup holds, same books, same chapters.
+//!
+//! Synced copies (`export`/`merge`, tests only for now) are merged row by row instead,
+//! so nothing made since is lost. The merge rules:
 //! - history and progress: the most recent read wins;
 //! - imported books: matched by `book_key`; a book missing here is copied whole
 //!   (chapters, pictures…), newer details (title, author) win, a deleted book stays deleted;
 //! - replace rules: per novel and language, the list changed last wins.
+//!
+//! A backup also carries the kept PDF/DjVu originals (table `book_files` of the backup
+//! copy), so a restored book shows its pages.
 
 use super::db;
 use flate2::{read::GzDecoder, write::GzEncoder, Compression};
@@ -33,45 +39,60 @@ pub fn export_to(conn: &Connection, tmp: &Path, out: &Path) -> Result<u64, SyncE
     snapshot(conn, tmp, out, None)
 }
 
+/// What a backup holds besides the library: the app's settings (JSON) and the folder
+/// of kept originals.
+struct Extras<'a> {
+    settings: Option<&'a str>,
+    originals: Option<&'a Path>,
+}
+
+/// Originals bigger than this stay out of a backup (SQLite's limit for one value).
+const MAX_ORIGINAL: u64 = 1_000_000_000;
+
 /// A backup: everything in the library (books, history, favourites, replace rules,
 /// glossaries, downloaded novels) with the LLM settings, API key included, and the
-/// app's `settings` (JSON). Only the AI queue is left out.
+/// app's `settings` (JSON), and the kept originals in `originals` (PDF/DjVu files
+/// named by novel id). Only the AI queue is left out.
 pub fn backup_to(
     conn: &Connection,
     tmp: &Path,
     out: &Path,
     settings: Option<&str>,
+    originals: Option<&Path>,
 ) -> Result<u64, SyncError> {
-    snapshot(conn, tmp, out, Some(settings))
+    snapshot(conn, tmp, out, Some(Extras { settings, originals }))
 }
 
-/// `backup`: `Some` (with the app's settings, if any) for a backup, `None` for a synced copy.
+/// `backup`: `Some` for a backup, `None` for a synced copy.
 fn snapshot(
     conn: &Connection,
     tmp: &Path,
     out: &Path,
-    backup: Option<Option<&str>>,
+    backup: Option<Extras>,
 ) -> Result<u64, SyncError> {
     let _ = std::fs::remove_file(tmp);
     conn.execute("vacuum into ?1", [tmp.to_string_lossy()])?;
     let result = (|| {
         let copy = Connection::open(tmp)?;
         match backup {
-            Some(settings) => {
-                // The queue's jobs and the languages found point at this library's ids.
-                copy.execute_batch("delete from ai_jobs; delete from ai_books;")?;
+            Some(extras) => {
+                // The AI queue isn't restarted by a restore.
+                copy.execute_batch("delete from ai_jobs; delete from ai_parts; delete from ai_books;")?;
                 copy.execute("delete from sync_state where key = ?1", [APP_SETTINGS])?;
-                if let Some(settings) = settings {
+                if let Some(settings) = extras.settings {
                     db::set_state(&copy, APP_SETTINGS, settings)?;
+                }
+                if let Some(dir) = extras.originals {
+                    pack_originals(&copy, dir)?;
                 }
             }
             None => {
                 // The LLM settings (with their API key) and the AI queue stay on this device.
                 super::translate::strip(&copy)?;
+                // The wiki's per-book state points at this library's ids.
+                super::wiki::strip(&copy)?;
             }
         }
-        // Vectors and the wiki's per-book state point at this library's ids.
-        super::wiki::strip(&copy)?;
         copy.execute("vacuum", [])?;
         drop(copy);
         let file = std::io::BufWriter::new(std::fs::File::create(out)?);
@@ -85,6 +106,62 @@ fn snapshot(
     })();
     let _ = std::fs::remove_file(tmp);
     result
+}
+
+/// Copies the kept originals of the books in `copy` into its `book_files` table,
+/// streamed (a PDF can be hundreds of MB).
+fn pack_originals(copy: &Connection, dir: &Path) -> Result<(), SyncError> {
+    copy.execute_batch(
+        "create table book_files (novel_id integer primary key, ext text not null, data blob not null)",
+    )?;
+    let ids: Vec<i64> = copy
+        .prepare("select id from novels")?
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    for id in ids {
+        let Some(path) = super::original_in(dir, id) else {
+            continue;
+        };
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("pdf");
+        let mut file = std::fs::File::open(&path)?;
+        let len = file.metadata()?.len();
+        if len > MAX_ORIGINAL {
+            continue;
+        }
+        copy.execute(
+            "insert into book_files (novel_id, ext, data) values (?1, ?2, zeroblob(?3))",
+            params![id, ext, len as i64],
+        )?;
+        let mut blob = copy.blob_open("main", "book_files", "data", id, false)?;
+        std::io::copy(&mut file, &mut blob)?;
+    }
+    Ok(())
+}
+
+/// Writes the originals a backup copy carries (`book_files`) into `dir`.
+fn unpack_originals(copy: &Connection, dir: &Path) -> Result<(), SyncError> {
+    let packed: bool = copy.query_row(
+        "select exists (select 1 from sqlite_master where type = 'table' and name = 'book_files')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !packed {
+        return Ok(());
+    }
+    let files: Vec<(i64, String)> = copy
+        .prepare("select novel_id, ext from book_files")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (id, ext) in files {
+        if !super::ORIGINAL_EXTS.contains(&ext.as_str()) {
+            continue;
+        }
+        let mut blob = copy.blob_open("main", "book_files", "data", id, true)?;
+        let mut file = std::fs::File::create(dir.join(format!("{id}.{ext}")))?;
+        std::io::copy(&mut blob, &mut file)?;
+        file.sync_all()?;
+    }
+    Ok(())
 }
 
 /// `export_to`, in memory.
@@ -111,38 +188,81 @@ pub fn merge_from(
     snapshot: impl Read,
     tmp: &Path,
 ) -> Result<Vec<i64>, SyncError> {
-    merge_with(conn, snapshot, tmp, None)
+    merge_with(conn, snapshot, tmp)
 }
 
 /// What a restore brought back besides the library.
 #[derive(Debug, Default)]
 pub struct Restored {
-    /// Ids of local books removed because the backup knows them as deleted.
-    pub gone: Vec<i64>,
     /// The app's settings kept in the backup (JSON), for the app to apply.
     pub settings: Option<String>,
 }
 
-/// Brings a backup (`backup_to`) back: merged like a sync, except that what the backup
-/// holds comes back even if it was removed here since. A book deleted here returns
-/// as a new book, so the deletion other devices know of doesn't remove it again.
-/// The backup's LLM settings replace these when they are newer (or there are none).
+/// Brings a backup (`backup_to`) back as it is: the library is replaced by the backup's
+/// copy (brought up to this app's schema), so books and chapters are exactly the
+/// backup's, and the kept originals in `originals` by those it carries. `tmp` is a
+/// scratch path for the unpacked file.
 pub fn restore_from(
     conn: &mut Connection,
     snapshot: impl Read,
     tmp: &Path,
+    originals: Option<&Path>,
 ) -> Result<Restored, SyncError> {
-    let mut settings = None;
-    let gone = merge_with(conn, snapshot, tmp, Some(&mut settings))?;
-    Ok(Restored { gone, settings })
+    let _ = std::fs::remove_file(tmp);
+    let staged = originals.map(|dir| dir.with_extension("restoring"));
+    let result = (|| {
+        let mut file = std::io::BufWriter::new(std::fs::File::create(tmp)?);
+        std::io::copy(&mut GzDecoder::new(snapshot), &mut file)?;
+        file.flush()?;
+        drop(file);
+        // Brings a file from an older app up to this schema.
+        let copy = db::open(tmp)?;
+        let version: i64 = copy.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        if version > db::schema_version() {
+            return Err(SyncError::Outdated);
+        }
+        let settings = copy
+            .query_row(
+                "select value from sync_state where key = ?1",
+                [APP_SETTINGS],
+                |r| r.get(0),
+            )
+            .optional()?;
+        copy.execute("delete from sync_state where key = ?1", [APP_SETTINGS])?;
+        if let Some(stage) = &staged {
+            let _ = std::fs::remove_dir_all(stage);
+            std::fs::create_dir_all(stage)?;
+            unpack_originals(&copy, stage)?;
+        }
+        copy.execute_batch("drop table if exists book_files")?;
+        copy.pragma_update(None, "journal_mode", "DELETE")?;
+        copy.execute("vacuum", [])?;
+        drop(copy);
+        conn.restore("main", tmp, None::<fn(rusqlite::backup::Progress)>)?;
+        if let (Some(dir), Some(stage)) = (originals, &staged) {
+            let old = dir.with_extension("replaced");
+            let _ = std::fs::remove_dir_all(&old);
+            if dir.exists() {
+                std::fs::rename(dir, &old)?;
+            }
+            std::fs::rename(stage, dir)?;
+            let _ = std::fs::remove_dir_all(&old);
+        }
+        Ok(Restored { settings })
+    })();
+    let _ = std::fs::remove_file(tmp);
+    if let Some(stage) = &staged {
+        let _ = std::fs::remove_dir_all(stage);
+    }
+    result
 }
 
+/// Merges a synced copy into `conn` (`merge`); kept for a later sync.
+#[cfg_attr(not(test), allow(dead_code))]
 fn merge_with(
     conn: &mut Connection,
     snapshot: impl Read,
     tmp: &Path,
-    // A restore, with where to put the backup's app settings.
-    restore: Option<&mut Option<String>>,
 ) -> Result<Vec<i64>, SyncError> {
     let _ = std::fs::remove_file(tmp);
     let result = (|| {
@@ -161,26 +281,6 @@ fn merge_with(
         conn.execute("attach database ?1 as r", [tmp.to_string_lossy()])?;
         let merged = (|| {
             let tx = conn.transaction()?;
-            if let Some(settings) = restore {
-                tx.execute_batch(
-                    "delete from r.tombstones;
-                     update r.novels set book_key = lower(hex(randomblob(16))) where book_key in (
-                       select key from main.tombstones where kind = 'book');
-                     insert into main.llm_config (id, provider, base_url, api_key, model, updated_at)
-                       select id, provider, base_url, api_key, model, updated_at from r.llm_config where true
-                       on conflict (id) do update set provider = excluded.provider,
-                         base_url = excluded.base_url, api_key = excluded.api_key,
-                         model = excluded.model, updated_at = excluded.updated_at
-                       where excluded.updated_at > llm_config.updated_at;",
-                )?;
-                *settings = tx
-                    .query_row(
-                        "select value from r.sync_state where key = ?1",
-                        [APP_SETTINGS],
-                        |r| r.get(0),
-                    )
-                    .optional()?;
-            }
             let gone = merge_attached(&tx)?;
             tx.commit()?;
             Ok::<_, SyncError>(gone)
@@ -326,8 +426,9 @@ fn copy_book(tx: &Transaction, rid: i64) -> rusqlite::Result<i64> {
         insert into main.novel_translations (novel_id, lang, title, description, source, updated_at)
           select {lid}, lang, title, description, source, updated_at
           from r.novel_translations where novel_id = {rid};
-        insert into main.chapters (novel_id, number, display_number, published_at, created_at, updated_at)
-          select {lid}, number, display_number, published_at, created_at, updated_at
+        insert into main.chapters (novel_id, number, display_number, page_from, page_to,
+            published_at, created_at, updated_at)
+          select {lid}, number, display_number, page_from, page_to, published_at, created_at, updated_at
           from r.chapters where novel_id = {rid};
         insert into main.chapter_translations (chapter_id, lang, style, source, state, title, content,
             word_count, model, created_at, updated_at)
@@ -515,12 +616,14 @@ mod tests {
     }
 
     fn ai_texts(conn: &Connection) -> Vec<String> {
-        conn.prepare("select content from chapter_translations where source = 'ai' order by chapter_id")
-            .unwrap()
-            .query_map([], |r| r.get(0))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap()
+        conn.prepare(
+            "select content from chapter_translations where source = 'ai' order by chapter_id",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
     }
 
     #[test]
@@ -543,43 +646,44 @@ mod tests {
     }
 
     #[test]
-    fn a_backup_brings_back_a_deleted_book_with_its_translations() {
+    fn a_restore_puts_the_library_back_exactly_as_backed_up() {
         let (mut a, pa) = device("bak-a");
-        let (mut b, pb) = device("bak-b");
         let id =
             super::super::import(&mut a, BookFormat::Txt, &mut Book, "thu.txt", |_, _| {}).unwrap();
         ai_text(&a, id, 2, "Bản dịch 2");
-        super::super::llm::save(
-            &a,
-            Some(&super::super::llm::Config {
-                provider: "openai".into(),
-                base_url: "https://api.openai.com/v1".into(),
-                api_key: "sk-secret".into(),
-                model: "m".into(),
-            }),
-        )
-        .unwrap();
-        send(&a, &pa, &mut b, &pb);
-
+        super::super::save_progress(&a, id, 1, 0.5).unwrap();
         let backup = pa.with_extension("bak.gz");
-        backup_to(&a, &pa.with_extension("bak"), &backup, Some(r#"{"uiLang":"vi"}"#)).unwrap();
+        backup_to(&a, &pa.with_extension("bak"), &backup, Some(r#"{"uiLang":"vi"}"#), None).unwrap();
+        let chapters = |c: &Connection| -> Vec<(i64, i64)> {
+            c.prepare("select novel_id, number from chapters order by novel_id, number")
+                .unwrap()
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        let before = chapters(&a);
 
-        // Deleted, and the deletion synced: a plain sync doesn't bring it back…
+        // Since then: a chapter more, another book, then the book deleted.
+        a.execute("insert into chapters (novel_id, number) values (?1, 3)", [id])
+            .unwrap();
+        super::super::import(&mut a, BookFormat::Txt, &mut Book, "khac.txt", |_, _| {}).unwrap();
         super::super::delete(&a, id).unwrap();
-        send(&a, &pa, &mut b, &pb);
-        assert!(super::super::list(&b).unwrap().is_empty());
-        // …the backup does, translation included.
+
         let restored =
-            restore_from(&mut a, std::fs::File::open(&backup).unwrap(), &pa.with_extension("in")).unwrap();
-        assert_eq!(super::super::list(&a).unwrap().len(), 1);
-        // The app's settings come back to be applied.
+            restore_from(&mut a, std::fs::File::open(&backup).unwrap(), &pa.with_extension("in"), None).unwrap();
         assert_eq!(restored.settings.as_deref(), Some(r#"{"uiLang":"vi"}"#));
+        assert_eq!(chapters(&a), before);
+        let books = super::super::list(&a).unwrap();
+        assert_eq!(books.len(), 1);
+        assert_eq!(books[0].novel_id, id);
+        assert_eq!(
+            books[0].last_read.as_ref().map(|l| (l.index, l.progress)),
+            Some((1, 0.5))
+        );
         assert_eq!(ai_texts(&a), vec!["Bản dịch 2"]);
-        // And it stays when synced with the device that saw the deletion.
-        send(&b, &pb, &mut a, &pa);
-        assert_eq!(super::super::list(&a).unwrap().len(), 1);
-        send(&a, &pa, &mut b, &pb);
-        assert_eq!(super::super::list(&b).unwrap().len(), 1);
+        // A fresh connection sees the same.
+        assert_eq!(chapters(&db::open(&pa).unwrap()), before);
     }
 
     #[test]
@@ -594,10 +698,10 @@ mod tests {
         };
         super::super::llm::save(&a, Some(&config)).unwrap();
         let backup = pa.with_extension("llm.gz");
-        backup_to(&a, &pa.with_extension("llm"), &backup, Some("{}")).unwrap();
+        backup_to(&a, &pa.with_extension("llm"), &backup, Some("{}"), None).unwrap();
 
         let restored =
-            restore_from(&mut c, std::fs::File::open(&backup).unwrap(), &pa.with_extension("llm-in")).unwrap();
+            restore_from(&mut c, std::fs::File::open(&backup).unwrap(), &pa.with_extension("llm-in"), None).unwrap();
         assert_eq!(restored.settings.as_deref(), Some("{}"));
         let key: String = c
             .query_row("select api_key from llm_config", [], |r| r.get(0))
@@ -608,6 +712,94 @@ mod tests {
         let mut raw = Vec::new();
         GzDecoder::new(&bytes[..]).read_to_end(&mut raw).unwrap();
         assert!(!raw.windows(9).any(|w| w == b"sk-secret"));
+    }
+
+    /// A five-page PDF read in chapters of two pages.
+    struct Pdf;
+
+    impl BookSource for Pdf {
+        fn title(&self) -> Option<String> {
+            Some("Sách PDF".into())
+        }
+        fn sections(&self) -> Vec<SectionMeta> {
+            [[1, 2], [3, 4], [5, 5]]
+                .into_iter()
+                .map(|p| SectionMeta {
+                    label: None,
+                    pages: Some(p),
+                    number: None,
+                })
+                .collect()
+        }
+        fn load(&mut self, index: usize) -> Result<Section, BookError> {
+            Ok(Section {
+                index,
+                paragraphs: vec![format!("Phần {}", index + 1)],
+            })
+        }
+        fn image(&mut self, key: &str) -> Result<Image, BookError> {
+            Err(BookError::NoImage(key.into()))
+        }
+    }
+
+    fn pages_of(path: &Path, id: i64) -> Vec<Option<[u32; 2]>> {
+        let (_, book) = crate::library::DbBook::open(path, id, None).unwrap();
+        book.sections().into_iter().map(|s| s.pages).collect()
+    }
+
+    #[test]
+    fn a_restored_pdf_keeps_its_original_and_its_chapters() {
+        let (mut a, pa) = device("pdf-a");
+        let (mut c, pc) = device("pdf-c");
+        let (dir_a, dir_c) = (pa.with_extension("files"), pc.with_extension("files"));
+        for d in [&dir_a, &dir_c] {
+            let _ = std::fs::remove_dir_all(d);
+            std::fs::create_dir_all(d).unwrap();
+        }
+        // C has a book of its own, with an original.
+        super::super::import(&mut c, BookFormat::Txt, &mut Book, "khac.txt", |_, _| {}).unwrap();
+        std::fs::write(dir_c.join("1.pdf"), b"other").unwrap();
+
+        super::super::import(&mut a, BookFormat::Txt, &mut Book, "thu.txt", |_, _| {}).unwrap();
+        let id = super::super::import(&mut a, BookFormat::Pdf, &mut Pdf, "sach.pdf", |_, _| {})
+            .unwrap();
+        let pdf: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(dir_a.join(format!("{id}.pdf")), &pdf).unwrap();
+        let backup = pa.with_extension("pdf.gz");
+        backup_to(&a, &pa.with_extension("pdf-bak"), &backup, None, Some(&dir_a)).unwrap();
+
+        restore_from(
+            &mut c,
+            std::fs::File::open(&backup).unwrap(),
+            &pc.with_extension("in"),
+            Some(&dir_c),
+        )
+        .unwrap();
+        // C now holds A's library: same ids, same chapters and pages, A's originals only.
+        let titles: Vec<_> = super::super::list(&c).unwrap().into_iter().map(|b| b.title).collect();
+        assert_eq!(titles.len(), 2);
+        let want = vec![Some([1, 2]), Some([3, 4]), Some([5, 5])];
+        assert_eq!(pages_of(&pa, id), want);
+        assert_eq!(pages_of(&pc, id), want);
+        assert_eq!(std::fs::read(dir_c.join(format!("{id}.pdf"))).unwrap(), pdf);
+        assert!(!dir_c.join("1.pdf").exists());
+        // The originals don't stay in the library file.
+        let left: i64 = c
+            .query_row("select count(*) from sqlite_master where name = 'book_files'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, 0);
+    }
+
+    #[test]
+    fn a_book_imported_before_page_ranges_takes_them_from_its_original() {
+        let (mut a, pa) = device("pdf-old");
+        let id = super::super::import(&mut a, BookFormat::Pdf, &mut Pdf, "sach.pdf", |_, _| {})
+            .unwrap();
+        a.execute("update chapters set page_from = null, page_to = null", [])
+            .unwrap();
+        assert_eq!(pages_of(&pa, id), vec![None, None, None]);
+        crate::library::DbBook::open(&pa, id, Some(Box::new(Pdf))).unwrap();
+        assert_eq!(pages_of(&pa, id), vec![Some([1, 2]), Some([3, 4]), Some([5, 5])]);
     }
 
     #[test]
