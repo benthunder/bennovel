@@ -110,3 +110,16 @@ test('Profile sheets open on top when Profile is scrolled down', async ({ page }
   await expect(llm).toBeInViewport({ ratio: 1 });
   await shot(page, 'profile-llm-scrolled');
 });
+
+test('a sheet slides away when closed and its copy never touches the real one', async ({ page }) => {
+  await page.getByRole('button', { name: 'Profile' }).filter({ visible: true }).first().click();
+  await page.getByRole('button', { name: /App language/ }).click();
+  const lang = page.getByRole('dialog', { name: 'App language' });
+  await expect(lang).toBeVisible();
+  // The picked language stays checked (a copied radio in the same group would uncheck it).
+  await expect(lang.getByRole('radio', { checked: true })).toHaveCount(1);
+  await lang.getByRole('button', { name: 'Cancel' }).click();
+  await expect(lang).toHaveCount(0);
+  // The closing copy takes no clicks and is gone once its animation ends.
+  await expect(page.locator('.dialog-backdrop')).toHaveCount(0);
+});
