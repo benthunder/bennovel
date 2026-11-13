@@ -33,10 +33,25 @@ pub enum AiError {
     /// are kept.
     #[error("llm-stopped")]
     Stopped,
+    /// The reply stopped at the model's length limit (`finish_reason: length`); what
+    /// came before it. Not tried again as it is: the caller asks for less instead.
+    #[error("llm-other: the reply was cut off at the model's length limit")]
+    Truncated(String),
     #[error("llm-other: {0}")]
     Other(String),
     #[error("llm-other: {0}")]
     Db(#[from] rusqlite::Error),
+}
+
+impl AiError {
+    /// A reply cut off at the length limit taken as it is, for callers that make do
+    /// with the start of it (as they did before it was told apart).
+    pub fn keep_cut(r: Result<String, AiError>) -> Result<String, AiError> {
+        match r {
+            Err(AiError::Truncated(text)) => Ok(text),
+            r => r,
+        }
+    }
 }
 
 impl Serialize for AiError {
@@ -227,12 +242,19 @@ impl OpenAi {
             let text = res.into_string().map_err(io_error)?;
             let data: serde_json::Value =
                 serde_json::from_str(&text).map_err(|e| AiError::Other(e.to_string()))?;
-            return reply_text(&data).ok_or(AiError::Empty);
+            let text = reply_text(&data).ok_or(AiError::Empty)?;
+            if finish_reason(&data) == Some("length") {
+                return Err(AiError::Truncated(text));
+            }
+            return Ok(text);
         }
-        let text = read_stream(std::io::BufReader::new(res.into_reader()))?;
+        let (text, cut) = read_stream(std::io::BufReader::new(res.into_reader()))?;
         let text = text.trim();
         if text.is_empty() {
             return Err(AiError::Empty);
+        }
+        if cut {
+            return Err(AiError::Truncated(text.to_string()));
         }
         Ok(text.to_string())
     }
@@ -333,9 +355,11 @@ fn io_error(e: std::io::Error) -> AiError {
 
 /// The text of a streamed chat answer (server-sent events): every
 /// `choices[0].delta.content` until `data: [DONE]` or the end. The model's thinking
-/// (`reasoning_content`) is left out; an `error` sent mid-stream fails it.
-fn read_stream(reader: impl std::io::BufRead) -> Result<String, AiError> {
+/// (`reasoning_content`) is left out; an `error` sent mid-stream fails it. Also
+/// whether the model stopped at its length limit (`finish_reason: length`).
+fn read_stream(reader: impl std::io::BufRead) -> Result<(String, bool), AiError> {
     let mut text = String::new();
+    let mut cut = false;
     for line in reader.lines() {
         let line = line.map_err(io_error)?;
         let Some(data) = line.strip_prefix("data:").map(str::trim) else {
@@ -355,6 +379,7 @@ fn read_stream(reader: impl std::io::BufRead) -> Result<String, AiError> {
                 .unwrap_or_else(|| e.to_string());
             return Err(AiError::Other(msg));
         }
+        cut |= finish_reason(&event) == Some("length");
         if let Some(piece) = event
             .get("choices")
             .and_then(|c| c.get(0))
@@ -365,7 +390,12 @@ fn read_stream(reader: impl std::io::BufRead) -> Result<String, AiError> {
             text.push_str(piece);
         }
     }
-    Ok(text)
+    Ok((text, cut))
+}
+
+/// `choices[0].finish_reason` of a reply or of a streamed event.
+fn finish_reason(data: &serde_json::Value) -> Option<&str> {
+    data.get("choices")?.get(0)?.get("finish_reason")?.as_str()
 }
 
 /// Whether a transport error is the read or write timeout running out.
@@ -577,6 +607,20 @@ mod tests {
             Err(AiError::Other(m)) => assert_eq!(m, "upstream gone"),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn a_reply_cut_at_the_length_limit_is_told() {
+        let (text, cut) = read_stream(std::io::Cursor::new(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Xin\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\ndata: [DONE]\n\n",
+        ))
+        .unwrap();
+        assert_eq!((text.as_str(), cut), ("Xin", true));
+        let (_, cut) = read_stream(std::io::Cursor::new(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Xin\"},\"finish_reason\":\"stop\"}]}\n\n",
+        ))
+        .unwrap();
+        assert!(!cut);
     }
 
     #[test]

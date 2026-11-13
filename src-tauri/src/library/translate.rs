@@ -534,7 +534,9 @@ fn detect_input(
 
 /// The language the LLM names for `sample`, if it gives a code.
 fn ask_lang(llm: &dyn Chat, sample: &str) -> Result<Option<String>, AiError> {
-    Ok(parse_lang(&llm.chat(DETECT_PROMPT, sample)?))
+    Ok(parse_lang(&AiError::keep_cut(
+        llm.chat(DETECT_PROMPT, sample),
+    )?))
 }
 
 fn remember_lang(conn: &Connection, novel_id: i64, lang: &str) -> rusqlite::Result<()> {
@@ -680,6 +682,12 @@ type Parts = (Vec<String>, Option<String>, Vec<String>);
 /// has after `WIKI_MARK` comes back on its own, one per part. The first error stops
 /// what has not started yet and is returned; so does `stop` (as `AiError::Stopped`).
 /// Replies found in `cache` are not asked again, and each new one goes in it.
+///
+/// Where two parts meet the text must read on as one, so each part after the first
+/// is sent with the end of the part before it (as context, not to translate); a
+/// reply cut off by the model's length limit is asked again in two halves instead
+/// of losing its end; and a reply that put its paragraphs on single lines is split
+/// on those lines, so the parts do not run into each other.
 #[allow(clippy::too_many_arguments)]
 fn run_chunks(
     llm: &dyn Chat,
@@ -692,7 +700,7 @@ fn run_chunks(
 ) -> Result<Parts, AiError> {
     enum Piece<'a> {
         Picture(&'a str),
-        Text(String),
+        Text(Vec<&'a str>),
     }
     let mut pieces = Vec::new();
     let mut chunk: Vec<&str> = Vec::new();
@@ -700,36 +708,39 @@ fn run_chunks(
     for p in paragraphs {
         if p.starts_with(IMAGE_MARK) {
             if !chunk.is_empty() {
-                pieces.push(Piece::Text(chunk.join("\n\n")));
-                chunk.clear();
+                pieces.push(Piece::Text(std::mem::take(&mut chunk)));
             }
             size = 0;
             pieces.push(Piece::Picture(p));
             continue;
         }
-        if size > 0 && size + p.len() > CHUNK_CHARS {
-            pieces.push(Piece::Text(chunk.join("\n\n")));
-            chunk.clear();
+        let len = p.chars().count();
+        if size > 0 && size + len > CHUNK_CHARS {
+            pieces.push(Piece::Text(std::mem::take(&mut chunk)));
             size = 0;
         }
-        size += p.len();
+        size += len;
         chunk.push(p);
     }
     if !chunk.is_empty() {
-        pieces.push(Piece::Text(chunk.join("\n\n")));
+        pieces.push(Piece::Text(chunk));
     }
 
-    // The requests: each text part, then the title.
-    let mut asks: Vec<(String, &str)> = pieces
-        .iter()
-        .filter_map(|p| match p {
-            Piece::Text(t) => Some((system(t), t.as_str())),
-            Piece::Picture(_) => None,
-        })
-        .collect();
+    // The requests: each text part with the end of the one before it, then the title.
+    let mut before: Option<&str> = None;
+    let mut asks: Vec<Ask> = Vec::new();
+    for piece in &pieces {
+        if let Piece::Text(paras) = piece {
+            asks.push(Ask::Part {
+                paras: paras.clone(),
+                context: before.map(context_of),
+            });
+            before = paras.last().copied();
+        }
+    }
     let parts = asks.len();
     if let Some((prompt, text)) = &title {
-        asks.push((prompt.clone(), text.as_str()));
+        asks.push(Ask::Title(prompt, text));
     }
     let total = asks.len();
     let replies: Vec<Mutex<Option<String>>> = (0..total).map(|_| Mutex::new(None)).collect();
@@ -744,8 +755,8 @@ fn run_chunks(
     // The parts kept from an earlier try.
     let mut kept = 0;
     if let Some(c) = cache {
-        for (i, (_, text)) in asks.iter().enumerate() {
-            if let Some(reply) = c.get(&key(i, text))? {
+        for (i, ask) in asks.iter().enumerate() {
+            if let Some(reply) = c.get(&key(i, &ask.text()))? {
                 *replies[i].lock().unwrap() = Some(reply);
                 kept += 1;
             }
@@ -762,7 +773,7 @@ fn run_chunks(
                     return;
                 }
                 let i = next.fetch_add(1, Ordering::SeqCst);
-                let Some((prompt, text)) = asks.get(i) else {
+                let Some(ask) = asks.get(i) else {
                     return;
                 };
                 if replies[i].lock().unwrap().is_some() {
@@ -772,11 +783,21 @@ fn run_chunks(
                     failed.lock().unwrap().get_or_insert(AiError::Stopped);
                     return;
                 }
-                match llm.chat(prompt, text) {
+                let reply = match ask {
+                    Ask::Part { paras, context } => {
+                        let prompt = |text: &str| match context {
+                            Some(c) => format!("{}{}", system(text), context_prompt(c)),
+                            None => system(text),
+                        };
+                        ask_part(llm, &prompt, paras)
+                    }
+                    Ask::Title(prompt, text) => AiError::keep_cut(llm.chat(prompt, text)),
+                };
+                match reply {
                     Ok(reply) => {
                         if let Some(c) = cache {
                             // Not kept is only slower next time: the part is asked again.
-                            if let Err(e) = c.put(&key(i, text), &reply) {
+                            if let Err(e) = c.put(&key(i, &ask.text()), &reply) {
                                 eprintln!("ai part cache: {e}");
                             }
                         }
@@ -805,21 +826,163 @@ fn run_chunks(
     for piece in &pieces {
         match piece {
             Piece::Picture(p) => out.push(p.to_string()),
-            Piece::Text(_) => {
+            Piece::Text(paras) => {
                 let reply = replies.next().unwrap_or_default();
-                let text = match reply.split_once(WIKI_MARK) {
-                    Some((text, facts)) => {
-                        found.push(facts.to_string());
-                        text
-                    }
-                    None => reply.as_str(),
-                };
-                out.extend(split_paragraphs(&clean(text)));
+                let (text, facts) = split_reply(&reply);
+                if let Some(facts) = facts {
+                    found.push(facts.to_string());
+                }
+                out.extend(reply_paragraphs(&clean(text), paras.len()));
             }
         }
     }
     let title = (total > parts).then(|| replies.next().unwrap_or_default());
     Ok((out, title, found))
+}
+
+/// One request of `run_chunks`.
+enum Ask<'a> {
+    /// Paragraphs of the chapter, with the end of the part before them.
+    Part {
+        paras: Vec<&'a str>,
+        context: Option<String>,
+    },
+    /// The title's system prompt and the title.
+    Title(&'a str, &'a str),
+}
+
+impl Ask<'_> {
+    /// The text it sends, which keys its reply in the part cache.
+    fn text(&self) -> String {
+        match self {
+            Ask::Part { paras, .. } => paras.join("\n\n"),
+            Ask::Title(_, text) => text.to_string(),
+        }
+    }
+}
+
+/// Characters of the part before that go with a part as context.
+const CONTEXT_CHARS: usize = 400;
+/// A paragraph shorter than this is not cut in two when its reply is cut off.
+const MIN_SPLIT_CHARS: usize = 200;
+
+/// The end of the paragraph a part follows, at most `CONTEXT_CHARS`.
+fn context_of(paragraph: &str) -> String {
+    let n = paragraph.chars().count();
+    paragraph
+        .chars()
+        .skip(n.saturating_sub(CONTEXT_CHARS))
+        .collect()
+}
+
+fn context_prompt(context: &str) -> String {
+    format!(
+        "\n\nThe user's text continues right after this passage of the same chapter. It is given only so the start of the text follows on from it (same names, pronouns and tone); do not translate, rewrite or repeat it:\n<<<\n{context}\n>>>"
+    )
+}
+
+/// The reply for `paras`. A reply cut off by the model's length limit is asked again
+/// in two halves (a long paragraph is cut between sentences), and the halves' replies
+/// are put back together.
+fn ask_part(
+    llm: &dyn Chat,
+    prompt: &dyn Fn(&str) -> String,
+    paras: &[&str],
+) -> Result<String, AiError> {
+    let text = paras.join("\n\n");
+    match llm.chat(&prompt(&text), &text) {
+        Err(AiError::Truncated(_)) if paras.len() > 1 => {
+            let mid = half_by_size(paras);
+            let a = ask_part(llm, prompt, &paras[..mid])?;
+            let b = ask_part(llm, prompt, &paras[mid..])?;
+            Ok(join_replies(&a, &b, "\n\n"))
+        }
+        Err(AiError::Truncated(partial)) => match split_sentences_half(paras[0]) {
+            Some((x, y)) => {
+                let a = ask_part(llm, prompt, &[x])?;
+                let b = ask_part(llm, prompt, &[y])?;
+                Ok(join_replies(&a, &b, " "))
+            }
+            None => Err(AiError::Truncated(partial)),
+        },
+        r => r,
+    }
+}
+
+/// Where to cut `paras` so both halves hold about as much text (1..len).
+fn half_by_size(paras: &[&str]) -> usize {
+    let total: usize = paras.iter().map(|p| p.chars().count()).sum();
+    let mut size = 0;
+    for (i, p) in paras.iter().enumerate() {
+        size += p.chars().count();
+        if size * 2 >= total {
+            return (i + 1).clamp(1, paras.len() - 1);
+        }
+    }
+    paras.len() / 2
+}
+
+/// A long paragraph cut in two at the end of the sentence nearest its middle, or
+/// at a space when it has no sentence end. None when it is too short to cut.
+fn split_sentences_half(p: &str) -> Option<(&str, &str)> {
+    let n = p.chars().count();
+    if n < MIN_SPLIT_CHARS {
+        return None;
+    }
+    let mid = p.char_indices().nth(n / 2).map(|(i, _)| i)?;
+    let nearest = |is_cut: &dyn Fn(char) -> bool| {
+        p.char_indices()
+            .filter(|&(i, c)| is_cut(c) && i > 0 && i + c.len_utf8() < p.len())
+            .map(|(i, c)| i + c.len_utf8())
+            .min_by_key(|&i| i.abs_diff(mid))
+    };
+    let cut = nearest(&|c| matches!(c, '.' | '!' | '?' | '。' | '！' | '？' | '…'))
+        .or_else(|| nearest(&char::is_whitespace))
+        .unwrap_or(mid);
+    let (a, b) = p.split_at(cut);
+    let (a, b) = (a.trim(), b.trim());
+    (!a.is_empty() && !b.is_empty()).then_some((a, b))
+}
+
+/// The text of a reply and the wiki facts after `WIKI_MARK`, if any.
+fn split_reply(reply: &str) -> (&str, Option<&str>) {
+    match reply.split_once(WIKI_MARK) {
+        Some((text, facts)) => (text, Some(facts)),
+        None => (reply, None),
+    }
+}
+
+/// Two replies as one: the texts joined by `sep`, then the facts of both.
+fn join_replies(a: &str, b: &str, sep: &str) -> String {
+    let ((ta, fa), (tb, fb)) = (split_reply(a), split_reply(b));
+    let mut out = format!("{}{sep}{}", clean(ta), clean(tb));
+    let facts: Vec<&str> = [fa, fb].into_iter().flatten().map(str::trim).collect();
+    if !facts.is_empty() {
+        out.push_str(&format!("\n{WIKI_MARK}\n{}", facts.join("\n")));
+    }
+    out
+}
+
+/// The paragraphs of a part's reply, `sent` paragraphs having been sent. They should
+/// be split by blank lines; some models put them on single lines instead, so when
+/// that gives fewer paragraphs than were sent, the lines are used when they come
+/// closer to the count.
+fn reply_paragraphs(text: &str, sent: usize) -> Vec<String> {
+    let paras = split_paragraphs(text);
+    if paras.len() >= sent {
+        return paras;
+    }
+    let lines: Vec<String> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(String::from)
+        .collect();
+    if lines.len() > paras.len() && lines.len() <= sent {
+        lines
+    } else {
+        paras
+    }
 }
 
 /// FNV-1a: a hash that stays the same across builds, for the parts' keys.
@@ -1520,6 +1683,137 @@ pub(crate) mod tests {
             .iter()
             .all(|(system, _)| system == DETECT_PROMPT));
         assert!(get(&conn, chapter, "vi", "natural").unwrap().is_none());
+    }
+
+    #[test]
+    fn each_part_gets_the_end_of_the_part_before() {
+        let paragraphs: Vec<String> = (0..4)
+            .map(|i| format!("p{i} {}", "x".repeat(1500)))
+            .collect();
+        let llm = Fake::new("en");
+        run_chunks(
+            &llm,
+            &|_: &str| "novel translator".to_string(),
+            &paragraphs,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let calls = llm.calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        let first = calls.iter().find(|(_, u)| u.starts_with("p0")).unwrap();
+        let second = calls.iter().find(|(_, u)| u.starts_with("p2")).unwrap();
+        assert!(!first.0.contains("<<<"));
+        // The second part sees the end of p1, not p1 itself in full.
+        assert!(second
+            .0
+            .contains(&format!("<<<\n{}\n>>>", "x".repeat(CONTEXT_CHARS))));
+        assert!(!second.1.contains("p1"));
+    }
+
+    /// Cuts every reply off when it was asked for more than `max` characters.
+    struct Short {
+        max: usize,
+        calls: Mutex<Vec<String>>,
+    }
+    impl Chat for Short {
+        fn chat(&self, _: &str, user: &str) -> Result<String, AiError> {
+            self.calls.lock().unwrap().push(user.to_string());
+            let reply = split_paragraphs(user)
+                .iter()
+                .map(|p| format!("[tr] {p}"))
+                .collect::<Vec<_>>()
+                .join("\n\n")
+                + &format!("\n{WIKI_MARK}\n{{}}");
+            if user.chars().count() > self.max {
+                Err(AiError::Truncated(
+                    reply.chars().take(self.max / 2).collect(),
+                ))
+            } else {
+                Ok(reply)
+            }
+        }
+        fn model(&self) -> &str {
+            "short"
+        }
+    }
+
+    #[test]
+    fn a_cut_off_reply_is_asked_again_in_halves() {
+        let paragraphs: Vec<String> = (0..6)
+            .map(|i| format!("p{i} {}", "y".repeat(500)))
+            .collect();
+        let llm = Short {
+            max: 1200,
+            calls: Mutex::new(Vec::new()),
+        };
+        let (out, _, found) = run_chunks(
+            &llm,
+            &|_: &str| "t".to_string(),
+            &paragraphs,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let want: Vec<String> = paragraphs.iter().map(|p| format!("[tr] {p}")).collect();
+        assert_eq!(out, want);
+        // One part, cut; its halves (3 paragraphs) cut again; then 4 pieces of 1-2.
+        assert!(llm.calls.lock().unwrap().len() > 1);
+        assert_eq!(found.len(), 1);
+        assert!(found[0].matches("{}").count() >= 2);
+    }
+
+    #[test]
+    fn a_long_paragraph_cut_off_is_split_between_sentences() {
+        let sentence = format!("{}. ", "z".repeat(99));
+        let long = sentence.repeat(10).trim().to_string();
+        let llm = Short {
+            max: 600,
+            calls: Mutex::new(Vec::new()),
+        };
+        let (out, _, _) = run_chunks(
+            &llm,
+            &|_: &str| "t".to_string(),
+            &[long.clone()],
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(out.len(), 1, "still one paragraph: {out:?}");
+        assert_eq!(out[0].replace("[tr] ", ""), long);
+        // Too short to cut: the error stands.
+        let llm = Short {
+            max: 10,
+            calls: Mutex::new(Vec::new()),
+        };
+        assert!(matches!(
+            run_chunks(
+                &llm,
+                &|_: &str| "t".to_string(),
+                &["a b c d e f g h i j k l".into()],
+                None,
+                None,
+                None,
+                None,
+            ),
+            Err(AiError::Truncated(_))
+        ));
+    }
+
+    #[test]
+    fn paragraphs_on_single_lines_are_split() {
+        assert_eq!(reply_paragraphs("a\nb\nc", 3), vec!["a", "b", "c"]);
+        assert_eq!(reply_paragraphs("a\n\nb", 2), vec!["a", "b"]);
+        // More lines than were sent: a paragraph with line breaks, kept whole.
+        assert_eq!(reply_paragraphs("a\nb\nc", 1), vec!["a\nb\nc"]);
+        assert_eq!(half_by_size(&["aaaa", "b", "c", "d"]), 1);
+        assert_eq!(half_by_size(&["a", "b"]), 1);
     }
 
     #[test]
