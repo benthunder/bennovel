@@ -194,16 +194,90 @@ pub fn pdf_text_to_paragraphs(text: &str) -> Vec<String> {
             flush(&mut out, &mut cur);
             continue;
         }
-        if !cur.is_empty() {
-            cur.push(' ');
-        }
-        cur.push_str(line);
+        join_line(&mut cur, line);
         if line.ends_with(['.', '!', '?', '。', '！', '？', '”', '"', '」', '…', ':']) {
             flush(&mut out, &mut cur);
         }
     }
     flush(&mut out, &mut cur);
     out
+}
+
+/// Splits the text of several pages (in order) into paragraphs, as if they were one
+/// page: a sentence that runs on to the next page stays one paragraph instead of
+/// two halves (which the AI translation would then translate apart). The page
+/// number alone on the first or last line of a page is left out, so it does not end
+/// up in the middle of such a sentence.
+pub fn pdf_pages_to_paragraphs<S: AsRef<str>>(pages: &[S]) -> Vec<String> {
+    let mut text = String::new();
+    for page in pages {
+        let lines: Vec<&str> = page.as_ref().lines().map(str::trim).collect();
+        let mut body: &[&str] = &lines;
+        while let [first, rest @ ..] = body {
+            if first.is_empty() || is_page_number(first) {
+                body = rest;
+            } else {
+                break;
+            }
+        }
+        while let [rest @ .., last] = body {
+            if last.is_empty() || is_page_number(last) {
+                body = rest;
+            } else {
+                break;
+            }
+        }
+        for line in body {
+            text.push_str(line);
+            text.push('\n');
+        }
+    }
+    pdf_text_to_paragraphs(&text)
+}
+
+/// "12", "- 12 -", "xiv": a line that is only a page number.
+fn is_page_number(line: &str) -> bool {
+    let core = line.trim_matches(|c: char| c == '-' || c == '–' || c == '—' || c.is_whitespace());
+    !core.is_empty()
+        && core.len() <= 6
+        && (core.chars().all(|c| c.is_ascii_digit()) || core.chars().all(|c| "ivxlcdm".contains(c)))
+}
+
+/// Adds a wrapped line to the paragraph so far. A word broken with a hyphen at the
+/// end of the line is joined back without a space ("well-" + "known"; the hyphen
+/// stays, as it cannot be told whether it was only there for the wrap), and lines of
+/// Chinese or Japanese text are joined without a space, as those languages put none
+/// between words.
+fn join_line(cur: &mut String, line: &str) {
+    if cur.is_empty() {
+        cur.push_str(line);
+        return;
+    }
+    let next = line.chars().next();
+    let mut tail = cur.chars().rev();
+    let (last, before) = (tail.next(), tail.next());
+    let broken_word = last == Some('-')
+        && before.is_some_and(char::is_alphabetic)
+        && next.is_some_and(char::is_alphabetic);
+    let cjk_quote = |c: char| matches!(c, '“' | '”' | '‘' | '’');
+    let (l, n) = (last.unwrap_or(' '), next.unwrap_or(' '));
+    let no_space = (no_space_script(l) && (no_space_script(n) || cjk_quote(n)))
+        || (cjk_quote(l) && no_space_script(n));
+    if !broken_word && !no_space {
+        cur.push(' ');
+    }
+    cur.push_str(line);
+}
+
+/// Han, kana and the CJK punctuation: written without spaces between words.
+fn no_space_script(c: char) -> bool {
+    matches!(c,
+        '\u{3000}'..='\u{30FF}'   // CJK punctuation, hiragana, katakana
+        | '\u{3400}'..='\u{4DBF}' // Han extension A
+        | '\u{4E00}'..='\u{9FFF}' // Han
+        | '\u{F900}'..='\u{FAFF}' // Han compatibility
+        | '\u{FF00}'..='\u{FFEF}' // full-width forms
+    )
 }
 
 /// Appends text with runs of whitespace collapsed to one space. Words split across
@@ -337,6 +411,37 @@ mod tests {
         assert_eq!(
             pdf_text_to_paragraphs(text),
             vec!["He walked into the room.", "She said:", "“Hi”", "Next part"]
+        );
+    }
+
+    #[test]
+    fn joins_broken_words_and_chinese_lines() {
+        assert_eq!(
+            pdf_text_to_paragraphs("a well-\nknown Self-\nService - \nand 1990-\n1999."),
+            vec!["a well-known Self-Service - and 1990- 1999."]
+        );
+        assert_eq!(
+            pdf_text_to_paragraphs("他走进了\n房间。\n她说：\n“你好”"),
+            vec!["他走进了房间。", "她说：“你好”"]
+        );
+        // Chinese next to a Latin word keeps its space.
+        assert_eq!(pdf_text_to_paragraphs("他叫\nLina。"), vec!["他叫 Lina。"]);
+    }
+
+    #[test]
+    fn sentences_run_on_across_pages() {
+        let pages = [
+            "Chapter 1\nHe walked into\nthe room and\n12",
+            "13\nsat down.\nThe end.\n",
+            "- 14 -\nxiv\nNew page.",
+        ];
+        assert_eq!(
+            pdf_pages_to_paragraphs(&pages),
+            vec![
+                "Chapter 1 He walked into the room and sat down.",
+                "The end.",
+                "New page."
+            ]
         );
     }
 }

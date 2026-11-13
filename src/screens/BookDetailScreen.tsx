@@ -8,7 +8,7 @@ import { TranslateFields, defaultTranslation, type Translation } from '../compon
 import { Spinner } from '../components/ui';
 import { useI18n, useT } from '../i18n';
 import {
-  AI_LANGS, AiFailure, aiTranslateBook, aiViewKey, cancelAiTranslation, getAiLive, getAiMarks, getAiProgress, getAiVersions, getLlmSettings, getReadingLang, onAiLive, styleOf,
+  AI_LANGS, AiFailure, aiErrorKey, aiTranslateBook, aiViewKey, cancelAiTranslation, pauseAiTranslation, resumeAiTranslation, getAiLive, getAiMarks, getAiProgress, getAiVersions, getLlmSettings, getReadingLang, onAiLive, styleOf,
   type AiChoice, type AiLang, type AiLive, type AiView, type AiMark, type AiProgress, type AiVersion
 } from '../lib/ai';
 import { save as store } from '../lib/storage';
@@ -235,7 +235,9 @@ function AiBox({ novelId, lang, sections, live, onRead }: {
   const app = useApp();
   const user = app.libKey;
   const llmQ = useAsync(() => getLlmSettings(user), [user]);
-  const progressQ = useAsync(() => getAiProgress(user, novelId), [user, novelId, app.aiRev]);
+  // Bumped after a button here changes the queue, to load its numbers again.
+  const [rev, setRev] = useState(0);
+  const progressQ = useAsync(() => getAiProgress(user, novelId), [user, novelId, app.aiRev, rev]);
   const versionsQ = useAsync(() => getAiVersions(user, novelId), [user, novelId, app.aiRev]);
   // Keep the last numbers on screen while they reload.
   const [progress, setProgress] = useState<AiProgress[]>([]);
@@ -246,7 +248,7 @@ function AiBox({ novelId, lang, sections, live, onRead }: {
 
   const langName = (c: string) => AI_LANGS.find(l => l.code === c)?.native ?? c;
   const choice = tr ?? defaultTranslation(lang === 'vi' ? 'vi' : 'en');
-  const active = progress.filter(p => p.queued + p.running + p.failed > 0);
+  const active = progress.filter(p => p.queued + p.running + p.paused + p.failed > 0);
   const versions = (versionsQ.status === 'ready' && versionsQ.data) || [];
   const hasLlm = llmQ.status === 'ready' && !!llmQ.data;
 
@@ -258,7 +260,7 @@ function AiBox({ novelId, lang, sections, live, onRead }: {
       const vars = { n: r.queued, lang: langName(c.lang), style: t(`tr.style.${c.style}`) };
       app.showToast(t(r.queued === 0 ? 'ai.nothing' : r.mode === 'rewrite' ? 'ai.queuedRewrite' : 'ai.queued', vars));
       setOpen(false);
-      setProgress((await getAiProgress(user, novelId)) ?? []);
+      refresh();
     } catch (e) {
       console.error(e);
       app.showToast(t(e instanceof AiFailure ? e.key : 'ai.err.generic'));
@@ -266,11 +268,23 @@ function AiBox({ novelId, lang, sections, live, onRead }: {
       setBusy(false);
     }
   };
+  const refresh = () => setRev(n => n + 1);
   const stop = async () => {
     await cancelAiTranslation(user, novelId).catch(console.error);
     app.showToast(t('ai.cancelled'));
-    setProgress((await getAiProgress(user, novelId).catch(() => null)) ?? []);
+    refresh();
   };
+  const pause = async () => {
+    await pauseAiTranslation(user, novelId).catch(console.error);
+    app.showToast(t('ai.pausedByUser'));
+    refresh();
+  };
+  const resume = async (failed: boolean) => {
+    const n = await resumeAiTranslation(user, novelId, failed, uiLang).catch(e => { console.error(e); return 0; });
+    if (n > 0) app.showToast(t('ai.resumed', { n }));
+    refresh();
+  };
+  const small = { height: 30, padding: '0 10px', fontSize: 12 };
   const readVersion = (v: AiVersion) => {
     store(aiViewKey(user, novelId), { lang: v.lang, style: styleOf(v.style), dict: true, view: v.lang } satisfies AiView);
     onRead();
@@ -283,16 +297,21 @@ function AiBox({ novelId, lang, sections, live, onRead }: {
         const mine = live && live.lang === p.lang && live.style === p.style ? live : null;
         const s = mine ? sections[mine.index] : undefined;
         const name = mine ? sectionName(s, mine.index, sections.length) : '';
+        const working = p.queued + p.running > 0;
         return (
           <Fragment key={key}>
             <div className="import-progress" role="status">
-              {p.queued + p.running > 0 ? <Spinner size={14} /> : <SparklesIcon size={14} />}
+              {working ? <Spinner size={14} /> : <SparklesIcon size={14} />}
               <span style={{ flex: 1 }}>
                 {t('ai.progress', { lang: langName(p.lang), style: t(`tr.style.${styleOf(p.style)}`), done: p.done, total: p.total })}
-                {p.queued + p.running > 0 && ` · ${t('tr.waiting', { n: p.queued + p.running })}`}
+                {working && ` · ${t('tr.waiting', { n: p.queued + p.running })}`}
+                {p.paused > 0 && ` · ${t('ai.pausedCount', { n: p.paused })}`}
                 {p.failed > 0 && ` · ${t('tr.failedCount', { n: p.failed })}`}
               </span>
-              {p.queued > 0 && <button className="btn btn-ghost" style={{ height: 30, padding: '0 10px', fontSize: 12 }} onClick={stop}>{t('ai.cancel')}</button>}
+              {working && <button className="btn btn-ghost" style={small} onClick={pause}>{t('ai.pause')}</button>}
+              {!working && p.paused > 0 && <button className="btn btn-ghost" style={small} onClick={() => resume(false)}>{t('ai.resume')}</button>}
+              {!working && p.paused === 0 && p.failed > 0 && <button className="btn btn-ghost" style={small} onClick={() => resume(true)}>{t('ai.retry')}</button>}
+              {(working || p.paused > 0) && <button className="btn btn-ghost" style={small} onClick={stop}>{t('ai.cancel')}</button>}
               <div className="import-progress__bar"><div style={{ width: `${p.total ? Math.round((p.done / p.total) * 100) : 0}%` }} /></div>
             </div>
             {mine
@@ -302,7 +321,13 @@ function AiBox({ novelId, lang, sections, live, onRead }: {
                   {mine.partsTotal > 0 && ` · ${t('ai.parts', { done: mine.partsDone, total: mine.partsTotal })}`}
                 </div>
               )
-              : p.queued > 0 && <div className="muted" style={{ fontSize: 12, paddingLeft: 24 }}>{t('ai.liveWaiting')}</div>}
+              : working
+                ? <div className="muted" style={{ fontSize: 12, paddingLeft: 24 }}>{t('ai.liveWaiting')}</div>
+                : p.paused > 0 && (
+                  <div className="muted" style={{ fontSize: 12, paddingLeft: 24, overflowWrap: 'anywhere' }}>
+                    {p.error ? t('ai.pausedError', { reason: t(aiErrorKey(p.error)) }) : t('ai.pausedWaiting')}
+                  </div>
+                )}
           </Fragment>
         );
       })}

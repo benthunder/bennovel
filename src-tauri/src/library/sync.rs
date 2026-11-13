@@ -77,7 +77,7 @@ fn snapshot(
         match backup {
             Some(extras) => {
                 // The AI queue isn't restarted by a restore.
-                copy.execute_batch("delete from ai_jobs; delete from ai_books;")?;
+                copy.execute_batch("delete from ai_jobs; delete from ai_parts; delete from ai_books;")?;
                 copy.execute("delete from sync_state where key = ?1", [APP_SETTINGS])?;
                 if let Some(settings) = extras.settings {
                     db::set_state(&copy, APP_SETTINGS, settings)?;
@@ -616,12 +616,14 @@ mod tests {
     }
 
     fn ai_texts(conn: &Connection) -> Vec<String> {
-        conn.prepare("select content from chapter_translations where source = 'ai' order by chapter_id")
-            .unwrap()
-            .query_map([], |r| r.get(0))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap()
+        conn.prepare(
+            "select content from chapter_translations where source = 'ai' order by chapter_id",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
     }
 
     #[test]

@@ -34,6 +34,7 @@ async function nativeApp(page: Page, { llm = true, queue = false } = {}) {
     let release: () => void = () => undefined;
     w.__release = () => release();
     // The background queue on chapter 2 of a request into Vietnamese; `__live(…)` moves it.
+    let queueState = { queued: 0, running: 1, paused: 0, error: null as string | null };
     let live: unknown = queue ? { novelId: 1, lang: 'vi', style: 'natural', index: 1, stage: 'recall', partsDone: 0, partsTotal: 0 } : null;
     w.__live = (l: unknown) => { live = l; emit('ai-live', { user: '', live: l }); };
     w.isTauri = true;
@@ -80,7 +81,15 @@ async function nativeApp(page: Page, { llm = true, queue = false } = {}) {
             return [...done.keys()].map(index => ({ index, lang: 'vi', style: 'natural', model: 'gpt-4o-mini' }));
           case 'ai_translate_book': return { queued: 2, mode: 'translate' };
           case 'ai_progress':
-            return queue ? [{ novelId: 1, lang: 'vi', style: 'natural', total: 2, done: 1, failed: 0, queued: 0, running: 1 }] : [];
+            return queue ? [{ novelId: 1, lang: 'vi', style: 'natural', total: 2, done: 1, failed: 0, ...queueState }] : [];
+          case 'ai_pause':
+            queueState = { queued: 0, running: 0, paused: 1, error: null };
+            live = null;
+            emit('ai-live', { user: '', live: null });
+            return 1;
+          case 'ai_resume_book':
+            queueState = { queued: 0, running: 1, paused: 0, error: null };
+            return 1;
           case 'ai_live': return live;
           case 'ai_versions': return [];
           case 'plugin:dialog|save': return '/home/lina/bennovel-backup.bnbackup';
@@ -232,6 +241,22 @@ test('the book page shows the chapter the queue is on', async ({ page }, info) =
   await page.screenshot({ path: `test-results/pipeline-${info.project.name}.png` });
   await page.evaluate(() => (window as unknown as { __live: (l: unknown) => void }).__live(null));
   await expect(page.getByText(/^Translating Part 2/)).toHaveCount(0);
+});
+
+test('the book page pauses the queue and carries it on', async ({ page }) => {
+  await nativeApp(page, { queue: true });
+  await page.goto('/');
+  await page.getByText('Device Diary').filter({ visible: true }).first().click();
+  await page.getByRole('button', { name: 'Pause' }).filter({ visible: true }).first().click();
+  await expect(page.getByText(/^Paused\. The parts already translated/)).toBeVisible();
+  await expect(page.getByText(/1 paused/).filter({ visible: true }).first()).toBeVisible();
+  await expect(page.getByText(/^Paused · tap Resume/).filter({ visible: true }).first()).toBeVisible();
+  await page.getByRole('button', { name: 'Resume' }).filter({ visible: true }).first().click();
+  await expect(page.getByText('Resuming 1 chapters.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Pause' }).filter({ visible: true }).first()).toBeVisible();
+  const all = await calls(page);
+  expect(all.find(c => c.cmd === 'ai_pause')?.args).toMatchObject({ novelId: 1 });
+  expect(all.find(c => c.cmd === 'ai_resume_book')?.args).toMatchObject({ novelId: 1, failed: false, uiLang: 'en' });
 });
 
 test('without an LLM the book page points to the settings', async ({ page }) => {

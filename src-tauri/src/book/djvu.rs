@@ -3,7 +3,7 @@
 
 use super::extract::TempCopy;
 use super::image::{self, Image};
-use super::text::pdf_text_to_paragraphs;
+use super::text::pdf_pages_to_paragraphs;
 use super::{BookError, BookSource, Section, SectionMeta};
 use djvu_rs::djvu_document::MmapDocument;
 use std::path::Path;
@@ -63,13 +63,14 @@ impl BookSource for DjvuBook {
         if first >= self.pages {
             return Err(BookError::NoSection(index));
         }
-        let mut paragraphs = Vec::new();
+        let mut pages = Vec::new();
         for p in first..(first + PAGES_PER_SECTION).min(self.pages) {
             let page = self.doc.page(p).map_err(err)?;
             if let Some(layer) = page.text_layer().map_err(err)? {
-                paragraphs.extend(pdf_text_to_paragraphs(&layer.text));
+                pages.push(layer.text);
             }
         }
+        let paragraphs = pdf_pages_to_paragraphs(&pages);
         Ok(Section { index, paragraphs })
     }
 

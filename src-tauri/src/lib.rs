@@ -44,7 +44,12 @@ pub fn run() {
                 let _ = window.with_webview(|webview| {
                     use jni::objects::JValue;
                     webview.jni_handle().exec(|env, _, webview| {
-                        let _ = env.call_method(webview, "setFocusableInTouchMode", "(Z)V", &[JValue::Bool(1)]);
+                        let _ = env.call_method(
+                            webview,
+                            "setFocusableInTouchMode",
+                            "(Z)V",
+                            &[JValue::Bool(1)],
+                        );
                         let _ = env.call_method(webview, "requestFocus", "()Z", &[]);
                     });
                 });
@@ -95,6 +100,8 @@ pub fn run() {
             library::commands::ai_live,
             library::commands::ai_cancel,
             library::commands::ai_resume,
+            library::commands::ai_pause,
+            library::commands::ai_resume_book,
             library::commands::wiki_get,
             library::commands::wiki_at,
             library::commands::wiki_search,

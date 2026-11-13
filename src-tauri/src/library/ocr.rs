@@ -8,7 +8,7 @@
 //! before this existed, or just now) are queued when the next task is asked for.
 
 use super::{db, original_file, originals_dir};
-use crate::book::text::pdf_text_to_paragraphs;
+use crate::book::text::pdf_pages_to_paragraphs;
 use crate::book::{BookError, BookSource};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
@@ -144,10 +144,7 @@ pub fn save(
     chapters: usize,
     pages: &[String],
 ) -> Result<(), BookError> {
-    let paragraphs: Vec<String> = pages
-        .iter()
-        .flat_map(|p| pdf_text_to_paragraphs(p))
-        .collect();
+    let paragraphs = pdf_pages_to_paragraphs(pages);
     let words: i64 = paragraphs.iter().map(|p| super::word_count(p)).sum();
     let tx = conn.transaction()?;
     tx.execute(
