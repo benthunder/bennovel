@@ -2,13 +2,17 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import { load, save } from '../lib/storage';
 import type { ContentLang, User } from '../data/types';
 import { useI18n, useT } from '../i18n';
+import type { MessageKey } from '../i18n/en';
 import { aiErrorKey, resumeAiQueue, type AiProgress } from '../lib/ai';
 import { canOpenLocalBooks, libraryUser, type LibraryPlace, type LocalBook } from '../lib/localBook';
 import { runOcr } from '../lib/ocr';
+import { appMode, setAppMode, type AppMode } from '../lib/mode';
+import { currentUser, finishWebSignIn, getPlan, listenForSignInLinks, onAccountChange, signOut, type Plan } from '../lib/auth';
 
 export type Tab = 'library' | 'profile';
 
 export type Route =
+  | { s: 'login' }
   | { s: 'library' }
   | { s: 'profile' }
   /** A book in the on-device library. */
@@ -127,6 +131,99 @@ function useAiQueue(user: string, showToast: (msg: string) => void) {
   return rev;
 }
 
+/**
+ * The mode (offline / online), the signed-in account and its plan. Offline has no
+ * account and makes no API calls; online needs an account, so losing it (log out, a
+ * revoked session) brings the login screen back. Signing in or out leaves the library
+ * alone: books stay the device's.
+ */
+function useAccount(
+  showToast: (msg: string) => void,
+  setStack: (f: (s: Route[]) => Route[]) => void,
+  setTab: (f: (t: Tab | null) => Tab | null) => void
+) {
+  const tr = useT();
+  const [mode, setModeState] = useState<AppMode | null>(appMode);
+  const [user, setUser] = useState<User | null>(currentUser);
+  const [plan, setPlan] = useState<Plan | null>(null);
+  useEffect(() => onAccountChange(setUser), []);
+
+  const changeMode = useCallback((m: AppMode) => {
+    setAppMode(m);
+    setModeState(m);
+  }, []);
+
+  const refreshPlan = useCallback(() => {
+    getPlan().then(setPlan, e => console.error(e));
+  }, []);
+  // Known plan, fetched again for each account; offline keeps the last one shown.
+  useEffect(() => {
+    if (user && mode === 'online') refreshPlan();
+    else setPlan(null);
+  }, [user?.id, mode, refreshPlan]);
+
+  // Online without an account: the account is required, so only the login screen is left.
+  useEffect(() => {
+    if (mode !== 'online' || user) return;
+    setStack(() => [{ s: 'login' }]);
+    setTab(() => null);
+  }, [mode, user, setStack, setTab]);
+
+  /** After signing in: online, and back to where the reader was. */
+  const signedIn = useCallback(async (u: User, welcome: string) => {
+    setUser(u);
+    changeMode('online');
+    setStack(s => (s.length > 1 ? s.slice(0, -1) : [{ s: 'library' }]));
+    setTab(t => t ?? 'library');
+    showToast(welcome);
+  }, [changeMode, setStack, setTab, showToast]);
+
+  /** Log out while online: the login screen asks again (or offers offline). */
+  const logout = useCallback(() => {
+    void signOut();
+    showToast(tr('auth.loggedOut'));
+  }, [showToast, tr]);
+
+  /** From the login screen: no account, no online features. */
+  const chooseOffline = useCallback(() => {
+    if (currentUser()) void signOut();
+    changeMode('offline');
+    setStack(s => (s.length > 1 ? s.slice(0, -1) : [{ s: 'library' }]));
+    setTab(t => t ?? 'library');
+  }, [changeMode, setStack, setTab]);
+
+  /** Settings → "Use online": an account is needed first, the login screen turns it on. */
+  const goOnline = useCallback(() => setStack(s => [...s, { s: 'login' }]), [setStack]);
+
+  /** Settings → "Use online" off: signs out here and stops every API call. */
+  const goOffline = useCallback(() => {
+    changeMode('offline');
+    void signOut();
+    showToast(tr('mode.nowOffline'));
+  }, [changeMode, showToast, tr]);
+
+  // Google sends the reader back with a one-time code: a bennovel:// link in the
+  // native app, the /auth/callback page on the web.
+  const signedInRef = useRef(signedIn);
+  signedInRef.current = signedIn;
+  const trRef = useRef(tr);
+  trRef.current = tr;
+  useEffect(() => {
+    const done = (u: User) => signedInRef.current(u, trRef.current('auth.welcome', { name: u.name.split(' ')[0] }));
+    const failed = (key: MessageKey) => showToast(trRef.current(key));
+    if (!canOpenLocalBooks()) {
+      finishWebSignIn().then(u => u && done(u), e => failed(e?.key ?? 'auth.err.generic'));
+      return;
+    }
+    let stop: (() => void) | undefined;
+    let gone = false;
+    listenForSignInLinks(done, failed).then(un => { if (gone) un(); else stop = un; }, console.error);
+    return () => { gone = true; stop?.(); };
+  }, [showToast]);
+
+  return { mode, online: mode === 'online', user: mode === 'online' ? user : null, plan, refreshPlan, signedIn, logout, chooseOffline, goOnline, goOffline };
+}
+
 function useAppState() {
   const tr = useT();
   // No accounts: the library is the device's own. A library made while signed in to an
@@ -137,9 +234,13 @@ function useAppState() {
   const [readerPrefs, setReaderPrefs] = useStored<ReaderPrefs>('readerPrefs', DEFAULT_READER_PREFS);
   const [localLast, setLocalLast] = useStored<LocalLast | null>('localLast', null);
 
-  // The app opens on the library (books on the device).
-  const [stack, setStack] = useState<Route[]>([{ s: 'library' }]);
-  const [tab, setTab] = useState<Tab | null>('library');
+  // The app opens on the library (books on the device). The very first launch asks to
+  // sign in or use offline, and online mode without an account asks to sign in again.
+  const [stack, setStack] = useState<Route[]>(() => {
+    const m = appMode();
+    return [m === 'offline' || (m === 'online' && currentUser()) ? { s: 'library' } : { s: 'login' }];
+  });
+  const [tab, setTab] = useState<Tab | null>(() => (stack[0].s === 'library' ? 'library' : null));
   const [langDialogOpen, setLangDialogOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -169,6 +270,8 @@ function useAppState() {
   /** Lists everything again after the library file changed (a backup brought back). */
   const reloadLibrary = useCallback(() => setLibraryRev(n => n + 1), []);
 
+  const account = useAccount(showToast, setStack, setTab);
+
   const markLocalRead = useCallback((e: Omit<LocalLast, 'at'>) => setLocalLast({ ...e, at: Date.now() }), [setLocalLast]);
   const forgetLocal = useCallback((novelId: number) => setLocalLast(l => (l?.novelId === novelId ? null : l)), [setLocalLast]);
 
@@ -179,7 +282,7 @@ function useAppState() {
     top: stack[stack.length - 1], canBack: stack.length > 1,
     push, back, switchTab,
     setContentLang, openLangDialog: () => setLangDialogOpen(true), closeLangDialog: () => setLangDialogOpen(false), setReaderPrefs,
-    showToast, markLocalRead, forgetLocal,
+    showToast, markLocalRead, forgetLocal, ...account,
     libraryRev, aiRev, reloadLibrary
   };
 }

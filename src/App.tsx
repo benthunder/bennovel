@@ -6,6 +6,7 @@ import { useLayout } from './lib/useLayout';
 import { useOpenedFiles } from './lib/useOpenedFiles';
 import { useApp, type Route } from './store/AppStore';
 import { LibraryScreen } from './screens/LibraryScreen';
+import { LoginScreen } from './screens/LoginScreen';
 import { ProfileScreen } from './screens/ProfileScreen';
 import { LocalBookScreen } from './screens/LocalBookScreen';
 import { BookDetailScreen } from './screens/BookDetailScreen';
@@ -13,6 +14,7 @@ import { WikiScreen } from './screens/WikiScreen';
 
 function renderRoute(r: Route) {
   switch (r.s) {
+    case 'login': return <LoginScreen />;
     case 'library': return <LibraryScreen />;
     case 'profile': return <ProfileScreen />;
     case 'bookDetail': return <BookDetailScreen novelId={r.novelId} />;
@@ -35,7 +37,7 @@ export default function App() {
   if (last.current.key !== key) {
     last.current = { key, depth, enter: depth > last.current.depth ? 'push' : depth < last.current.depth ? 'pop' : 'fade' };
   }
-  const showNav = top.s !== 'book';
+  const showNav = top.s !== 'book' && top.s !== 'login';
   // Tablet gets a navigation rail and desktop a sidebar; content starts to their right.
   const contentLeft = showNav ? lay.navLeft : 0;
 
