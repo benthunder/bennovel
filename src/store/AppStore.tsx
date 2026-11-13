@@ -107,6 +107,8 @@ function useAiQueue(user: string, showToast: (msg: string) => void) {
         listen<AiProgress & { user: string }>('ai-progress', e => { if (mine(e.payload)) setRev(n => n + 1); }),
         // The wiki queue read a book's kept facts in.
         listen<{ user: string }>('wiki-updated', e => { if (mine(e.payload)) setRev(n => n + 1); }),
+        // A chapter paused or stopped half way.
+        listen<{ user: string }>('ai-stopped', e => { if (mine(e.payload)) setRev(n => n + 1); }),
         listen<AiProgress & { user: string; title: string }>('ai-done', e => {
           if (mine(e.payload)) showToast(tRef.current('ai.done', { title: e.payload.title, n: e.payload.done }));
         }),

@@ -29,6 +29,10 @@ pub enum AiError {
     /// A reply without text.
     #[error("llm-empty")]
     Empty,
+    /// The user paused or stopped the translation (queue.rs); the parts back so far
+    /// are kept.
+    #[error("llm-stopped")]
+    Stopped,
     /// The reply stopped at the model's length limit (`finish_reason: length`); what
     /// came before it. Not tried again as it is: the caller asks for less instead.
     #[error("llm-other: the reply was cut off at the model's length limit")]

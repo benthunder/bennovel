@@ -179,8 +179,8 @@ pub fn import(
     )?;
     {
         let mut chapter = tx.prepare(
-            "insert into chapters (novel_id, number, display_number, published_at)
-             values (?1, ?2, ?3, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+            "insert into chapters (novel_id, number, display_number, page_from, page_to, published_at)
+             values (?1, ?2, ?3, ?4, ?5, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         )?;
         let mut text = tx.prepare(
             "insert into chapter_translations (chapter_id, lang, source, state, title, content, word_count)
@@ -215,7 +215,14 @@ pub fn import(
             // Titles and numbers are stored as the book gives them (its table of
             // contents, or a folder's file names); nothing is guessed from the text.
             let title = meta.label.clone().or_else(|| source.section_title(i));
-            chapter.execute(params![novel_id, i as i64 + 1, meta.number])?;
+            let pages = meta.pages;
+            chapter.execute(params![
+                novel_id,
+                i as i64 + 1,
+                meta.number,
+                pages.map(|p| p[0]),
+                pages.map(|p| p[1])
+            ])?;
             let chapter_id = tx.last_insert_rowid();
             text.execute(params![
                 chapter_id,
@@ -440,6 +447,9 @@ pub fn delete(conn: &Connection, novel_id: i64) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// A stored chapter: id, title, number shown, first and last page.
+type DbChapter = (i64, String, Option<f64>, Option<[u32; 2]>);
+
 /// A library book opened for reading. Only chapter titles are read up front; each
 /// chapter's text is queried when the reader's window reaches it.
 pub struct DbBook {
@@ -447,8 +457,7 @@ pub struct DbBook {
     novel_id: i64,
     title: String,
     lang: String,
-    /// (chapter id, title, number shown)
-    chapters: Vec<(i64, String, Option<f64>)>,
+    chapters: Vec<DbChapter>,
     /// The kept original of a PDF/DjVu book, for drawing its pages.
     original: Option<Box<dyn BookSource>>,
 }
@@ -458,11 +467,19 @@ pub fn originals_dir(db_path: &Path) -> std::path::PathBuf {
     db_path.with_extension("files")
 }
 
+/// Extensions of the originals kept next to the library.
+pub const ORIGINAL_EXTS: [&str; 2] = ["pdf", "djvu"];
+
 /// The kept original of a book, if there is one.
 pub fn original_file(db_path: &Path, novel_id: i64) -> Option<std::path::PathBuf> {
-    ["pdf", "djvu"]
+    original_in(&originals_dir(db_path), novel_id)
+}
+
+/// The kept original of a book in the originals folder `dir`, if there is one.
+pub fn original_in(dir: &Path, novel_id: i64) -> Option<std::path::PathBuf> {
+    ORIGINAL_EXTS
         .iter()
-        .map(|ext| originals_dir(db_path).join(format!("{novel_id}.{ext}")))
+        .map(|ext| dir.join(format!("{novel_id}.{ext}")))
         .find(|p| p.is_file())
 }
 
@@ -489,15 +506,38 @@ impl DbBook {
             .unwrap_or(BookFormat::Txt);
         let chapters = {
             let mut stmt = conn.prepare(
-                "select c.id, coalesce(t.title, ''), c.display_number from chapters c
+                "select c.id, coalesce(t.title, ''), c.display_number, c.page_from, c.page_to from chapters c
                  left join chapter_translations t on t.chapter_id = c.id and t.lang = ?2 and t.source = 'original'
                  where c.novel_id = ?1 order by c.number",
             )?;
             let rows = stmt.query_map(params![novel_id, lang], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                let pages = match (r.get(3)?, r.get(4)?) {
+                    (Some(a), Some(b)) => Some([a, b]),
+                    _ => None,
+                };
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, pages))
             })?;
             rows.collect::<rusqlite::Result<Vec<_>>>()?
         };
+        let mut chapters = chapters;
+        // Books imported before page ranges were stored take them from the original
+        // once, so a backup carries them.
+        if let Some(pages) = original
+            .as_ref()
+            .map(|o| o.sections())
+            .filter(|s| s.len() == chapters.len())
+        {
+            if chapters.iter().any(|c| c.3.is_none()) {
+                let mut set = conn
+                    .prepare("update chapters set page_from = ?2, page_to = ?3 where id = ?1")?;
+                for (c, s) in chapters.iter_mut().zip(&pages) {
+                    if let (None, Some(p)) = (c.3, s.pages) {
+                        set.execute(params![c.0, p[0], p[1]])?;
+                        c.3 = Some(p);
+                    }
+                }
+            }
+        }
         Ok((
             format,
             Self {
@@ -518,18 +558,11 @@ impl BookSource for DbBook {
     }
 
     fn sections(&self) -> Vec<SectionMeta> {
-        // Page ranges come from the original; chapters were stored in its order.
-        let pages = self
-            .original
-            .as_ref()
-            .map(|o| o.sections())
-            .filter(|s| s.len() == self.chapters.len());
         self.chapters
             .iter()
-            .enumerate()
-            .map(|(i, (_, title, number))| SectionMeta {
+            .map(|(_, title, number, pages)| SectionMeta {
                 label: (!title.is_empty()).then(|| title.clone()),
-                pages: pages.as_ref().and_then(|p| p[i].pages),
+                pages: *pages,
                 number: *number,
             })
             .collect()
@@ -558,7 +591,7 @@ impl BookSource for DbBook {
     }
 
     fn load(&mut self, index: usize) -> Result<Section, BookError> {
-        let (chapter_id, _, _) = self
+        let (chapter_id, _, _, _) = self
             .chapters
             .get(index)
             .ok_or(BookError::NoSection(index))?;

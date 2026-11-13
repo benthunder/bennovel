@@ -480,6 +480,46 @@ insert into wiki_entries_new (id, uid, novel_id, kind, name, names, aliases, sum
 drop table wiki_entries;
 alter table wiki_entries_new rename to wiki_entries;
 "#,
+    r#"
+-- Local only (see queue.rs): rebuilt to add the `paused` status, a chapter the user
+-- paused or one the LLM could not be used for (then `error` says why). Same rows.
+create table ai_jobs_new (
+  id         integer primary key,
+  novel_id   integer not null references novels (id) on delete cascade,
+  chapter_id integer not null references chapters (id) on delete cascade,
+  lang       text not null,
+  style      text not null,
+  glossary   integer not null default 1,
+  status     text not null default 'queued' check (status in ('queued', 'running', 'paused', 'done', 'failed')),
+  error      text,
+  created_at integer not null,
+  unique (chapter_id, lang, style)
+);
+insert into ai_jobs_new select id, novel_id, chapter_id, lang, style, glossary, status, error, created_at
+  from ai_jobs;
+drop table ai_jobs;
+alter table ai_jobs_new rename to ai_jobs;
+
+-- Local only (see translate.rs): the LLM's reply to each part of a chapter as it comes
+-- back, so a chapter stopped or failed half way picks up from the parts it has. `part`
+-- is a hash of the part's text; the rows go once the chapter is saved.
+create table ai_parts (
+  chapter_id integer not null references chapters (id) on delete cascade,
+  lang       text not null,
+  style      text not null,
+  part       text not null,
+  reply      text not null,
+  created_at integer not null,
+  primary key (chapter_id, lang, style, part)
+);
+"#,
+    r#"
+-- First and last page (1-based) of a PDF/DjVu chapter, kept with the chapter so its
+-- pages are the same on a device without the kept original (a restored backup) or
+-- with an app that groups pages differently.
+alter table chapters add column page_from integer;
+alter table chapters add column page_to integer;
+"#,
 ];
 
 /// Epoch milliseconds now.
