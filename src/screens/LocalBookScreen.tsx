@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { ChapterSheet, useSectionName } from '../components/ChapterSheet';
 import { BookOpenIcon, ChevronLeftIcon, DownloadIcon, ListIcon, SlidersIcon, SparklesIcon } from '../components/Icons';
 import { ReaderChrome, ReaderStatusBar, useImmersive } from '../components/ReaderChrome';
@@ -27,6 +27,7 @@ const GAP_PX = { tight: 6, normal: 16, airy: 28 };
 const MARGIN_PX = { narrow: 16, normal: 24, wide: 36 };
 
 const NO_GLOSSARY = {};
+const NO_RULES: ReplaceRule[] = [];
 
 /** Parts kept on screen at once; the reader adds the next one as you near the end. */
 const MAX_PARTS = 6;
@@ -80,13 +81,14 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
   );
   // Edits made here win over what was loaded until the book or language changes.
   const [edited, setEdited] = useState<{ key: string; rules: ReplaceRule[] } | null>(null);
-  const rules = edited?.key === rulesKey ? edited.rules : rulesQ.status === 'ready' ? rulesQ.data : [];
+  const rules = edited?.key === rulesKey ? edited.rules : rulesQ.status === 'ready' ? rulesQ.data : NO_RULES;
   const changeRules = (next: ReplaceRule[]) => {
     setEdited({ key: rulesKey, rules: next });
     if (place) saveBookRules(place.user, place.novelId, lang, next).catch(() => app.showToast(t('replace.saveFailed')));
     else store(rulesKey, next.length ? next : null);
   };
-  const fix = (text: string) => applyReplaceRules(text, rules);
+  // Kept the same while the rules are, so the parts on screen don't lay out their text again.
+  const fix = useCallback((text: string) => applyReplaceRules(text, rules), [rules]);
 
   // AI versions are marked per chapter: a chapter with one shows it (the last language
   // and style chosen when it has several), the others their original. Each chapter can
@@ -321,17 +323,28 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
   }, [index]);
   useEffect(() => () => flush(), []);
 
-  // The bar shows how far into the part at the top.
-  const onScroll = (e: React.UIEvent<HTMLDivElement>) => {
-    immersive.onScroll(e.currentTarget);
+  // The bar shows how far into the part at the top. Scroll events come faster than
+  // frames on phones, and each one used to re-render the reader with every paragraph
+  // on screen (a long PDF part holds hundreds); now the reading is taken once a frame.
+  const scrollFrame = useRef(0);
+  const onScrollFrame = useRef(() => {});
+  onScrollFrame.current = () => {
+    scrollFrame.current = 0;
+    const el = scrollRef.current;
     const m = measure();
-    if (!m || landing.current) return;
-    anchor.current = { i: m.i, frac: (e.currentTarget.scrollTop - m.top) / Math.max(1, m.h) };
+    if (!el || !m || landing.current) return;
+    anchor.current = { i: m.i, frac: (el.scrollTop - m.top) / Math.max(1, m.h) };
     if (m.i !== index) setIndex(m.i);
-    setReadPct(m.progress);
+    // A tenth of a percent is finer than the bar can show.
+    setReadPct(r => (Math.abs(r - m.progress) < 0.001 ? r : m.progress));
     save(m.i, m.progress);
     grow();
   };
+  const onScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    immersive.onScroll(e.currentTarget);
+    if (!scrollFrame.current) scrollFrame.current = requestAnimationFrame(() => onScrollFrame.current());
+  };
+  useEffect(() => () => cancelAnimationFrame(scrollFrame.current), []);
   const [importing, setImporting] = useState<{ done: number; total: number } | null>(null);
   const importHere = async () => {
     if (!path || importing) return;
@@ -356,10 +369,10 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
 
 
   const name = sectionName(meta, index, total);
-  const partStyle = {
-    accent: night ? 'var(--color-accent-400)' : 'var(--color-accent-700)',
-    headingSize: lay.readerH, gap: GAP_PX[p.gap], fontSize: p.fontSize, lineH: p.lineH, align: p.align,
-  };
+  const accent = night ? 'var(--color-accent-400)' : 'var(--color-accent-700)';
+  const partStyle = useMemo<PartStyle>(() => ({
+    accent, headingSize: lay.readerH, gap: GAP_PX[p.gap], fontSize: p.fontSize, lineH: p.lineH, align: p.align,
+  }), [accent, lay.readerH, p.gap, p.fontSize, p.lineH, p.align]);
 
   return (
     <div className="screen" style={{ overflow: 'hidden', background: theme.bg, color: theme.fg, ...theme.vars }}>
@@ -538,6 +551,26 @@ function BookPart({ bookId, index, meta, name, fix, st, color, onReady, marksRea
   const langName = (l: string) => LANG_NATIVE[l] ?? l;
   // Read in a language (the raw text's own too), and this chapter has no AI version in it.
   const missing = !ai && viewLang !== 'raw';
+  // The paragraphs are made again only when what they show changes, not each time the
+  // reader re-renders (scrolling, the bar, an AI job's progress…).
+  const onWikiRef = useRef(onWiki);
+  onWikiRef.current = onWiki;
+  const data = q.status === 'ready' ? q.data : null;
+  const body = useMemo<ReactNode>(() => data?.paragraphs.map((para, i) => {
+    // The chapter's own "Chương 629." line repeats the heading shown above.
+    if (i === 0 && meta?.number != null && isHeadingLine(para, meta.number, meta.label)) return null;
+    const key = imageKey(para);
+    return key !== null ? (
+      // A picture the book can't provide just disappears.
+      <img key={i} src={bookImageUrl(bookId, key)} alt="" loading="lazy" decoding="async"
+        onError={e => { e.currentTarget.style.display = 'none'; }}
+        style={{ display: 'block', maxWidth: '100%', height: 'auto', margin: `0 auto ${st.gap}px`, borderRadius: 4 }} />
+    ) : (
+      <p key={i} style={{ margin: `0 0 ${st.gap}px`, fontSize: st.fontSize, lineHeight: st.lineH, textAlign: st.align, textWrap: 'pretty' }}>
+        {wikiAt ? markWikiTerms(fix(para), terms, e => onWikiRef.current(wikiAt, e, cardLang)) : fix(para)}
+      </p>
+    );
+  }), [data, meta?.number, meta?.label, bookId, st.gap, st.fontSize, st.lineH, st.align, wikiAt, terms, cardLang, fix]);
   const link: CSSProperties = { border: 'none', background: 'none', font: 'inherit', fontSize: 12, fontWeight: 700, textDecoration: 'underline', cursor: 'pointer', color: 'inherit', padding: 0 };
 
   return (
@@ -584,21 +617,7 @@ function BookPart({ bookId, index, meta, name, fix, st, color, onReady, marksRea
         </div>
       )}
       {q.status === 'ready' && q.data.paragraphs.length === 0 && <p style={{ opacity: .7 }}>{t('book.empty')}</p>}
-      {q.status === 'ready' && q.data.paragraphs.map((para, i) => {
-        // The chapter's own "Chương 629." line repeats the heading shown above.
-        if (i === 0 && meta?.number != null && isHeadingLine(para, meta.number, meta.label)) return null;
-        const key = imageKey(para);
-        return key !== null ? (
-          // A picture the book can't provide just disappears.
-          <img key={i} src={bookImageUrl(bookId, key)} alt="" loading="lazy" decoding="async"
-            onError={e => { e.currentTarget.style.display = 'none'; }}
-            style={{ display: 'block', maxWidth: '100%', height: 'auto', margin: `0 auto ${st.gap}px`, borderRadius: 4 }} />
-        ) : (
-          <p key={i} style={{ margin: `0 0 ${st.gap}px`, fontSize: st.fontSize, lineHeight: st.lineH, textAlign: st.align, textWrap: 'pretty' }}>
-            {wikiAt ? markWikiTerms(fix(para), terms, e => onWiki(wikiAt, e, cardLang)) : fix(para)}
-          </p>
-        );
-      })}
+      {body}
     </section>
   );
 }
