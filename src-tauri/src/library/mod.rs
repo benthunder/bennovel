@@ -3,8 +3,8 @@
 //! never held in memory whole; reading then loads chapters from SQLite on demand
 //! through the same windowed reader as a book file (`DbBook`).
 
-pub mod commands;
 pub mod cast;
+pub mod commands;
 pub mod db;
 pub mod folder;
 pub mod llm;
@@ -212,14 +212,10 @@ pub fn import(
                 .map(|p| word_count(p))
                 .sum();
             let content = section.paragraphs.join("\n\n");
-            // Folder imports know the number from the file name and the title from the
-            // first lines; one-file books may have "Chương 12: …" headings.
-            let mut title = meta.label.clone().or_else(|| source.section_title(i));
-            let mut number = meta.number;
-            if number.is_none() {
-                (title, number) = folder::split_heading(title);
-            }
-            chapter.execute(params![novel_id, i as i64 + 1, number])?;
+            // Titles and numbers are stored as the book gives them (its table of
+            // contents, or a folder's file names); nothing is guessed from the text.
+            let title = meta.label.clone().or_else(|| source.section_title(i));
+            chapter.execute(params![novel_id, i as i64 + 1, meta.number])?;
             let chapter_id = tx.last_insert_rowid();
             text.execute(params![
                 chapter_id,
@@ -531,18 +527,10 @@ impl BookSource for DbBook {
         self.chapters
             .iter()
             .enumerate()
-            .map(|(i, (_, title, number))| {
-                let label = (!title.is_empty()).then(|| title.clone());
-                // Books imported before numbers were stored: read them off the title.
-                let (label, number) = match number {
-                    Some(_) => (label, *number),
-                    None => folder::split_heading(label),
-                };
-                SectionMeta {
-                    label,
-                    pages: pages.as_ref().and_then(|p| p[i].pages),
-                    number,
-                }
+            .map(|(i, (_, title, number))| SectionMeta {
+                label: (!title.is_empty()).then(|| title.clone()),
+                pages: pages.as_ref().and_then(|p| p[i].pages),
+                number: *number,
             })
             .collect()
     }
@@ -681,12 +669,15 @@ mod tests {
 
         let (format, mut db_book) = DbBook::open(&path, id, None).unwrap();
         assert_eq!(format, BookFormat::Epub);
-        // "Chương 1" headings become chapter numbers, with nothing left for a title.
+        // Labels are kept as the book gives them; no number is read off them.
         let sections = db_book.sections();
         let labels: Vec<_> = sections.iter().map(|s| s.label.clone()).collect();
         let numbers: Vec<_> = sections.iter().map(|s| s.number).collect();
-        assert_eq!(labels, vec![None, None, None]);
-        assert_eq!(numbers, vec![None, Some(1.0), Some(2.0)]);
+        assert_eq!(
+            labels,
+            vec![None, Some("Chương 1".into()), Some("Chương 2".into())]
+        );
+        assert_eq!(numbers, vec![None, None, None]);
         assert_eq!(
             db_book.load(1).unwrap().paragraphs,
             vec!["Chương 1", "Ngày xưa có một cô bé.", "Hết chương."]
