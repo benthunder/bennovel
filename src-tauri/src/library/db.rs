@@ -480,6 +480,13 @@ insert into wiki_entries_new (id, uid, novel_id, kind, name, names, aliases, sum
 drop table wiki_entries;
 alter table wiki_entries_new rename to wiki_entries;
 "#,
+    r#"
+-- First and last page (1-based) of a PDF/DjVu chapter, kept with the chapter so its
+-- pages are the same on a device without the kept original (a restored backup) or
+-- with an app that groups pages differently.
+alter table chapters add column page_from integer;
+alter table chapters add column page_to integer;
+"#,
 ];
 
 /// Epoch milliseconds now.
