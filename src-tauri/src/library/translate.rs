@@ -26,11 +26,15 @@
 //!   learns in the background, so the reader gets the text as soon as it is saved.
 //!
 //! A chapter goes to the LLM in parts of about `CHUNK_CHARS`, `PARALLEL` at a time.
+//! Each part's reply is kept in `ai_parts` as it comes back, so a chapter that is
+//! paused, or that fails on one part, carries on from the parts it has the next time
+//! instead of sending them all again; the save node clears them.
 
 use super::llm::{AiError, Chat};
 use rusqlite::{params, Connection, OptionalExtension};
 use rust_langgraph::{Config, Error as GraphError, State, StateGraph};
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Target languages offered: English and Vietnamese.
@@ -78,6 +82,9 @@ pub struct Hooks {
     /// Leave the wiki facts the requests brought (kept by the save node) to the wiki
     /// queue (queue.rs); learn here only when they brought none.
     pub learn_found_later: bool,
+    /// Set to stop the chapter: no new part goes to the LLM, the parts in flight are
+    /// kept as they come back, and the run ends with `AiError::Stopped`.
+    pub stop: Option<Arc<AtomicBool>>,
 }
 
 /// What to do with one chapter.
@@ -292,9 +299,10 @@ fn graph(
     }
     {
         let (llm, failed, progress) = (llm.clone(), failed.clone(), hooks.progress.clone());
-        let enter = enter.clone();
+        let (enter, stop) = (enter.clone(), hooks.stop.clone());
         g.add_node("translate", move |mut f: Flow, _: &Config| {
             let (llm, failed, progress) = (llm.clone(), failed.clone(), progress.clone());
+            let stop = stop.clone();
             if f.mode == Some(Mode::Translate) {
                 enter(Stage::Translate);
             }
@@ -314,12 +322,15 @@ fn graph(
                     let system = |part: &str| format!("{system}{}{extract}", f.cast.prompt(part));
                     let title = (!f.title.trim().is_empty())
                         .then(|| (title_prompt(&f.req.lang), f.title.clone()));
+                    let cache = PartCache::open(&f.db, &f.req)?;
                     let (out, title, found) = run_chunks(
                         llm.as_ref(),
                         &system,
                         &f.paragraphs,
                         title,
                         progress.as_deref(),
+                        cache.as_ref(),
+                        stop.as_deref(),
                     )?;
                     f.out = out;
                     f.found = found;
@@ -334,9 +345,10 @@ fn graph(
     }
     {
         let (llm, failed, progress) = (llm.clone(), failed.clone(), hooks.progress.clone());
-        let enter = enter.clone();
+        let (enter, stop) = (enter.clone(), hooks.stop.clone());
         g.add_node("rewrite", move |mut f: Flow, _: &Config| {
             let (llm, failed, progress) = (llm.clone(), failed.clone(), progress.clone());
+            let stop = stop.clone();
             if f.mode == Some(Mode::Rewrite) {
                 enter(Stage::Rewrite);
             }
@@ -348,12 +360,15 @@ fn graph(
                     let system = rewrite_prompt(&f.req.lang, &f.req.style, &f.wiki);
                     let extract = super::wiki::extract_prompt(&f.req.lang, WIKI_MARK);
                     let system = |part: &str| format!("{system}{}{extract}", f.cast.prompt(part));
+                    let cache = PartCache::open(&f.db, &f.req)?;
                     let (out, _, found) = run_chunks(
                         llm.as_ref(),
                         &system,
                         &f.paragraphs,
                         None,
                         progress.as_deref(),
+                        cache.as_ref(),
+                        stop.as_deref(),
                     )?;
                     (f.out, f.found) = (out, found);
                     // Same language: the chapter keeps its title.
@@ -378,6 +393,7 @@ fn graph(
                         }
                     }
                     save(&conn, &f.req, &f.out_title, &f.out, llm.model())?;
+                    PartCache::clear(&conn, &f.req)?;
                     super::wiki::keep_found(&conn, f.req.chapter_id, &f.req.lang, &f.found)?;
                     super::cast::keep(
                         &conn,
@@ -662,13 +678,17 @@ type Parts = (Vec<String>, Option<String>, Vec<String>);
 /// and puts the replies back in order; pictures stay where they are. `title` (a
 /// system prompt and the title) is asked alongside the parts. Whatever a part's reply
 /// has after `WIKI_MARK` comes back on its own, one per part. The first error stops
-/// what has not started yet and is returned.
+/// what has not started yet and is returned; so does `stop` (as `AiError::Stopped`).
+/// Replies found in `cache` are not asked again, and each new one goes in it.
+#[allow(clippy::too_many_arguments)]
 fn run_chunks(
     llm: &dyn Chat,
     system: &(dyn Fn(&str) -> String + Sync),
     paragraphs: &[String],
     title: Option<(String, String)>,
     progress: Option<&(dyn Fn(usize, usize) + Send + Sync)>,
+    cache: Option<&PartCache>,
+    stop: Option<&AtomicBool>,
 ) -> Result<Parts, AiError> {
     enum Piece<'a> {
         Picture(&'a str),
@@ -716,8 +736,24 @@ fn run_chunks(
     let next = std::sync::atomic::AtomicUsize::new(0);
     let done = std::sync::atomic::AtomicUsize::new(0);
     let failed: Mutex<Option<AiError>> = Mutex::new(None);
+    // A part's key in the cache; the title's is told apart from the text parts'.
+    let key = |i: usize, text: &str| {
+        let kind = if i < parts { "p" } else { "t" };
+        format!("{kind}:{:016x}:{}", fnv1a(text), text.len())
+    };
+    // The parts kept from an earlier try.
+    let mut kept = 0;
+    if let Some(c) = cache {
+        for (i, (_, text)) in asks.iter().enumerate() {
+            if let Some(reply) = c.get(&key(i, text))? {
+                *replies[i].lock().unwrap() = Some(reply);
+                kept += 1;
+            }
+        }
+    }
+    done.store(kept, Ordering::SeqCst);
     if let Some(p) = progress {
-        p(0, total);
+        p(kept, total);
     }
     std::thread::scope(|s| {
         for _ in 0..PARALLEL.min(total) {
@@ -725,14 +761,27 @@ fn run_chunks(
                 if failed.lock().unwrap().is_some() {
                     return;
                 }
-                let i = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let i = next.fetch_add(1, Ordering::SeqCst);
                 let Some((prompt, text)) = asks.get(i) else {
                     return;
                 };
+                if replies[i].lock().unwrap().is_some() {
+                    continue;
+                }
+                if stop.is_some_and(|s| s.load(Ordering::SeqCst)) {
+                    failed.lock().unwrap().get_or_insert(AiError::Stopped);
+                    return;
+                }
                 match llm.chat(prompt, text) {
                     Ok(reply) => {
+                        if let Some(c) = cache {
+                            // Not kept is only slower next time: the part is asked again.
+                            if let Err(e) = c.put(&key(i, text), &reply) {
+                                eprintln!("ai part cache: {e}");
+                            }
+                        }
                         *replies[i].lock().unwrap() = Some(reply);
-                        let n = done.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                        let n = done.fetch_add(1, Ordering::SeqCst) + 1;
                         if let Some(p) = progress {
                             p(n, total);
                         }
@@ -771,6 +820,75 @@ fn run_chunks(
     }
     let title = (total > parts).then(|| replies.next().unwrap_or_default());
     Ok((out, title, found))
+}
+
+/// FNV-1a: a hash that stays the same across builds, for the parts' keys.
+fn fnv1a(text: &str) -> u64 {
+    text.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+        (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
+/// The replies kept for one chapter's parts (`ai_parts`), in the library file.
+struct PartCache {
+    conn: Mutex<Connection>,
+    chapter_id: i64,
+    lang: String,
+    style: String,
+}
+
+impl PartCache {
+    /// None for a library that is not a file (tests in memory).
+    fn open(db: &str, req: &Request) -> Result<Option<Self>, AiError> {
+        if db.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            conn: Mutex::new(super::db::open(std::path::Path::new(db))?),
+            chapter_id: req.chapter_id,
+            lang: req.lang.clone(),
+            style: req.style.clone(),
+        }))
+    }
+
+    fn get(&self, part: &str) -> rusqlite::Result<Option<String>> {
+        self.conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "select reply from ai_parts
+                 where chapter_id = ?1 and lang = ?2 and style = ?3 and part = ?4",
+                params![self.chapter_id, self.lang, self.style, part],
+                |r| r.get(0),
+            )
+            .optional()
+    }
+
+    fn put(&self, part: &str, reply: &str) -> rusqlite::Result<()> {
+        self.conn.lock().unwrap().execute(
+            "insert into ai_parts (chapter_id, lang, style, part, reply, created_at)
+             values (?1, ?2, ?3, ?4, ?5, ?6)
+             on conflict (chapter_id, lang, style, part) do update set reply = excluded.reply",
+            params![
+                self.chapter_id,
+                self.lang,
+                self.style,
+                part,
+                reply,
+                super::db::now_ms()
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The chapter is saved: its parts are not needed any more.
+    fn clear(conn: &Connection, req: &Request) -> rusqlite::Result<()> {
+        conn.execute(
+            "delete from ai_parts where chapter_id = ?1 and lang = ?2 and style = ?3",
+            params![req.chapter_id, req.lang, req.style],
+        )?;
+        Ok(())
+    }
 }
 
 /// A reply without the ``` fence some models put around it.
@@ -914,7 +1032,9 @@ pub fn marks(conn: &Connection, novel_id: i64) -> rusqlite::Result<Vec<Mark>> {
 
 /// Takes the LLM settings and the AI queue out of a copy about to be synced.
 pub fn strip(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute_batch("delete from llm_config; delete from ai_jobs; delete from ai_books;")
+    conn.execute_batch(
+        "delete from llm_config; delete from ai_jobs; delete from ai_parts; delete from ai_books;",
+    )
 }
 
 #[cfg(test)]
@@ -1261,6 +1381,8 @@ pub(crate) mod tests {
             &paragraphs,
             Some(("title".into(), "Chapter 1".into())),
             Some(&progress),
+            None,
+            None,
         )
         .unwrap();
         let want: Vec<String> = paragraphs
@@ -1293,9 +1415,111 @@ pub(crate) mod tests {
         }
         let paragraphs = vec!["a".to_string(), "b".to_string()];
         assert!(matches!(
-            run_chunks(&Down, &|_: &str| "x".to_string(), &paragraphs, None, None),
+            run_chunks(
+                &Down,
+                &|_: &str| "x".to_string(),
+                &paragraphs,
+                None,
+                None,
+                None,
+                None
+            ),
             Err(AiError::Timeout)
         ));
+    }
+
+    /// Translates like `Fake`, but the part with "p4" fails once the others are back.
+    struct Flaky(Fake);
+    impl Chat for Flaky {
+        fn chat(&self, system: &str, user: &str) -> Result<String, AiError> {
+            if user.contains("p4 ") {
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                return Err(AiError::Http(400, "bad part".into()));
+            }
+            self.0.chat(system, user)
+        }
+        fn model(&self) -> &str {
+            "flaky"
+        }
+    }
+
+    /// A chapter of three parts (two long paragraphs each).
+    fn long_chapter(conn: &Connection) -> i64 {
+        let content: Vec<String> = (0..6)
+            .map(|i| format!("p{i} {}", "x".repeat(1200)))
+            .collect();
+        conn.execute(
+            "insert into chapters (id, novel_id, number) values (12, 1, 3)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "insert into chapter_translations (chapter_id, lang, source, state, title, content)
+             values (12, 'en', 'original', 'published', 'Chapter 3', ?1)",
+            [content.join("\n\n")],
+        )
+        .unwrap();
+        12
+    }
+
+    fn kept_parts(conn: &Connection) -> i64 {
+        conn.query_row("select count(*) from ai_parts", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn a_failed_chapter_keeps_its_parts_and_carries_on_from_them() {
+        let (conn, _) = book("parts");
+        let chapter = long_chapter(&conn);
+        let flaky = Arc::new(Flaky(Fake::new("en")));
+        assert!(matches!(
+            run(&conn, flaky, req(chapter, "vi")),
+            Err(AiError::Http(400, _))
+        ));
+        // The two other parts and the title came back and are kept.
+        assert_eq!(kept_parts(&conn), 3);
+        assert!(get(&conn, chapter, "vi", "natural").unwrap().is_none());
+
+        let llm = Arc::new(Fake::new("en"));
+        let out = run(&conn, llm.clone(), req(chapter, "vi")).unwrap();
+        // Only the failed part went to the LLM again (and the language question).
+        let asked: Vec<String> = llm
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(system, _)| system != DETECT_PROMPT)
+            .map(|(_, user)| user.clone())
+            .collect();
+        assert_eq!(asked.len(), 1);
+        assert!(asked[0].starts_with("p4 "));
+        assert_eq!(out.paragraphs.len(), 6);
+        assert!(out.paragraphs.iter().all(|p| p.starts_with("[tr] p")));
+        assert_eq!(out.title, "[tr] Chapter 3");
+        // Saved: the parts are not kept any more.
+        assert_eq!(kept_parts(&conn), 0);
+    }
+
+    #[test]
+    fn a_stopped_chapter_sends_nothing_more() {
+        let (conn, _) = book("stop");
+        let chapter = long_chapter(&conn);
+        let llm = Arc::new(Fake::new("en"));
+        let hooks = Hooks {
+            stop: Some(Arc::new(AtomicBool::new(true))),
+            ..Default::default()
+        };
+        assert!(matches!(
+            run_with(&conn, llm.clone(), req(chapter, "vi"), hooks),
+            Err(AiError::Stopped)
+        ));
+        assert!(llm
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(system, _)| system == DETECT_PROMPT));
+        assert!(get(&conn, chapter, "vi", "natural").unwrap().is_none());
     }
 
     #[test]

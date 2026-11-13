@@ -29,6 +29,10 @@ pub enum AiError {
     /// A reply without text.
     #[error("llm-empty")]
     Empty,
+    /// The user paused or stopped the translation (queue.rs); the parts back so far
+    /// are kept.
+    #[error("llm-stopped")]
+    Stopped,
     #[error("llm-other: {0}")]
     Other(String),
     #[error("llm-other: {0}")]
