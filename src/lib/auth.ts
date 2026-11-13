@@ -1,6 +1,7 @@
 import type { User } from '../data/types';
 import type { MessageKey } from '../i18n/en';
 import { canOpenLocalBooks } from './localBook';
+import { isOnline } from './mode';
 import { load, save } from './storage';
 
 /*
@@ -8,6 +9,9 @@ import { load, save } from './storage';
  * The access token lasts an hour; the refresh token (60 days) gets a new one and is
  * replaced each time, so a reader stays signed in across restarts. Signing in does not
  * change which library is used: books stay on the device.
+ *
+ * In offline mode (see mode.ts) nothing but signing in reaches the API: every other
+ * call fails with `auth.err.offline` before it leaves the device.
  */
 
 /** Production builds talk to production; `npm run dev` to staging. VITE_API_URL overrides both. */
@@ -55,7 +59,11 @@ const ERRORS: Record<string, MessageKey> = {
   google_failed: 'auth.err.google'
 };
 
+/** Signing in is how the app goes online, so these paths work in offline mode too. */
+const SIGN_IN_PATHS = '/v1/auth/';
+
 async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
+  if (!isOnline() && !path.startsWith(SIGN_IN_PATHS)) throw new AuthFailure('auth.err.offline');
   let res: Response;
   try {
     res = await fetch(`${API_URL}${path}`, { ...init, headers: { 'content-type': 'application/json', ...init.headers } });
@@ -127,7 +135,7 @@ let refreshing: Promise<string | null> | null = null;
  * Without a connection the session is kept, so the reader stays signed in offline.
  */
 export async function accessToken(): Promise<string | null> {
-  if (!session) return null;
+  if (!session || !isOnline()) return null;
   if (session.accessExp - 60_000 > Date.now()) return session.accessToken;
   refreshing ??= (async () => {
     const s = session!;
@@ -146,11 +154,28 @@ export async function accessToken(): Promise<string | null> {
   return refreshing;
 }
 
-/** The account's plan, or null when signed out. */
-export async function getPlan(): Promise<Plan | null> {
+/**
+ * A call to the BenNovel API as the signed-in account. Every online feature goes
+ * through here: it fails with `auth.err.offline` in offline mode and
+ * `auth.err.signedOut` without an account, and never reaches the network then.
+ */
+export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
+  if (!isOnline()) throw new AuthFailure('auth.err.offline');
   const token = await accessToken();
-  if (!token) return null;
-  const me = await call<{ user: ApiUser; subscription: Plan }>('/v1/me', { headers: { authorization: `Bearer ${token}` } });
+  if (!token) throw new AuthFailure('auth.err.signedOut');
+  return call<T>(path, { ...init, headers: { ...init.headers, authorization: `Bearer ${token}` } });
+}
+
+/** The account's plan, or null when signed out or offline. */
+export async function getPlan(): Promise<Plan | null> {
+  if (!isOnline() || !session) return null;
+  let me: { user: ApiUser; subscription: Plan };
+  try {
+    me = await api('/v1/me');
+  } catch (e) {
+    if (e instanceof AuthFailure && e.key === 'auth.err.signedOut') return null;
+    throw e;
+  }
   if (session) setSession({ ...session, user: { ...toUser(me.user, session.user.provider) } });
   return me.subscription;
 }

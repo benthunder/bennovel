@@ -109,11 +109,19 @@ export function LoginScreen() {
       {uiLang === 'en' ? 'VI' : 'EN'}
     </button>
   );
-  const skip = <button type="button" className="btn btn-ghost" onClick={app.skipLogin}>{app.canBack ? t('auth.notNow') : t('auth.skip')}</button>;
+  // Opened from Settings → "Use online": back to offline as it was. As the first screen:
+  // the way to use the app without an account (below the form).
+  const skip = app.canBack ? <button type="button" className="btn btn-ghost" onClick={app.back}>{t('auth.notNow')}</button> : null;
+  const offline = app.canBack ? null : (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'stretch' }}>
+      <button type="button" className="btn btn-secondary" style={{ height: 46, fontSize: 15 }} disabled={busy} onClick={app.chooseOffline}>{t('auth.useOffline')}</button>
+      <div className="muted" style={{ fontSize: 12, textAlign: 'center' }}>{t('auth.offlineHint')}</div>
+    </div>
+  );
 
   const formEl = (
     <form onSubmit={submit} noValidate style={{
-      position: 'relative', width: '100%', maxWidth: lay.wide ? 400 : 'none', margin: '0 auto', height: lay.wide ? 'auto' : '100%',
+      position: 'relative', width: '100%', maxWidth: lay.wide ? 400 : 'none', margin: '0 auto', minHeight: lay.wide ? 'auto' : '100%',
       display: 'flex', flexDirection: 'column', gap: 14
     }}>
       {lay.isPhone ? (
@@ -184,13 +192,14 @@ export function LoginScreen() {
       </button>
       {mode === 'login' && <button type="button" className="btn btn-ghost" style={{ alignSelf: 'center', fontSize: 13 }} onClick={() => go('forgot')}>{t('auth.forgot')}</button>}
       {mode === 'forgot' && <button type="button" className="btn btn-ghost" style={{ alignSelf: 'center', fontSize: 13 }} onClick={() => go('login')}>{t('auth.backToLogin')}</button>}
+      {offline}
       <p className="muted" style={{ margin: `${lay.wide ? '6px' : 'auto'} 0 0`, fontSize: 11, textAlign: 'center' }}>{t('auth.terms')}</p>
     </form>
   );
 
   if (lay.isPhone) {
     return (
-      <div className="screen" style={{ overflow: 'hidden', padding: 'calc(var(--safe-top) + 6px) 24px calc(env(safe-area-inset-bottom) + 24px)' }}>
+      <div className="screen" style={{ overflowY: 'auto', padding: 'calc(var(--safe-top) + 6px) 24px calc(env(safe-area-inset-bottom) + 24px)' }}>
         {formEl}
       </div>
     );

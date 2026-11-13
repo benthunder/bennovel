@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { GlobeIcon, LanguagesIcon, LogOutIcon, SparklesIcon } from '../components/Icons';
+import { CloudIcon, GlobeIcon, LanguagesIcon, LogOutIcon, SparklesIcon } from '../components/Icons';
 import { Modal } from '../components/Modal';
 import { NovelCover, type Cover } from '../components/NovelCover';
 import { UiLangDialog, uiLangLabel } from '../components/UiLangDialog';
@@ -23,6 +23,7 @@ export function ProfileScreen() {
   const llmQ = useAsync(() => (canOpenLocalBooks() ? getLlmSettings(app.libKey) : Promise.resolve(null)), [app.libKey, llmRev]);
   const llm = llmQ.status === 'ready' ? llmQ.data : null;
   const [uiLangOpen, setUiLangOpen] = useState(false);
+  const [offlineAsk, setOfflineAsk] = useState(false);
   const langLabel = CONTENT_LANG_INFO.find(l => l.code === app.contentLang)?.native ?? t('lang.askEach');
   const rows = useHistoryRows();
 
@@ -76,6 +77,16 @@ export function ProfileScreen() {
               <span className="muted" style={{ fontSize: 13, maxWidth: '45%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{llm ? llm.model : t('ai.notSet')} ›</span>
             </button>
           )}
+          <button className="menu-row" role="switch" aria-checked={app.online} onClick={() => (app.online ? setOfflineAsk(true) : app.goOnline())}>
+            <CloudIcon style={{ color: 'var(--color-accent-2-700)' }} />
+            <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <span style={{ fontSize: 14, fontWeight: 600 }}>{t('mode.online')}</span>
+              <span className="muted" style={{ fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {app.user ? t('mode.onlineOn', { email: app.user.email }) : t('mode.onlineOff')}
+              </span>
+            </span>
+            <span className={`switch${app.online ? ' switch--on' : ''}`} aria-hidden="true"><span className="switch__knob" /></span>
+          </button>
           {app.user && (
             <button className="menu-row menu-row--danger" onClick={app.logout}>
               <LogOutIcon />
@@ -85,26 +96,31 @@ export function ProfileScreen() {
         </div>
       </div>
       {uiLangOpen && <UiLangDialog onClose={() => setUiLangOpen(false)} />}
+      {offlineAsk && (
+        <Modal onClose={() => setOfflineAsk(false)}>
+          <div className="dialog dialog--sheet" role="dialog" aria-modal="true" aria-label={t('mode.offTitle')} onClick={e => e.stopPropagation()}>
+            <div className="dialog-title" style={{ fontSize: 22 }}>{t('mode.offTitle')}</div>
+            <div className="dialog-body">{t('mode.offBody')}</div>
+            <div className="dialog-actions">
+              <button className="btn btn-ghost" onClick={() => setOfflineAsk(false)}>{t('common.cancel')}</button>
+              <button className="btn btn-primary" onClick={() => { setOfflineAsk(false); app.goOffline(); }}>{t('mode.offConfirm')}</button>
+            </div>
+          </div>
+        </Modal>
+      )}
       {llmOpen && <LlmDialog saved={llm} onClose={() => setLlmOpen(false)} onSaved={() => setLlmRev(n => n + 1)} />}
     </div>
   );
 }
 
-/** Who is signed in and their plan, or the way in for a guest. */
+/** Who is signed in and their plan (online mode). */
 function AccountCard() {
   const { t, uiLang } = useI18n();
   const app = useApp();
   const lay = useLayout();
   const user = app.user;
-  if (!user) {
-    return (
-      <div style={{ borderRadius: 34, background: 'var(--color-surface)', padding: 22, display: 'flex', flexDirection: 'column', gap: 10, alignItems: 'flex-start' }}>
-        <div className="display" style={{ fontSize: 22 }}>{t('profile.guestTitle')}</div>
-        <div style={{ fontSize: 13, color: 'var(--color-neutral-800)' }}>{t('profile.guestBody')}</div>
-        <button className="btn btn-primary" style={{ height: 44, padding: '0 22px' }} onClick={() => app.push({ s: 'login' })}>{t('profile.loginCta')}</button>
-      </div>
-    );
-  }
+  // Offline has no account; online without one is on the login screen instead.
+  if (!user) return null;
   const initials = user.name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
   const plan = app.plan;
   const until = plan?.expiresAt ? new Date(plan.expiresAt * 1000).toLocaleDateString(uiLang) : null;
