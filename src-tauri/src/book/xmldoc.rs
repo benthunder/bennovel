@@ -463,8 +463,7 @@ mod tests {
 <FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0" xmlns:l="http://www.w3.org/1999/xlink"><description><title-info><coverpage><image l:href="#cover.png"/></coverpage></title-info></description>
 <body><section><p>Một</p><image l:href="#pic.jpg"/><p>Hai</p></section></body>
 <binary id="cover.png" content-type="image/png">iVBORw==</binary><binary id="pic.jpg" content-type="image/jpeg">/9g=</binary></FictionBook>"##;
-        let mut book =
-            extract_fb2(Cursor::new(xml.as_bytes().to_vec()), &test_dir(), None).unwrap();
+        let mut book = extract_fb2(Cursor::new(xml.as_bytes().to_vec()), &test_dir(), None).unwrap();
         assert_eq!(
             texts(&mut book),
             vec!["\u{FFFC}cover.png", "Một", "\u{FFFC}pic.jpg", "Hai"]
