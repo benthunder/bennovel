@@ -1,13 +1,13 @@
 import { invoke } from '@tauri-apps/api/core';
-import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
+import { ask, open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { load, save } from './storage';
 
 /*
  * Backups: everything the app keeps, in one gzipped file the user picks: the
  * on-device library (books with their AI translations, favourites, history, replace
  * rules, glossaries, downloaded novels), the LLM settings with their API key, and the
- * app's settings below. Restoring merges the library (what the backup holds comes back
- * even if it was removed here since) and puts the settings back.
+ * app's settings below. Restoring replaces the library with the backup's, exactly as it
+ * was (same books, same chapters), and puts the settings back.
  * Native app only: the web build has no library file.
  */
 
@@ -45,14 +45,15 @@ export async function createBackup(user: string): Promise<boolean> {
 }
 
 /**
- * Asks for a backup file, merges it into the library and puts its settings back.
- * Resolves to false when cancelled, 'settings' when the app's settings changed (the
- * app should start again to use them), true otherwise.
+ * Asks for a backup file and, once `warning` is accepted, replaces the library with it
+ * and puts its settings back. Resolves to false when cancelled, 'settings' when the
+ * app's settings changed (the app should start again to use them), true otherwise.
  */
-export async function restoreBackup(user: string): Promise<boolean | 'settings'> {
+export async function restoreBackup(user: string, warning: string): Promise<boolean | 'settings'> {
   const android = /android/i.test(navigator.userAgent);
   const path = await openDialog({ multiple: false, filters: android ? undefined : [{ name: 'BenNovel backup', extensions: ['bnbackup'] }] });
   if (!path) return false;
+  if (!(await ask(warning, { kind: 'warning' }))) return false;
   const settings = await invoke<string | null>('library_restore', { user, path });
   return applySettings(settings) ? 'settings' : true;
 }

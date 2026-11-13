@@ -222,11 +222,12 @@ export const en = {
   'ai.hint': 'Uses the LLM set in Profile. If the book is already in the target language, the AI rewrites it in the chosen style with correct grammar.',
 
   // backup & restore (Profile)
-  'backup.hint': 'Everything: books with their AI translations, history, replace rules, glossaries, the wiki, app and reading settings, and the LLM (its API key too, so keep the file safe). Restoring merges it into this device.',
+  'backup.hint': 'Everything: books with their AI translations, history, replace rules, glossaries, the wiki, app and reading settings, and the LLM (its API key too, so keep the file safe). Restoring replaces the whole library on this device with the backup.',
   'backup.create': 'Create backup',
   'backup.restore': 'Restore',
   'backup.done': 'Backup saved.',
   'backup.restored': 'Backup restored.',
+  'backup.replaceAsk': 'The library on this device will be replaced by the backup; anything added since it was made will be lost. Continue?',
   'backup.failed': 'Couldn’t save the backup.',
   'backup.restoreFailed': 'Couldn’t restore this backup.',
   'backup.title': 'Backup & restore',

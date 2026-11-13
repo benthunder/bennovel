@@ -18,7 +18,8 @@ async function nativeApp(page: Page, { llm = true, queue = false } = {}) {
     Object.defineProperty(Navigator.prototype, 'onLine', { get: () => false });
     const book = { id: 7, format: 'txt', title: 'Device Diary', sections: [{ label: 'Part one', pages: null }, { label: 'Part two', pages: null }], pageImages: false };
     const w = window as unknown as Record<string, unknown>;
-    const calls: { cmd: string; args: Record<string, unknown> }[] = [];
+    // Kept across the reload that follows a restore.
+    const calls: { cmd: string; args: Record<string, unknown> }[] = JSON.parse(sessionStorage.getItem('__calls') ?? '[]');
     w.__calls = calls;
     let settings: unknown = llm ? { provider: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', hasKey: true } : null;
     // Chapter index → how many times it was translated.
@@ -43,6 +44,7 @@ async function nativeApp(page: Page, { llm = true, queue = false } = {}) {
       convertFileSrc: (p: string, proto: string) => `${proto}://localhost/${p}`,
       invoke: async (cmd: string, args: Record<string, unknown>) => {
         calls.push({ cmd, args });
+        sessionStorage.setItem('__calls', JSON.stringify(calls));
         switch (cmd) {
           case 'take_opened_files': return [];
           case 'library_list': return [imported];
@@ -82,6 +84,7 @@ async function nativeApp(page: Page, { llm = true, queue = false } = {}) {
           case 'ai_live': return live;
           case 'ai_versions': return [];
           case 'plugin:dialog|save': return '/home/lina/bennovel-backup.bnbackup';
+          case 'plugin:dialog|message': return 'Yes';
           case 'plugin:dialog|open': return '/home/lina/bennovel-backup.bnbackup';
           case 'library_backup': return 1024;
           case 'library_restore': return null;
