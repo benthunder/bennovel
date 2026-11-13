@@ -3,8 +3,16 @@
 //! chapter at a time, with the graph in translate.rs. Rows stay in the library file,
 //! so a queue cut short by closing the app carries on the next time it starts.
 //!
+//! A book's queue can be paused and carried on (`pause`, `resume`): the chapter being
+//! translated stops sending parts to the LLM, the parts back so far are kept
+//! (translate.rs `ai_parts`), and it starts from them when carried on. A chapter that
+//! fails keeps its parts the same way and can be tried again (`retry`).
+//!
 //! Events for the app: `ai-progress` after each chapter, `ai-paused` when the LLM
-//! can't be used (no settings, key turned down, no connection…), `ai-done` once the
+//! can't be used (no settings, key turned down, no connection…): the queue's chapters
+//! wait as `paused` with the error, and carry on when the app starts again or the
+//! user asks; `ai-stopped` when the user paused or stopped a chapter half way;
+//! `ai-done` once the
 //! last chapter of a request is through. A system notification shows when a request
 //! starts its first chapter and when its last one is through.
 //! `ai-live` as the chapter being worked on moves through the graph's nodes (null once
@@ -21,6 +29,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Runtime};
 use tokio::sync::mpsc;
@@ -50,7 +59,7 @@ impl Job {
 
 /// Queues the chapters from `from_index` (0-based) to the end that have no AI text in
 /// `lang` and `style` yet; returns how many were added. Chapters that failed before
-/// are tried again.
+/// are tried again, and paused ones of the same request carry on.
 pub fn enqueue(
     conn: &Connection,
     novel_id: i64,
@@ -61,6 +70,11 @@ pub fn enqueue(
 ) -> rusqlite::Result<usize> {
     conn.execute(
         "delete from ai_jobs where novel_id = ?1 and lang = ?2 and style = ?3 and status in ('done', 'failed')",
+        params![novel_id, lang, style],
+    )?;
+    conn.execute(
+        "update ai_jobs set status = 'queued', error = null
+         where novel_id = ?1 and lang = ?2 and style = ?3 and status = 'paused'",
         params![novel_id, lang, style],
     )?;
     conn.execute(
@@ -107,24 +121,67 @@ pub fn finish(conn: &Connection, id: i64, error: Option<&str>) -> rusqlite::Resu
     Ok(())
 }
 
-/// Puts a chapter back in the queue (the LLM can't be used right now).
-fn requeue(conn: &Connection, id: i64) -> rusqlite::Result<()> {
-    conn.execute("update ai_jobs set status = 'queued' where id = ?1", [id])?;
+/// The LLM can't be used right now: the chapter and everything queued after it wait,
+/// with the reason, until the app starts again or the user carries on.
+fn hold(conn: &Connection, id: i64, error: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "update ai_jobs set status = 'paused', error = ?2 where id = ?1 or status = 'queued'",
+        params![id, error],
+    )?;
     Ok(())
 }
 
-/// Chapters left running when the app closed go back in the queue.
+/// A chapter the user paused half way waits with its book (its parts are kept). Left
+/// alone when the book's queue was stopped meanwhile (the row is gone).
+fn set_paused(conn: &Connection, id: i64) -> rusqlite::Result<()> {
+    conn.execute(
+        "update ai_jobs set status = 'paused', error = null where id = ?1 and status = 'running'",
+        [id],
+    )?;
+    Ok(())
+}
+
+/// Chapters left running when the app closed go back in the queue, and so do the ones
+/// the LLM could not be used for (paused with an error); the ones the user paused wait.
 pub fn recover(conn: &Connection) -> rusqlite::Result<usize> {
     conn.execute(
-        "update ai_jobs set status = 'queued' where status = 'running'",
+        "update ai_jobs set status = 'queued', error = null
+         where status = 'running' or (status = 'paused' and error is not null)",
         [],
     )
 }
 
-/// Stops a book's queue; the chapter being translated still finishes.
+/// Pauses a book's queue: its waiting chapters wait as `paused`. The chapter being
+/// translated stops too, through the queue's stop flag (`Queue::stop`).
+pub fn pause(conn: &Connection, novel_id: i64) -> rusqlite::Result<usize> {
+    conn.execute(
+        "update ai_jobs set status = 'paused', error = null where novel_id = ?1 and status = 'queued'",
+        [novel_id],
+    )
+}
+
+/// Carries on a book's paused chapters.
+pub fn resume(conn: &Connection, novel_id: i64) -> rusqlite::Result<usize> {
+    conn.execute(
+        "update ai_jobs set status = 'queued', error = null where novel_id = ?1 and status = 'paused'",
+        [novel_id],
+    )
+}
+
+/// Tries a book's failed chapters again; each starts from the parts it has.
+pub fn retry(conn: &Connection, novel_id: i64) -> rusqlite::Result<usize> {
+    conn.execute(
+        "update ai_jobs set status = 'queued', error = null where novel_id = ?1 and status = 'failed'",
+        [novel_id],
+    )
+}
+
+/// Stops a book's queue: chapters waiting or paused are taken out, and the one being
+/// translated stops through the queue's stop flag. Chapters done so far stay, and so
+/// do the parts of the unfinished ones, for when the book is asked again.
 pub fn cancel(conn: &Connection, novel_id: i64) -> rusqlite::Result<usize> {
     conn.execute(
-        "delete from ai_jobs where novel_id = ?1 and status = 'queued'",
+        "delete from ai_jobs where novel_id = ?1 and status in ('queued', 'paused', 'running')",
         [novel_id],
     )
 }
@@ -141,12 +198,16 @@ pub struct Progress {
     pub failed: i64,
     pub queued: i64,
     pub running: i64,
+    pub paused: i64,
+    /// Why the queue is waiting, when the LLM could not be used (an `AiError` text).
+    pub error: Option<String>,
 }
 
 pub fn progress(conn: &Connection, novel_id: i64) -> rusqlite::Result<Vec<Progress>> {
     let mut stmt = conn.prepare(
         "select novel_id, lang, style, count(*), sum(status = 'done'), sum(status = 'failed'),
-           sum(status = 'queued'), sum(status = 'running')
+           sum(status = 'queued'), sum(status = 'running'), sum(status = 'paused'),
+           max(case when status = 'paused' then error end)
          from ai_jobs where novel_id = ?1 group by lang, style order by min(created_at) desc",
     )?;
     let rows = stmt.query_map([novel_id], |r| {
@@ -159,6 +220,8 @@ pub fn progress(conn: &Connection, novel_id: i64) -> rusqlite::Result<Vec<Progre
             failed: r.get(5)?,
             queued: r.get(6)?,
             running: r.get(7)?,
+            paused: r.get(8)?,
+            error: r.get(9)?,
         })
     })?;
     rows.collect()
@@ -198,6 +261,13 @@ struct DoneEvent {
     title: String,
     #[serde(flatten)]
     progress: Progress,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StoppedEvent {
+    user: String,
+    novel_id: i64,
 }
 
 #[derive(Clone, Serialize)]
@@ -250,6 +320,8 @@ enum Step {
     Idle,
     Did(Progress, Option<String>),
     Paused(i64, AiError),
+    /// The user paused or stopped the book half way through a chapter.
+    Stopped(i64),
 }
 
 struct Wake {
@@ -264,6 +336,8 @@ pub struct Queue {
     ui_lang: Mutex<HashMap<PathBuf, String>>,
     /// The chapter being worked on, per library file.
     live: Mutex<HashMap<PathBuf, Live>>,
+    /// Set to stop the chapter being worked on, per library file.
+    stops: Mutex<HashMap<PathBuf, Arc<AtomicBool>>>,
     /// Wakes the wiki queue.
     wiki_tx: mpsc::UnboundedSender<Wake>,
 }
@@ -304,6 +378,22 @@ impl Queue {
             wiki_tx,
             ui_lang: Mutex::new(HashMap::new()),
             live: Mutex::new(HashMap::new()),
+            stops: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Stops the chapter being translated in this library file if it is one of this
+    /// book's; returns whether one was.
+    pub fn stop(&self, db: &PathBuf, novel_id: i64) -> bool {
+        if self.live(db).is_none_or(|l| l.novel_id != novel_id) {
+            return false;
+        }
+        match self.stops.lock().unwrap().get(db) {
+            Some(flag) => {
+                flag.store(true, Ordering::SeqCst);
+                true
+            }
+            None => false,
         }
     }
 
@@ -363,7 +453,18 @@ async fn work<R: Runtime>(app: &AppHandle<R>, wake: &Wake) {
     };
     loop {
         let (db_file, r, s) = (wake.db.clone(), report.clone(), started.clone());
-        let step = tauri::async_runtime::spawn_blocking(move || step(&db_file, r, s))
+        // A new flag for each chapter, so a stop meant for one never stops the next.
+        let stop = Arc::new(AtomicBool::new(false));
+        {
+            use tauri::Manager;
+            if let Some(q) = app.try_state::<Queue>() {
+                q.stops
+                    .lock()
+                    .unwrap()
+                    .insert(wake.db.clone(), stop.clone());
+            }
+        }
+        let step = tauri::async_runtime::spawn_blocking(move || step(&db_file, r, s, stop))
             .await
             .unwrap_or_else(|e| Err(AiError::Other(e.to_string())));
         if !matches!(step, Ok(Step::Did(..))) {
@@ -396,6 +497,15 @@ async fn work<R: Runtime>(app: &AppHandle<R>, wake: &Wake) {
                         },
                     );
                 }
+            }
+            Ok(Step::Stopped(novel_id)) => {
+                let _ = app.emit(
+                    "ai-stopped",
+                    StoppedEvent {
+                        user: wake.user.clone(),
+                        novel_id,
+                    },
+                );
             }
             Ok(Step::Paused(novel_id, e)) => {
                 let _ = app.emit(
@@ -442,7 +552,12 @@ async fn learn_wiki<R: Runtime>(app: &AppHandle<R>, wake: &Wake) {
 }
 
 /// Translates the next queued chapter of a library file.
-fn step(db_file: &std::path::Path, report: Report, started: Started) -> Result<Step, AiError> {
+fn step(
+    db_file: &std::path::Path,
+    report: Report,
+    started: Started,
+    stop: Arc<AtomicBool>,
+) -> Result<Step, AiError> {
     let conn = db::open(db_file)?;
     let Some(job) = claim(&conn)? else {
         return Ok(Step::Idle);
@@ -485,9 +600,10 @@ fn step(db_file: &std::path::Path, report: Report, started: Started) -> Result<S
         }),
         learn_in_background: false,
         learn_found_later: true,
+        stop: Some(stop),
     };
     let Some(config) = llm::load(&conn)? else {
-        requeue(&conn, job.id)?;
+        hold(&conn, job.id, &AiError::NotSet.to_string())?;
         return Ok(Step::Paused(job.novel_id, AiError::NotSet));
     };
     let model = std::sync::Arc::new(llm::OpenAi::new(config));
@@ -499,13 +615,20 @@ fn step(db_file: &std::path::Path, report: Report, started: Started) -> Result<S
         translate::run_with(&conn, model, job.request(), hooks).map(|_| ())
     } {
         Ok(_) => finish(&conn, job.id, None)?,
+        Err(AiError::Stopped) => {
+            set_paused(&conn, job.id)?;
+            return Ok(Step::Stopped(job.novel_id));
+        }
         Err(e) if pauses(&e) => {
-            requeue(&conn, job.id)?;
+            hold(&conn, job.id, &e.to_string())?;
             return Ok(Step::Paused(job.novel_id, e));
         }
         Err(e) => finish(&conn, job.id, Some(&e.to_string()))?,
     }
-    let p = progress_of(&conn, &job)?.ok_or(AiError::Other("job vanished".into()))?;
+    // The book's queue was stopped while this chapter finished.
+    let Some(p) = progress_of(&conn, &job)? else {
+        return Ok(Step::Stopped(job.novel_id));
+    };
     // The last chapter of this request: the book's title for the notification.
     let finished = if p.queued + p.running == 0 {
         book_title(&conn, job.novel_id)?
@@ -656,6 +779,63 @@ mod tests {
                 Stage::Learn
             ]
         );
+    }
+
+    fn statuses(conn: &Connection) -> Vec<(i64, String, Option<String>)> {
+        conn.prepare("select chapter_id, status, error from ai_jobs order by chapter_id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_book_pauses_carries_on_and_retries() {
+        let (conn, novel) = book("queue-pause");
+        assert_eq!(enqueue(&conn, novel, 0, "vi", "natural", true).unwrap(), 2);
+        let job = claim(&conn).unwrap().unwrap();
+        // Paused: the waiting chapter waits, the running one is stopped by its flag and
+        // waits too.
+        assert_eq!(pause(&conn, novel).unwrap(), 1);
+        set_paused(&conn, job.id).unwrap();
+        assert!(claim(&conn).unwrap().is_none());
+        let p = &progress(&conn, novel).unwrap()[0];
+        assert_eq!((p.paused, p.queued, p.error.as_deref()), (2, 0, None));
+        // A paused book waits when the app starts again.
+        assert_eq!(recover(&conn).unwrap(), 0);
+        assert_eq!(resume(&conn, novel).unwrap(), 2);
+        assert_eq!(claim(&conn).unwrap().unwrap().chapter_id, 10);
+
+        // The LLM can't be used: everything waits with the reason, and carries on when
+        // the app starts again.
+        hold(&conn, job.id, "llm-network: down").unwrap();
+        let p = &progress(&conn, novel).unwrap()[0];
+        assert_eq!(
+            (p.paused, p.error.as_deref()),
+            (2, Some("llm-network: down"))
+        );
+        assert_eq!(recover(&conn).unwrap(), 2);
+        assert!(statuses(&conn)
+            .iter()
+            .all(|s| s.1 == "queued" && s.2.is_none()));
+
+        // A failed chapter is tried again.
+        let job = claim(&conn).unwrap().unwrap();
+        finish(&conn, job.id, Some("llm-empty")).unwrap();
+        assert_eq!(retry(&conn, novel).unwrap(), 1);
+        assert_eq!(statuses(&conn)[0], (10, "queued".to_string(), None));
+
+        // Asking for the book again carries a paused request on.
+        pause(&conn, novel).unwrap();
+        assert_eq!(enqueue(&conn, novel, 0, "vi", "natural", true).unwrap(), 0);
+        assert_eq!(progress(&conn, novel).unwrap()[0].queued, 2);
+
+        // Stopped: running chapters go too, and a stopped chapter is not paused back.
+        let job = claim(&conn).unwrap().unwrap();
+        assert_eq!(cancel(&conn, novel).unwrap(), 2);
+        set_paused(&conn, job.id).unwrap();
+        assert!(statuses(&conn).is_empty());
     }
 
     #[test]

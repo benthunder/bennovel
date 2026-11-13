@@ -796,15 +796,64 @@ pub fn ai_live<R: Runtime>(
     Ok(queue.live(&db_path(&app, &user)?))
 }
 
-/// Stops a book's background translation (chapters done so far stay).
+/// Stops a book's background translation: the chapter being translated stops at the
+/// parts it has, the waiting ones are taken out (chapters done so far stay).
 #[tauri::command]
 pub async fn ai_cancel<R: Runtime>(
     app: AppHandle<R>,
+    queue: State<'_, Queue>,
     user: String,
     novel_id: i64,
 ) -> Result<usize, AiError> {
     let path = db_path(&app, &user)?;
-    ai_blocking(move || Ok(queue::cancel(&db::open(&path)?, novel_id)?)).await
+    let db_file = path.clone();
+    let n = ai_blocking(move || Ok(queue::cancel(&db::open(&db_file)?, novel_id)?)).await?;
+    queue.stop(&path, novel_id);
+    Ok(n)
+}
+
+/// Pauses a book's background translation: the chapter being translated stops and
+/// keeps the parts it has, the others wait until `ai_resume_book`.
+#[tauri::command]
+pub async fn ai_pause<R: Runtime>(
+    app: AppHandle<R>,
+    queue: State<'_, Queue>,
+    user: String,
+    novel_id: i64,
+) -> Result<usize, AiError> {
+    let path = db_path(&app, &user)?;
+    let db_file = path.clone();
+    let n = ai_blocking(move || Ok(queue::pause(&db::open(&db_file)?, novel_id)?)).await?;
+    Ok(n + queue.stop(&path, novel_id) as usize)
+}
+
+/// Carries on a book's paused translation (paused by the user or by an LLM error) and,
+/// with `failed`, tries its failed chapters again; each starts from the parts it has.
+#[tauri::command]
+pub async fn ai_resume_book<R: Runtime>(
+    app: AppHandle<R>,
+    queue: State<'_, Queue>,
+    user: String,
+    novel_id: i64,
+    failed: bool,
+    ui_lang: Option<String>,
+) -> Result<usize, AiError> {
+    let path = db_path(&app, &user)?;
+    let db_file = path.clone();
+    let n = ai_blocking(move || {
+        let conn = db::open(&db_file)?;
+        let retried = if failed {
+            queue::retry(&conn, novel_id)?
+        } else {
+            0
+        };
+        Ok(queue::resume(&conn, novel_id)? + retried)
+    })
+    .await?;
+    if n > 0 {
+        queue.kick(path, user, ui_lang);
+    }
+    Ok(n)
 }
 
 /// Carries on a queue left waiting: after the app starts, a new LLM key, a connection back.
