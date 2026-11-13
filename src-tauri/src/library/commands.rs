@@ -894,6 +894,7 @@ pub async fn library_backup<R: Runtime>(
                 &db_file.with_extension("backup"),
                 &gz,
                 settings.as_deref(),
+                Some(&super::originals_dir(&db_file)),
             )?;
             let mut opts = OpenOptions::new();
             opts.write(true).create(true).truncate(true);
@@ -908,8 +909,8 @@ pub async fn library_backup<R: Runtime>(
     .await
 }
 
-/// Brings back a backup picked by the user, merged into the library: what it holds
-/// returns even if it was deleted here since. Returns the app's settings kept in the
+/// Brings back a backup picked by the user: the library is replaced by the backup's,
+/// exactly as it was (same books and chapters). Returns the app's settings kept in the
 /// backup (JSON), for the app to apply.
 #[tauri::command]
 pub async fn library_restore<R: Runtime>(
@@ -928,12 +929,8 @@ pub async fn library_restore<R: Runtime>(
             &mut conn,
             std::io::BufReader::new(file),
             &db_file.with_extension("restore"),
+            Some(&super::originals_dir(&db_file)),
         )?;
-        for id in restored.gone {
-            if let Some(f) = super::original_file(&db_file, id) {
-                let _ = std::fs::remove_file(f);
-            }
-        }
         Ok(restored.settings)
     })
     .await

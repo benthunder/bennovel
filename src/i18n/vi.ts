@@ -232,11 +232,12 @@ export const vi: Record<MessageKey, string> = {
   'ai.hint': 'Dùng LLM đã cài ở Cá nhân. Nếu sách đã là ngôn ngữ đích, AI sẽ viết lại theo văn phong đã chọn và đúng ngữ pháp.',
 
   // sao lưu & khôi phục (Cá nhân)
-  'backup.hint': 'Toàn bộ: sách kèm bản dịch AI, lịch sử, quy tắc thay thế, từ điển, wiki, cài đặt app và cài đặt đọc, cùng LLM (gồm cả API key, hãy giữ file cẩn thận). Khôi phục sẽ gộp vào máy này.',
+  'backup.hint': 'Toàn bộ: sách kèm bản dịch AI, lịch sử, quy tắc thay thế, từ điển, wiki, cài đặt app và cài đặt đọc, cùng LLM (gồm cả API key, hãy giữ file cẩn thận). Khôi phục sẽ thay toàn bộ thư viện trên máy này bằng bản sao lưu.',
   'backup.create': 'Tạo bản sao lưu',
   'backup.restore': 'Khôi phục',
   'backup.done': 'Đã lưu bản sao lưu.',
   'backup.restored': 'Đã khôi phục bản sao lưu.',
+  'backup.replaceAsk': 'Thư viện trên máy này sẽ được thay bằng bản sao lưu, những gì thêm sau lúc sao lưu sẽ mất. Tiếp tục?',
   'backup.failed': 'Không lưu được bản sao lưu.',
   'backup.restoreFailed': 'Không khôi phục được bản sao lưu này.',
   'backup.title': 'Sao lưu & khôi phục',
