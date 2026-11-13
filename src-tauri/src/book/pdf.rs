@@ -1,5 +1,5 @@
 use super::image::{self, Image};
-use super::text::pdf_text_to_paragraphs;
+use super::text::pdf_pages_to_paragraphs;
 use super::{BookError, BookSource, Section, SectionMeta};
 use pdfium_render::prelude::*;
 use std::path::PathBuf;
@@ -75,7 +75,7 @@ impl BookSource for PdfBook {
             return Err(BookError::NoSection(index));
         }
         let last = (first + PAGES_PER_SECTION).min(self.pages);
-        let mut paragraphs = Vec::new();
+        let mut pages = Vec::new();
         for i in first..last {
             let page = self
                 .doc
@@ -83,8 +83,9 @@ impl BookSource for PdfBook {
                 .get(i as PdfPageIndex)
                 .map_err(|e| BookError::Parse(e.to_string()))?;
             let text = page.text().map_err(|e| BookError::Parse(e.to_string()))?;
-            paragraphs.extend(pdf_text_to_paragraphs(&text.all()));
+            pages.push(text.all());
         }
+        let paragraphs = pdf_pages_to_paragraphs(&pages);
         Ok(Section { index, paragraphs })
     }
 
