@@ -1105,7 +1105,7 @@ pub fn learn(
         let msg = match llm.chat_tools(&messages, &tools) {
             Ok(m) => m,
             Err(e) if round == 0 && tools_refused(&e) => {
-                let reply = llm.chat(&json_prompt(lang), &input)?;
+                let reply = AiError::keep_cut(llm.chat(&json_prompt(lang), &input))?;
                 changes += apply_json(conn, novel_id, lang, chapter, &reply)?;
                 break;
             }
@@ -1600,7 +1600,7 @@ fn ask_batch(
         Section::Entries => json!({ "entries": list }),
         Section::Relations => json!({ "relations": list }),
     };
-    let error = match llm.chat(system, &user.to_string()) {
+    let error = match AiError::keep_cut(llm.chat(system, &user.to_string())) {
         Ok(reply) => match parse_object::<Translated>(&reply) {
             Some(mut t) => {
                 let id = |i: usize| items.get(i).map(|(id, _)| *id);
