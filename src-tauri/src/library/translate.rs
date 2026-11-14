@@ -479,7 +479,7 @@ fn source_text(conn: &Connection, chapter_id: i64) -> Result<(String, String), A
          where t.chapter_id = ?1 and t.source <> 'ai'
          order by t.lang = n.original_lang desc, t.source = 'original' desc limit 1",
         [chapter_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
+        |r| Ok((r.get(0)?, super::blocks::plain(&r.get::<_, String>(1)?))),
     )
     .optional()?
     .ok_or_else(|| AiError::Other("chapter has no text".into()))
@@ -519,7 +519,7 @@ fn detect_input(
         .query_row(
             "select c.id from chapters c where c.novel_id = ?1 and exists (
                select 1 from chapter_translations t where t.chapter_id = c.id and t.source <> 'ai'
-                 and length(trim(t.content)) > 0)
+                 and length(trim(t.content)) > 0 and trim(t.content) <> '[]')
              order by c.number limit 1",
             [novel_id],
             |r| r.get(0),
@@ -1075,7 +1075,7 @@ fn save(
     paragraphs: &[String],
     model: &str,
 ) -> rusqlite::Result<()> {
-    let content = paragraphs.join("\n\n");
+    let content = super::blocks::encode(paragraphs);
     conn.execute(
         "insert into chapter_translations (chapter_id, lang, style, source, state, title, content, word_count, model)
          values (?1, ?2, ?3, 'ai', 'published', ?4, ?5, ?6, ?7)
@@ -1088,7 +1088,7 @@ fn save(
             req.style,
             title,
             content,
-            super::word_count(&content),
+            super::word_count(&paragraphs.join("\n\n")),
             model
         ],
     )?;
@@ -1113,7 +1113,7 @@ pub fn get(
             let source: String = r.get(3)?;
             Ok(Translated {
                 title: r.get(0)?,
-                paragraphs: split_paragraphs(&content),
+                paragraphs: super::blocks::paragraphs(&content),
                 mode: if source == lang {
                     Mode::Rewrite
                 } else {
