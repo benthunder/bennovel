@@ -152,7 +152,12 @@ pub fn save(
            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
          where source = 'original'
            and chapter_id = (select id from chapters where novel_id = ?1 and number = ?2)",
-        params![novel_id, index as i64 + 1, paragraphs.join("\n\n"), words],
+        params![
+            novel_id,
+            index as i64 + 1,
+            super::blocks::encode(&paragraphs),
+            words
+        ],
     )?;
     let next = if index + 1 >= chapters {
         DONE.to_string()
@@ -249,7 +254,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(content, "Dòng một của trang ba.\n\nTrang bốn.");
+        assert_eq!(
+            content,
+            r#"[{"type":"text","content":["Dòng một của trang ba."]},{"type":"text","content":["Trang bốn."]}]"#
+        );
         assert!(next(&conn, &db_file, open).unwrap().is_none());
         assert_eq!(
             db::get_state(&conn, "ocr:7").unwrap().as_deref(),
