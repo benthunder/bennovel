@@ -3,6 +3,7 @@
 //! never held in memory whole; reading then loads chapters from SQLite on demand
 //! through the same windowed reader as a book file (`DbBook`).
 
+pub mod blocks;
 pub mod cast;
 pub mod commands;
 pub mod db;
@@ -211,7 +212,7 @@ pub fn import(
                 .filter(|p| image::key_of(p).is_none())
                 .map(|p| word_count(p))
                 .sum();
-            let content = section.paragraphs.join("\n\n");
+            let content = blocks::encode(&section.paragraphs);
             // Titles and numbers are stored as the book gives them (its table of
             // contents, or a folder's file names); nothing is guessed from the text.
             let title = meta.label.clone().or_else(|| source.section_title(i));
@@ -528,8 +529,8 @@ impl DbBook {
             .filter(|s| s.len() == chapters.len())
         {
             if chapters.iter().any(|c| c.3.is_none()) {
-                let mut set = conn
-                    .prepare("update chapters set page_from = ?2, page_to = ?3 where id = ?1")?;
+                let mut set =
+                    conn.prepare("update chapters set page_from = ?2, page_to = ?3 where id = ?1")?;
                 for (c, s) in chapters.iter_mut().zip(&pages) {
                     if let (None, Some(p)) = (c.3, s.pages) {
                         set.execute(params![c.0, p[0], p[1]])?;
@@ -608,11 +609,7 @@ impl BookSource for DbBook {
         let content = content.unwrap_or_default();
         Ok(Section {
             index,
-            paragraphs: content
-                .split("\n\n")
-                .filter(|p| !p.is_empty())
-                .map(String::from)
-                .collect(),
+            paragraphs: blocks::paragraphs(&content),
         })
     }
 }

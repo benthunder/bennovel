@@ -75,7 +75,8 @@ create table chapter_translations (
   source     text not null check (source in ('original', 'human', 'ai')),
   state      text not null default 'draft' check (state in ('draft', 'published')),
   title      text not null,
-  -- Plain text, paragraphs separated by a blank line.
+  -- Plain text, paragraphs separated by a blank line; JSON blocks since migration 18
+  -- (blocks.rs).
   content    text not null,
   word_count integer not null default 0,
   model      text,
@@ -520,7 +521,16 @@ create table ai_parts (
 alter table chapters add column page_from integer;
 alter table chapters add column page_to integer;
 "#,
+    r#"
+-- `chapter_translations.content` becomes a JSON array of blocks and sentences
+-- (blocks.rs): [{"type":"text","content":["…","…"]},{"type":"img","content":"img_0003"}].
+-- The rows kept as plain text are rewritten by `blocks::convert_all` (see `migrate`).
+select 1;
+"#,
 ];
+
+/// The migration (1-based) after which `content` holds blocks.
+const BLOCKS_VERSION: usize = 18;
 
 /// Epoch milliseconds now.
 pub fn now_ms() -> i64 {
@@ -575,6 +585,9 @@ fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         for (i, sql) in MIGRATIONS.iter().enumerate().skip(done as usize) {
             let tx = conn.transaction()?;
             tx.execute_batch(sql)?;
+            if i + 1 == BLOCKS_VERSION {
+                super::blocks::convert_all(&tx)?;
+            }
             tx.pragma_update(None, "user_version", i as i64 + 1)?;
             tx.commit()?;
         }
@@ -587,6 +600,33 @@ fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn old_plain_text_becomes_blocks() {
+        assert!(MIGRATIONS[BLOCKS_VERSION - 1].contains("blocks::convert_all"));
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..BLOCKS_VERSION - 1] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", BLOCKS_VERSION as i64 - 1)
+            .unwrap();
+        conn.execute_batch(
+            "insert into authors (id, slug, name) values (1, 'a', 'A');
+             insert into novels (id, slug, author_id, original_lang, book_key) values (1, 'n', 1, 'vi', 'k');
+             insert into chapters (id, novel_id, number) values (1, 1, 1);
+             insert into chapter_translations (chapter_id, lang, source, title, content)
+               values (1, 'vi', 'original', 'C1', 'Câu một. Câu hai.' || char(10, 10, 65532) || 'img_1');",
+        )
+        .unwrap();
+        migrate(&mut conn).unwrap();
+        let content: String = conn
+            .query_row("select content from chapter_translations", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            content,
+            r#"[{"type":"text","content":["Câu một.","Câu hai."]},{"type":"img","content":"img_1"}]"#
+        );
+    }
 
     #[test]
     fn the_multilingual_wiki_keeps_older_entries_and_relations() {
