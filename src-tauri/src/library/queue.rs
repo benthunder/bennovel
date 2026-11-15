@@ -85,7 +85,8 @@ pub fn enqueue(
            and exists (select 1 from chapter_translations t where t.chapter_id = c.id and t.source <> 'ai'
                        and length(trim(t.content)) > 0 and trim(t.content) <> '[]')
            and not exists (select 1 from chapter_translations t where t.chapter_id = c.id
-                           and t.lang = ?3 and t.style = ?4 and t.source = 'ai')",
+                           and t.lang = ?3 and t.style = ?4 and t.source = 'ai'
+                             and t.state = 'published')",
         params![novel_id, from_index as i64, lang, style, glossary, db::now_ms()],
     )
 }

@@ -397,7 +397,7 @@ fn merge_ai_texts(tx: &Transaction, rid: i64, lid: i64) -> rusqlite::Result<()> 
          from r.chapter_translations t
          join r.chapters rc on rc.id = t.chapter_id
          join main.chapters c on c.novel_id = ?2 and c.number = rc.number
-         where rc.novel_id = ?1 and t.source = 'ai'
+         where rc.novel_id = ?1 and t.source = 'ai' and t.state = 'published'
          on conflict (chapter_id, lang, style) do update set
            title = excluded.title, content = excluded.content, word_count = excluded.word_count,
            model = excluded.model, updated_at = excluded.updated_at
@@ -437,7 +437,7 @@ fn copy_book(tx: &Transaction, rid: i64) -> rusqlite::Result<i64> {
           from r.chapter_translations t
           join r.chapters rc on rc.id = t.chapter_id
           join main.chapters c on c.novel_id = {lid} and c.number = rc.number
-          where rc.novel_id = {rid};
+          where rc.novel_id = {rid} and (t.source <> 'ai' or t.state = 'published');
         insert into main.chapter_images (novel_id, key, mime, data)
           select {lid}, key, mime, data from r.chapter_images where novel_id = {rid};
         insert into main.glossary_entries (novel_id, term_key, lang, value, note, created_at, updated_at)

@@ -29,6 +29,12 @@
 //! Each part's reply is kept in `ai_parts` as it comes back, so a chapter that is
 //! paused, or that fails on one part, carries on from the parts it has the next time
 //! instead of sending them all again; the save node clears them.
+//!
+//! A part is whole blocks of the original's `content` (blocks.rs), never a cut one,
+//! and the translation keeps one block per block of the original, in the same place
+//! of the array. As a part comes back its blocks are written at their places in the
+//! translation's `content` (the row is a `draft`, the blocks still to come `null`);
+//! the save node publishes it. Only a published row counts as a translation.
 
 use super::llm::{AiError, Chat};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -215,7 +221,8 @@ pub fn run_with(
     }
     Ok(Translated {
         title: out.out_title,
-        paragraphs: out.out,
+        // `out` has a place for every block; the reader gets those with text.
+        paragraphs: out.out.into_iter().filter(|p| !p.is_empty()).collect(),
         mode: out.mode.unwrap_or(Mode::Translate),
         model: Some(model),
     })
@@ -322,7 +329,8 @@ fn graph(
                     let system = |part: &str| format!("{system}{}{extract}", f.cast.prompt(part));
                     let title = (!f.title.trim().is_empty())
                         .then(|| (title_prompt(&f.req.lang), f.title.clone()));
-                    let cache = PartCache::open(&f.db, &f.req)?;
+                    let cache = PartCache::open(&f.db, &f.req)?
+                        .map(|c| c.with_draft(&f.title, &f.paragraphs));
                     let (out, title, found) = run_chunks(
                         llm.as_ref(),
                         &system,
@@ -360,7 +368,8 @@ fn graph(
                     let system = rewrite_prompt(&f.req.lang, &f.req.style, &f.wiki);
                     let extract = super::wiki::extract_prompt(&f.req.lang, WIKI_MARK);
                     let system = |part: &str| format!("{system}{}{extract}", f.cast.prompt(part));
-                    let cache = PartCache::open(&f.db, &f.req)?;
+                    let cache = PartCache::open(&f.db, &f.req)?
+                        .map(|c| c.with_draft(&f.title, &f.paragraphs));
                     let (out, _, found) = run_chunks(
                         llm.as_ref(),
                         &system,
@@ -698,45 +707,37 @@ fn run_chunks(
     cache: Option<&PartCache>,
     stop: Option<&AtomicBool>,
 ) -> Result<Parts, AiError> {
-    enum Piece<'a> {
-        Picture(&'a str),
-        Text(Vec<&'a str>),
-    }
-    let mut pieces = Vec::new();
+    // Whole blocks are gathered up to about `CHUNK_CHARS`: a part is the blocks
+    // `start..start + len` of the chapter, and a picture ends the part before it.
+    let mut pieces: Vec<(usize, Vec<&str>)> = Vec::new();
     let mut chunk: Vec<&str> = Vec::new();
     let mut size = 0;
-    for p in paragraphs {
-        if p.starts_with(IMAGE_MARK) {
-            if !chunk.is_empty() {
-                pieces.push(Piece::Text(std::mem::take(&mut chunk)));
-            }
-            size = 0;
-            pieces.push(Piece::Picture(p));
-            continue;
-        }
+    for (i, p) in paragraphs.iter().enumerate() {
+        let picture = p.starts_with(IMAGE_MARK);
         let len = p.chars().count();
-        if size > 0 && size + len > CHUNK_CHARS {
-            pieces.push(Piece::Text(std::mem::take(&mut chunk)));
+        if !chunk.is_empty() && (picture || size + len > CHUNK_CHARS) {
+            pieces.push((i - chunk.len(), std::mem::take(&mut chunk)));
             size = 0;
         }
-        size += len;
-        chunk.push(p);
+        if !picture {
+            size += len;
+            chunk.push(p);
+        }
     }
     if !chunk.is_empty() {
-        pieces.push(Piece::Text(chunk));
+        pieces.push((paragraphs.len() - chunk.len(), chunk));
     }
 
     // The requests: each text part with the end of the one before it, then the title.
     let mut before: Option<&str> = None;
     let mut asks: Vec<Ask> = Vec::new();
-    for piece in &pieces {
-        if let Piece::Text(paras) = piece {
-            asks.push(Ask::Part {
-                paras: paras.clone(),
-                context: before.map(context_of),
-            });
-            before = paras.last().copied();
-        }
+    for (start, paras) in &pieces {
+        asks.push(Ask::Part {
+            start: *start,
+            paras: paras.clone(),
+            context: before.map(context_of),
+        });
+        before = paras.last().copied();
     }
     let parts = asks.len();
     if let Some((prompt, text)) = &title {
@@ -757,6 +758,9 @@ fn run_chunks(
     if let Some(c) = cache {
         for (i, ask) in asks.iter().enumerate() {
             if let Some(reply) = c.get(&key(i, &ask.text()))? {
+                if let Some((start, blocks)) = ask.blocks(&reply) {
+                    c.place(start, &blocks)?;
+                }
                 *replies[i].lock().unwrap() = Some(reply);
                 kept += 1;
             }
@@ -784,7 +788,7 @@ fn run_chunks(
                     return;
                 }
                 let reply = match ask {
-                    Ask::Part { paras, context } => {
+                    Ask::Part { paras, context, .. } => {
                         let prompt = |text: &str| match context {
                             Some(c) => format!("{}{}", system(text), context_prompt(c)),
                             None => system(text),
@@ -799,6 +803,12 @@ fn run_chunks(
                             // Not kept is only slower next time: the part is asked again.
                             if let Err(e) = c.put(&key(i, &ask.text()), &reply) {
                                 eprintln!("ai part cache: {e}");
+                            }
+                            // The part's blocks go in the translation where they belong.
+                            if let Some((start, blocks)) = ask.blocks(&reply) {
+                                if let Err(e) = c.place(start, &blocks) {
+                                    eprintln!("ai draft: {e}");
+                                }
                             }
                         }
                         *replies[i].lock().unwrap() = Some(reply);
@@ -821,19 +831,30 @@ fn run_chunks(
     let mut replies = replies
         .into_iter()
         .map(|r| r.into_inner().unwrap().unwrap_or_default());
-    let mut out = Vec::with_capacity(paragraphs.len());
-    let mut found = Vec::new();
-    for piece in &pieces {
-        match piece {
-            Piece::Picture(p) => out.push(p.to_string()),
-            Piece::Text(paras) => {
-                let reply = replies.next().unwrap_or_default();
-                let (text, facts) = split_reply(&reply);
-                if let Some(facts) = facts {
-                    found.push(facts.to_string());
-                }
-                out.extend(reply_paragraphs(&clean(text), paras.len()));
+    // Put back by place: pictures stay where they are, each part's blocks go where
+    // the blocks it was made from are.
+    let mut out: Vec<String> = paragraphs
+        .iter()
+        .map(|p| {
+            if p.starts_with(IMAGE_MARK) {
+                p.clone()
+            } else {
+                String::new()
             }
+        })
+        .collect();
+    let mut found = Vec::new();
+    for (start, paras) in &pieces {
+        let reply = replies.next().unwrap_or_default();
+        let (text, facts) = split_reply(&reply);
+        if let Some(facts) = facts {
+            found.push(facts.to_string());
+        }
+        for (k, block) in fit(reply_paragraphs(&clean(text), paras.len()), paras.len())
+            .into_iter()
+            .enumerate()
+        {
+            out[start + k] = block;
         }
     }
     let title = (total > parts).then(|| replies.next().unwrap_or_default());
@@ -842,8 +863,10 @@ fn run_chunks(
 
 /// One request of `run_chunks`.
 enum Ask<'a> {
-    /// Paragraphs of the chapter, with the end of the part before them.
+    /// Paragraphs of the chapter (blocks `start..` of it), with the end of the part
+    /// before them.
     Part {
+        start: usize,
         paras: Vec<&'a str>,
         context: Option<String>,
     },
@@ -859,6 +882,33 @@ impl Ask<'_> {
             Ask::Title(_, text) => text.to_string(),
         }
     }
+
+    /// Where a part's `reply` goes in the chapter: its first block and one paragraph
+    /// per block sent. None for the title.
+    fn blocks(&self, reply: &str) -> Option<(usize, Vec<String>)> {
+        match self {
+            Ask::Part { start, paras, .. } => {
+                let text = clean(split_reply(reply).0);
+                Some((
+                    *start,
+                    fit(reply_paragraphs(&text, paras.len()), paras.len()),
+                ))
+            }
+            Ask::Title(..) => None,
+        }
+    }
+}
+
+/// A reply's paragraphs as exactly `n`, one per block sent, so each lands on the block
+/// it translates: paragraphs past the last block join it (as lines), blocks the reply
+/// has nothing for stay empty.
+fn fit(mut paras: Vec<String>, n: usize) -> Vec<String> {
+    if paras.len() > n && n > 0 {
+        let rest = paras.split_off(n - 1);
+        paras.push(rest.join("\n"));
+    }
+    paras.resize(n, String::new());
+    paras
 }
 
 /// Characters of the part before that go with a part as context.
@@ -998,6 +1048,14 @@ struct PartCache {
     chapter_id: i64,
     lang: String,
     style: String,
+    /// The translation as it stands, one place per block of the original (`None`:
+    /// not translated yet), written to `content` as a draft after each part.
+    draft: Mutex<Option<Draft>>,
+}
+
+struct Draft {
+    title: String,
+    slots: Vec<Option<String>>,
 }
 
 impl PartCache {
@@ -1011,7 +1069,52 @@ impl PartCache {
             chapter_id: req.chapter_id,
             lang: req.lang.clone(),
             style: req.style.clone(),
+            draft: Mutex::new(None),
         }))
+    }
+
+    /// Keeps the translation in `content` as its parts come back (`place`), starting
+    /// from the original's pictures. `title` stands in until the save node's.
+    fn with_draft(self, title: &str, paragraphs: &[String]) -> Self {
+        let slots = paragraphs
+            .iter()
+            .map(|p| p.starts_with(IMAGE_MARK).then(|| p.clone()))
+            .collect();
+        *self.draft.lock().unwrap() = Some(Draft {
+            title: title.to_string(),
+            slots,
+        });
+        self
+    }
+
+    /// Writes `blocks` at places `start..` of the translation's `content`. A row
+    /// already published (a chapter translated again) is left as it is until the
+    /// save node replaces it.
+    fn place(&self, start: usize, blocks: &[String]) -> rusqlite::Result<()> {
+        let mut draft = self.draft.lock().unwrap();
+        let Some(draft) = draft.as_mut() else {
+            return Ok(());
+        };
+        for (k, block) in blocks.iter().enumerate() {
+            if let Some(slot) = draft.slots.get_mut(start + k) {
+                *slot = Some(block.clone());
+            }
+        }
+        self.conn.lock().unwrap().execute(
+            "insert into chapter_translations (chapter_id, lang, style, source, state, title, content)
+             values (?1, ?2, ?3, 'ai', 'draft', ?4, ?5)
+             on conflict (chapter_id, lang, style) do update set content = excluded.content,
+               updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             where chapter_translations.state = 'draft'",
+            params![
+                self.chapter_id,
+                self.lang,
+                self.style,
+                draft.title,
+                super::blocks::encode_slots(&draft.slots)
+            ],
+        )?;
+        Ok(())
     }
 
     fn get(&self, part: &str) -> rusqlite::Result<Option<String>> {
@@ -1075,13 +1178,15 @@ fn save(
     paragraphs: &[String],
     model: &str,
 ) -> rusqlite::Result<()> {
-    let content = super::blocks::encode(paragraphs);
+    // One block per block of the original, each in its place.
+    let slots: Vec<Option<&String>> = paragraphs.iter().map(Some).collect();
+    let content = super::blocks::encode_slots(&slots);
     conn.execute(
         "insert into chapter_translations (chapter_id, lang, style, source, state, title, content, word_count, model)
          values (?1, ?2, ?3, 'ai', 'published', ?4, ?5, ?6, ?7)
          on conflict (chapter_id, lang, style) do update set title = excluded.title,
            content = excluded.content, word_count = excluded.word_count, model = excluded.model,
-           source = 'ai', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+           source = 'ai', state = 'published', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
         params![
             req.chapter_id,
             req.lang,
@@ -1106,7 +1211,8 @@ pub fn get(
         "select t.title, t.content, t.model, coalesce(b.source_lang, n.original_lang)
          from chapter_translations t join chapters c on c.id = t.chapter_id
          join novels n on n.id = c.novel_id left join ai_books b on b.novel_id = n.id
-         where t.chapter_id = ?1 and t.lang = ?2 and t.style = ?3 and t.source = 'ai'",
+         where t.chapter_id = ?1 and t.lang = ?2 and t.style = ?3 and t.source = 'ai'
+           and t.state = 'published'",
         params![chapter_id, lang, style],
         |r| {
             let content: String = r.get(1)?;
@@ -1150,6 +1256,7 @@ pub fn versions(conn: &Connection, novel_id: i64) -> rusqlite::Result<Vec<Versio
         "select t.lang, t.style, count(*) from chapter_translations t
          join chapters c on c.id = t.chapter_id
          where c.novel_id = ?1 and t.source = 'ai' and t.style is not null
+           and t.state = 'published'
          group by t.lang, t.style order by max(t.updated_at) desc",
     )?;
     let rows = stmt.query_map([novel_id], |r| {
@@ -1179,7 +1286,7 @@ pub fn marks(conn: &Connection, novel_id: i64) -> rusqlite::Result<Vec<Mark>> {
         "with c as (select id, row_number() over (order by number) - 1 as idx
                     from chapters where novel_id = ?1)
          select c.idx, t.lang, t.style, t.model from chapter_translations t join c on c.id = t.chapter_id
-         where t.source = 'ai' and t.style is not null
+         where t.source = 'ai' and t.style is not null and t.state = 'published'
          order by c.idx, t.updated_at desc",
     )?;
     let rows = stmt.query_map([novel_id], |r| {
@@ -1642,9 +1749,37 @@ pub(crate) mod tests {
         // The two other parts and the title came back and are kept.
         assert_eq!(kept_parts(&conn), 3);
         assert!(get(&conn, chapter, "vi", "natural").unwrap().is_none());
+        // Their blocks are already in the translation's content, each in its place;
+        // the failed part's two are still to come.
+        let stored = |conn: &Connection| -> (String, Vec<serde_json::Value>) {
+            let (state, content): (String, String) = conn
+                .query_row(
+                    "select state, content from chapter_translations
+                     where chapter_id = ?1 and source = 'ai'",
+                    [chapter],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            (state, serde_json::from_str(&content).unwrap())
+        };
+        let (state, blocks) = stored(&conn);
+        assert_eq!(state, "draft");
+        assert_eq!(blocks.len(), 6);
+        for (i, block) in blocks.iter().enumerate() {
+            if i == 4 || i == 5 {
+                assert!(block.is_null(), "block {i}: {block}");
+            } else {
+                let first = block["content"][0].as_str().unwrap();
+                assert!(first.starts_with(&format!("[tr] p{i} ")), "block {i}");
+            }
+        }
+        assert!(versions(&conn, 1).unwrap().is_empty());
 
         let llm = Arc::new(Fake::new("en"));
         let out = run(&conn, llm.clone(), req(chapter, "vi")).unwrap();
+        let (state, blocks) = stored(&conn);
+        assert_eq!(state, "published");
+        assert!(blocks.iter().all(|b| b["type"] == "text"));
         // Only the failed part went to the LLM again (and the language question).
         let asked: Vec<String> = llm
             .calls
@@ -1814,6 +1949,10 @@ pub(crate) mod tests {
         assert_eq!(reply_paragraphs("a\nb\nc", 1), vec!["a\nb\nc"]);
         assert_eq!(half_by_size(&["aaaa", "b", "c", "d"]), 1);
         assert_eq!(half_by_size(&["a", "b"]), 1);
+        // One paragraph per block sent, whatever the reply's count.
+        let p = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(fit(p(&["a", "b", "c"]), 2), p(&["a", "b\nc"]));
+        assert_eq!(fit(p(&["a"]), 3), p(&["a", "", ""]));
     }
 
     #[test]

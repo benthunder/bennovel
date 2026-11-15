@@ -44,6 +44,23 @@ pub fn of_paragraphs<S: AsRef<str>>(paragraphs: &[S]) -> Vec<Block> {
         .collect()
 }
 
+/// What `content` stores for a chapter still being translated: one entry per block of
+/// the original, in the same place. `None` is a block not translated yet (`null`), an
+/// empty paragraph a block the translation left empty.
+pub fn encode_slots<S: AsRef<str>>(slots: &[Option<S>]) -> String {
+    let blocks: Vec<Option<Block>> = slots
+        .iter()
+        .map(|slot| {
+            let p = slot.as_ref()?.as_ref();
+            Some(match image::key_of(p) {
+                Some(key) => Block::Img(key.to_string()),
+                None => Block::Text(sentences(p)),
+            })
+        })
+        .collect();
+    serde_json::to_string(&blocks).unwrap_or_else(|_| "[]".into())
+}
+
 /// What `content` stores for these paragraphs.
 pub fn encode<S: AsRef<str>>(paragraphs: &[S]) -> String {
     serde_json::to_string(&of_paragraphs(paragraphs)).unwrap_or_else(|_| "[]".into())
@@ -52,9 +69,10 @@ pub fn encode<S: AsRef<str>>(paragraphs: &[S]) -> String {
 /// The paragraphs of a stored `content`. Text from before blocks (paragraphs separated
 /// by a blank line) is read too.
 pub fn paragraphs(content: &str) -> Vec<String> {
-    match serde_json::from_str::<Vec<Block>>(content.trim_start()) {
+    match serde_json::from_str::<Vec<Option<Block>>>(content.trim_start()) {
         Ok(blocks) => blocks
             .into_iter()
+            .flatten()
             .map(|b| match b {
                 Block::Text(s) => join(&s),
                 Block::Img(key) => image::paragraph(&key),
@@ -113,7 +131,7 @@ pub fn convert_all(conn: &rusqlite::Connection) -> rusqlite::Result<usize> {
         let mut update =
             conn.prepare("update chapter_translations set content = ?2 where id = ?1")?;
         for (id, content) in &rows {
-            if serde_json::from_str::<Vec<Block>>(content.trim_start()).is_ok() {
+            if serde_json::from_str::<Vec<Option<Block>>>(content.trim_start()).is_ok() {
                 continue;
             }
             update.execute(rusqlite::params![id, encode(&paragraphs(content))])?;
@@ -290,6 +308,16 @@ mod tests {
         assert_eq!(super::paragraphs(&paragraphs.join("\n\n")), paragraphs);
         let zh = ["林动睁开眼睛。“这是哪里？”他喃喃道。"];
         assert_eq!(super::paragraphs(&encode(&zh)), zh);
+    }
+
+    #[test]
+    fn a_chapter_half_translated_keeps_each_block_in_its_place() {
+        let stored = encode_slots(&[Some("Một. Hai."), None, Some("\u{FFFC}k"), Some("")]);
+        assert_eq!(
+            stored,
+            r#"[{"type":"text","content":["Một.","Hai."]},null,{"type":"img","content":"k"},{"type":"text","content":[]}]"#
+        );
+        assert_eq!(paragraphs(&stored), vec!["Một. Hai.", "\u{FFFC}k"]);
     }
 
     #[test]
