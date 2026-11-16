@@ -389,6 +389,34 @@ fn author_for(tx: &Transaction, rid: i64) -> rusqlite::Result<i64> {
 /// AI translations made on the other device for a book both have: per chapter,
 /// language and style, the newer one wins.
 fn merge_ai_texts(tx: &Transaction, rid: i64, lid: i64) -> rusqlite::Result<()> {
+    // The translations the other device's copy wins: their segments are replaced by
+    // its own, position by position (ids are each device's own).
+    let won: Vec<(i64, i64, String, String)> = tx
+        .prepare(
+            "select rc.id, c.id, t.lang, t.style from r.chapter_translations t
+             join r.chapters rc on rc.id = t.chapter_id
+             join main.chapters c on c.novel_id = ?2 and c.number = rc.number
+             where rc.novel_id = ?1 and t.source = 'ai' and t.state = 'published'
+               and not exists (select 1 from main.chapter_translations m
+                 where m.chapter_id = c.id and m.lang = t.lang and m.style = t.style
+                   and m.updated_at >= t.updated_at)",
+        )?
+        .query_map(params![rid, lid], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    for (remote, local, lang, style) in won {
+        tx.execute(
+            "delete from main.segments where chapter_id = ?1 and lang = ?2 and style = ?3",
+            params![local, lang, style],
+        )?;
+        tx.execute(
+            "insert into main.segments (chapter_id, lang, style, position, type, content)
+             select ?2, lang, style, position, type, content from r.segments
+             where chapter_id = ?1 and lang = ?3 and style = ?4",
+            params![remote, local, lang, style],
+        )?;
+    }
     tx.execute(
         "insert into main.chapter_translations (chapter_id, lang, style, source, state, title, content,
             word_count, model, created_at, updated_at)
@@ -400,7 +428,7 @@ fn merge_ai_texts(tx: &Transaction, rid: i64, lid: i64) -> rusqlite::Result<()> 
          where rc.novel_id = ?1 and t.source = 'ai' and t.state = 'published'
          on conflict (chapter_id, lang, style) do update set
            title = excluded.title, content = excluded.content, word_count = excluded.word_count,
-           model = excluded.model, updated_at = excluded.updated_at
+           model = excluded.model, state = excluded.state, updated_at = excluded.updated_at
          where excluded.updated_at > chapter_translations.updated_at",
         params![rid, lid],
     )?;
@@ -438,6 +466,14 @@ fn copy_book(tx: &Transaction, rid: i64) -> rusqlite::Result<i64> {
           join r.chapters rc on rc.id = t.chapter_id
           join main.chapters c on c.novel_id = {lid} and c.number = rc.number
           where rc.novel_id = {rid} and (t.source <> 'ai' or t.state = 'published');
+        insert into main.segments (chapter_id, lang, style, position, type, content)
+          select c.id, s.lang, s.style, s.position, s.type, s.content
+          from r.segments s
+          join r.chapters rc on rc.id = s.chapter_id
+          join main.chapters c on c.novel_id = {lid} and c.number = rc.number
+          where rc.novel_id = {rid} and not exists (
+            select 1 from r.chapter_translations t where t.chapter_id = s.chapter_id
+              and t.lang = s.lang and t.style = s.style and t.source = 'ai' and t.state = 'draft');
         insert into main.chapter_images (novel_id, key, mime, data)
           select {lid}, key, mime, data from r.chapter_images where novel_id = {rid};
         insert into main.glossary_entries (novel_id, term_key, lang, value, note, created_at, updated_at)
@@ -624,6 +660,51 @@ mod tests {
         .unwrap()
         .collect::<rusqlite::Result<_>>()
         .unwrap()
+    }
+
+    #[test]
+    fn segments_travel_with_the_book_and_its_translations() {
+        use super::super::{segments, translate};
+        let (mut a, pa) = device("seg-a");
+        let (mut b, pb) = device("seg-b");
+        let id =
+            super::super::import(&mut a, BookFormat::Txt, &mut Book, "thu.txt", |_, _| {}).unwrap();
+        let chapter = |conn: &Connection| translate::chapter_at(conn, id_of(conn), 0).unwrap().unwrap();
+        fn id_of(conn: &Connection) -> i64 {
+            conn.query_row("select id from novels", [], |r| r.get(0)).unwrap()
+        }
+        assert_eq!(id, id_of(&a));
+        let raw = segments::paragraphs(&a, chapter(&a), "vi", None).unwrap();
+        assert!(!raw.is_empty());
+        send(&a, &pa, &mut b, &pb);
+        assert_eq!(segments::paragraphs(&b, chapter(&b), "vi", None).unwrap(), raw);
+
+        // Translated on A afterwards: B gets the segments at the same positions.
+        let translate = |conn: &Connection, text: &str| {
+            conn.execute(
+                "insert into chapter_translations (chapter_id, lang, style, source, state, title, content, updated_at)
+                 values (?1, 'en', 'natural', 'ai', 'published', 'T', '', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                 on conflict (chapter_id, lang, style) do update set updated_at = excluded.updated_at",
+                [chapter(conn)],
+            )
+            .unwrap();
+            segments::write(conn, chapter(conn), "en", Some("natural"), &[text]).unwrap();
+        };
+        translate(&a, "First. Second.");
+        send(&a, &pa, &mut b, &pb);
+        let on = |conn: &Connection| {
+            segments::paragraphs(conn, chapter(conn), "en", Some("natural")).unwrap()
+        };
+        assert_eq!(on(&b), vec!["First. Second."]);
+        // A newer one made on B replaces A's.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        translate(&b, "Newer.");
+        send(&b, &pb, &mut a, &pa);
+        assert_eq!(on(&a), vec!["Newer."]);
+        let rows: i64 = a
+            .query_row("select count(*) from segments where lang = 'en'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1);
     }
 
     #[test]

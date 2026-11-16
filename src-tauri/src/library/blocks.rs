@@ -1,4 +1,5 @@
-//! A chapter's text as stored in `chapter_translations.content`: a JSON array of blocks,
+//! Sentences, and a chapter's text as `chapter_translations.content` stored it before
+//! table `segments` (segments.rs) took over: a JSON array of blocks,
 //! one per paragraph, each `type` + `content`:
 //!
 //! ```json
@@ -44,21 +45,21 @@ pub fn of_paragraphs<S: AsRef<str>>(paragraphs: &[S]) -> Vec<Block> {
         .collect()
 }
 
-/// What `content` stores for a chapter still being translated: one entry per block of
-/// the original, in the same place. `None` is a block not translated yet (`null`), an
-/// empty paragraph a block the translation left empty.
-pub fn encode_slots<S: AsRef<str>>(slots: &[Option<S>]) -> String {
-    let blocks: Vec<Option<Block>> = slots
-        .iter()
-        .map(|slot| {
-            let p = slot.as_ref()?.as_ref();
-            Some(match image::key_of(p) {
-                Some(key) => Block::Img(key.to_string()),
-                None => Block::Text(sentences(p)),
+/// The paragraphs of a stored `content`, one per block and in its place: None for a
+/// block not translated yet (`null`). For the move to table `segments`.
+pub fn slots(content: &str) -> Vec<Option<String>> {
+    match serde_json::from_str::<Vec<Option<Block>>>(content.trim_start()) {
+        Ok(blocks) => blocks
+            .into_iter()
+            .map(|b| {
+                Some(match b? {
+                    Block::Text(s) => join(&s),
+                    Block::Img(key) => image::paragraph(&key),
+                })
             })
-        })
-        .collect();
-    serde_json::to_string(&blocks).unwrap_or_else(|_| "[]".into())
+            .collect(),
+        Err(_) => paragraphs(content).into_iter().map(Some).collect(),
+    }
 }
 
 /// What `content` stores for these paragraphs.
@@ -89,13 +90,8 @@ pub fn paragraphs(content: &str) -> Vec<String> {
     }
 }
 
-/// The stored `content` as plain text, paragraphs separated by a blank line.
-pub fn plain(content: &str) -> String {
-    paragraphs(content).join("\n\n")
-}
-
 /// A paragraph from its sentences: a space between them, none after Chinese/Japanese.
-fn join(sentences: &[String]) -> String {
+pub fn join(sentences: &[String]) -> String {
     let mut out = String::new();
     for s in sentences {
         let tight = out
@@ -312,12 +308,17 @@ mod tests {
 
     #[test]
     fn a_chapter_half_translated_keeps_each_block_in_its_place() {
-        let stored = encode_slots(&[Some("Một. Hai."), None, Some("\u{FFFC}k"), Some("")]);
+        let stored = r#"[{"type":"text","content":["Một.","Hai."]},null,{"type":"img","content":"k"},{"type":"text","content":[]}]"#;
         assert_eq!(
-            stored,
-            r#"[{"type":"text","content":["Một.","Hai."]},null,{"type":"img","content":"k"},{"type":"text","content":[]}]"#
+            slots(stored),
+            vec![
+                Some("Một. Hai.".to_string()),
+                None,
+                Some("\u{FFFC}k".into()),
+                Some(String::new())
+            ]
         );
-        assert_eq!(paragraphs(&stored), vec!["Một. Hai.", "\u{FFFC}k"]);
+        assert_eq!(paragraphs(stored), vec!["Một. Hai.", "\u{FFFC}k"]);
     }
 
     #[test]

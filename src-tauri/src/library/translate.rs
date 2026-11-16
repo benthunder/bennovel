@@ -482,16 +482,20 @@ fn check_request(req: &Request) -> Result<(), AiError> {
 
 /// The chapter's own text: the original (or a human one), never an AI result.
 fn source_text(conn: &Connection, chapter_id: i64) -> Result<(String, String), AiError> {
-    conn.query_row(
-        "select t.title, t.content from chapter_translations t
-         join chapters c on c.id = t.chapter_id join novels n on n.id = c.novel_id
-         where t.chapter_id = ?1 and t.source <> 'ai'
-         order by t.lang = n.original_lang desc, t.source = 'original' desc limit 1",
-        [chapter_id],
-        |r| Ok((r.get(0)?, super::blocks::plain(&r.get::<_, String>(1)?))),
-    )
-    .optional()?
-    .ok_or_else(|| AiError::Other("chapter has no text".into()))
+    let (title, lang, content): (String, String, String) = conn
+        .query_row(
+            "select t.title, t.lang, t.content from chapter_translations t
+             join chapters c on c.id = t.chapter_id join novels n on n.id = c.novel_id
+             where t.chapter_id = ?1 and t.source <> 'ai'
+             order by t.lang = n.original_lang desc, t.source = 'original' desc limit 1",
+            [chapter_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?
+        .ok_or_else(|| AiError::Other("chapter has no text".into()))?;
+    // The raw segments, in order: a part's place in this list is its position.
+    let paragraphs = super::segments::paragraphs_or(conn, chapter_id, &lang, None, &content)?;
+    Ok((title, paragraphs.join("\n\n")))
 }
 
 fn split_paragraphs(content: &str) -> Vec<String> {
@@ -526,10 +530,13 @@ fn detect_input(
     }
     let first: Option<i64> = conn
         .query_row(
-            "select c.id from chapters c where c.novel_id = ?1 and exists (
-               select 1 from chapter_translations t where t.chapter_id = c.id and t.source <> 'ai'
-                 and length(trim(t.content)) > 0 and trim(t.content) <> '[]')
-             order by c.number limit 1",
+            &format!(
+                "select c.id from chapters c where c.novel_id = ?1 and exists (
+                   select 1 from chapter_translations t where t.chapter_id = c.id and t.source <> 'ai'
+                     and {})
+                 order by c.number limit 1",
+                super::segments::HAS_TEXT
+            ),
             [novel_id],
             |r| r.get(0),
         )
@@ -1055,7 +1062,8 @@ struct PartCache {
 
 struct Draft {
     title: String,
-    slots: Vec<Option<String>>,
+    /// The original's pictures and their positions, put in with the first part.
+    pictures: Vec<(usize, String)>,
 }
 
 impl PartCache {
@@ -1073,48 +1081,61 @@ impl PartCache {
         }))
     }
 
-    /// Keeps the translation in `content` as its parts come back (`place`), starting
-    /// from the original's pictures. `title` stands in until the save node's.
+    /// Keeps the translation in `segments` as its parts come back (`place`), with
+    /// the original's pictures. `title` stands in until the save node's.
     fn with_draft(self, title: &str, paragraphs: &[String]) -> Self {
-        let slots = paragraphs
+        let pictures = paragraphs
             .iter()
-            .map(|p| p.starts_with(IMAGE_MARK).then(|| p.clone()))
+            .enumerate()
+            .filter(|(_, p)| p.starts_with(IMAGE_MARK))
+            .map(|(i, p)| (i, p.clone()))
             .collect();
         *self.draft.lock().unwrap() = Some(Draft {
             title: title.to_string(),
-            slots,
+            pictures,
         });
         self
     }
 
-    /// Writes `blocks` at places `start..` of the translation's `content`. A row
-    /// already published (a chapter translated again) is left as it is until the
-    /// save node replaces it.
+    /// Writes `blocks` as the translation's segments at positions `start..`, the
+    /// positions of the raw segments they translate. The row is a draft until the
+    /// save node publishes it; one already published (a chapter translated again) is
+    /// left as it is, with its segments, until the save node replaces them.
     fn place(&self, start: usize, blocks: &[String]) -> rusqlite::Result<()> {
         let mut draft = self.draft.lock().unwrap();
         let Some(draft) = draft.as_mut() else {
             return Ok(());
         };
-        for (k, block) in blocks.iter().enumerate() {
-            if let Some(slot) = draft.slots.get_mut(start + k) {
-                *slot = Some(block.clone());
-            }
-        }
-        self.conn.lock().unwrap().execute(
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
             "insert into chapter_translations (chapter_id, lang, style, source, state, title, content)
-             values (?1, ?2, ?3, 'ai', 'draft', ?4, ?5)
-             on conflict (chapter_id, lang, style) do update set content = excluded.content,
+             values (?1, ?2, ?3, 'ai', 'draft', ?4, '')
+             on conflict (chapter_id, lang, style) do update set
                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              where chapter_translations.state = 'draft'",
-            params![
-                self.chapter_id,
-                self.lang,
-                self.style,
-                draft.title,
-                super::blocks::encode_slots(&draft.slots)
-            ],
+            params![self.chapter_id, self.lang, self.style, draft.title],
         )?;
-        Ok(())
+        let state: String = conn.query_row(
+            "select state from chapter_translations
+             where chapter_id = ?1 and lang = ?2 and style = ?3",
+            params![self.chapter_id, self.lang, self.style],
+            |r| r.get(0),
+        )?;
+        if state != "draft" {
+            return Ok(());
+        }
+        let style = Some(self.style.as_str());
+        for (position, picture) in draft.pictures.drain(..) {
+            super::segments::put(
+                &conn,
+                self.chapter_id,
+                &self.lang,
+                style,
+                position,
+                &[picture],
+            )?;
+        }
+        super::segments::put(&conn, self.chapter_id, &self.lang, style, start, blocks)
     }
 
     fn get(&self, part: &str) -> rusqlite::Result<Option<String>> {
@@ -1178,10 +1199,11 @@ fn save(
     paragraphs: &[String],
     model: &str,
 ) -> rusqlite::Result<()> {
-    // One block per block of the original, each in its place.
-    let slots: Vec<Option<&String>> = paragraphs.iter().map(Some).collect();
-    let content = super::blocks::encode_slots(&slots);
-    conn.execute(
+    // The row and its segments change together. `paragraphs` has one entry per block
+    // of the original, so an entry's index is the position of its segment.
+    let tx = conn.unchecked_transaction()?;
+    let content = "";
+    tx.execute(
         "insert into chapter_translations (chapter_id, lang, style, source, state, title, content, word_count, model)
          values (?1, ?2, ?3, 'ai', 'published', ?4, ?5, ?6, ?7)
          on conflict (chapter_id, lang, style) do update set title = excluded.title,
@@ -1197,7 +1219,8 @@ fn save(
             model
         ],
     )?;
-    Ok(())
+    super::segments::write(&tx, req.chapter_id, &req.lang, Some(&req.style), paragraphs)?;
+    tx.commit()
 }
 
 /// The AI text of a chapter in `lang` and `style`, if it was made.
@@ -1207,29 +1230,39 @@ pub fn get(
     lang: &str,
     style: &str,
 ) -> rusqlite::Result<Option<Translated>> {
-    conn.query_row(
-        "select t.title, t.content, t.model, coalesce(b.source_lang, n.original_lang)
+    let found = conn
+        .query_row(
+            "select t.title, t.content, t.model, coalesce(b.source_lang, n.original_lang)
          from chapter_translations t join chapters c on c.id = t.chapter_id
          join novels n on n.id = c.novel_id left join ai_books b on b.novel_id = n.id
          where t.chapter_id = ?1 and t.lang = ?2 and t.style = ?3 and t.source = 'ai'
            and t.state = 'published'",
-        params![chapter_id, lang, style],
-        |r| {
-            let content: String = r.get(1)?;
-            let source: String = r.get(3)?;
-            Ok(Translated {
-                title: r.get(0)?,
-                paragraphs: super::blocks::paragraphs(&content),
-                mode: if source == lang {
-                    Mode::Rewrite
-                } else {
-                    Mode::Translate
-                },
-                model: r.get(2)?,
-            })
-        },
-    )
-    .optional()
+            params![chapter_id, lang, style],
+            |r| {
+                let content: String = r.get(1)?;
+                let source: String = r.get(3)?;
+                Ok((
+                    content,
+                    Translated {
+                        title: r.get(0)?,
+                        paragraphs: Vec::new(),
+                        mode: if source == lang {
+                            Mode::Rewrite
+                        } else {
+                            Mode::Translate
+                        },
+                        model: r.get(2)?,
+                    },
+                ))
+            },
+        )
+        .optional()?;
+    let Some((content, mut translated)) = found else {
+        return Ok(None);
+    };
+    translated.paragraphs =
+        super::segments::paragraphs_or(conn, chapter_id, lang, Some(style), &content)?;
+    Ok(Some(translated))
 }
 
 /// The id of a book's chapter at `index` (0-based reading order).
@@ -1449,6 +1482,11 @@ pub(crate) mod tests {
             .query_row("select content from chapter_translations where chapter_id = 11 and source = 'original'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(original, "Second chapter.");
+        // The rewrite is its own segments, with the language and style.
+        assert_eq!(
+            super::super::segments::paragraphs(&conn, 11, "en", Some("natural")).unwrap(),
+            vec!["[re] Second chapter."]
+        );
     }
 
     #[test]
@@ -1749,37 +1787,50 @@ pub(crate) mod tests {
         // The two other parts and the title came back and are kept.
         assert_eq!(kept_parts(&conn), 3);
         assert!(get(&conn, chapter, "vi", "natural").unwrap().is_none());
-        // Their blocks are already in the translation's content, each in its place;
-        // the failed part's two are still to come.
-        let stored = |conn: &Connection| -> (String, Vec<serde_json::Value>) {
-            let (state, content): (String, String) = conn
+        // Their blocks are already segments of the translation, each at the position
+        // of the raw segment it translates; the failed part's two are still to come.
+        let stored = |conn: &Connection| -> (String, Vec<(i64, String)>) {
+            let state: String = conn
                 .query_row(
-                    "select state, content from chapter_translations
-                     where chapter_id = ?1 and source = 'ai'",
+                    "select state from chapter_translations where chapter_id = ?1 and source = 'ai'",
                     [chapter],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
+                    |r| r.get(0),
                 )
                 .unwrap();
-            (state, serde_json::from_str(&content).unwrap())
+            let segments = conn
+                .prepare(
+                    "select position, content from segments
+                     where chapter_id = ?1 and lang = 'vi' and style = 'natural' order by position",
+                )
+                .unwrap()
+                .query_map([chapter], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            (state, segments)
         };
-        let (state, blocks) = stored(&conn);
+        let (state, segments) = stored(&conn);
         assert_eq!(state, "draft");
-        assert_eq!(blocks.len(), 6);
-        for (i, block) in blocks.iter().enumerate() {
-            if i == 4 || i == 5 {
-                assert!(block.is_null(), "block {i}: {block}");
-            } else {
-                let first = block["content"][0].as_str().unwrap();
-                assert!(first.starts_with(&format!("[tr] p{i} ")), "block {i}");
-            }
+        assert_eq!(
+            segments.iter().map(|s| s.0).collect::<Vec<_>>(),
+            vec![0, 1, 2, 3]
+        );
+        for (position, content) in &segments {
+            assert!(
+                content.starts_with(&format!("[\"[tr] p{position} ")),
+                "{content}"
+            );
         }
         assert!(versions(&conn, 1).unwrap().is_empty());
 
         let llm = Arc::new(Fake::new("en"));
         let out = run(&conn, llm.clone(), req(chapter, "vi")).unwrap();
-        let (state, blocks) = stored(&conn);
+        let (state, segments) = stored(&conn);
         assert_eq!(state, "published");
-        assert!(blocks.iter().all(|b| b["type"] == "text"));
+        assert_eq!(
+            segments.iter().map(|s| s.0).collect::<Vec<_>>(),
+            vec![0, 1, 2, 3, 4, 5]
+        );
         // Only the failed part went to the LLM again (and the language question).
         let asked: Vec<String> = llm
             .calls
