@@ -453,8 +453,8 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
 
       {langMenu && (
         <div onClick={() => setLangMenu(null)} style={{ position: 'fixed', inset: 0, zIndex: 40 }}>
-          <div role="menu" aria-label={t('reader.viewLang')} onClick={e => e.stopPropagation()}
-            style={{ position: 'fixed', top: langMenu.bottom + 6, right: Math.max(8, window.innerWidth - langMenu.right), minWidth: 190, padding: 6, borderRadius: 16, background: 'var(--color-surface)', color: 'var(--color-text)', boxShadow: 'var(--shadow-lg)' }}>
+          <div role="menu" aria-label={t('reader.viewLang')} onClick={e => e.stopPropagation()} className="glass"
+            style={{ position: 'fixed', top: langMenu.bottom + 6, right: Math.max(8, window.innerWidth - langMenu.right), minWidth: 190, padding: 6, borderRadius: 16, background: 'var(--glass-bg-strong)', border: '1px solid var(--glass-edge)', color: 'var(--color-text)', boxShadow: 'var(--glass-shadow)' }}>
             {viewLangs.map(l => (
               <button key={l} role="menuitemradio" aria-checked={l === viewLang} onClick={() => pickView(l)}
                 style={{ display: 'flex', width: '100%', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '10px 12px', border: 'none', borderRadius: 10, background: l === viewLang ? 'color-mix(in srgb, var(--color-accent) 16%, transparent)' : 'none', color: 'inherit', font: 'inherit', fontSize: 14, fontWeight: l === viewLang ? 700 : 500, cursor: 'pointer', textAlign: 'left' }}>

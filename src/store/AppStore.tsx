@@ -47,10 +47,11 @@ export interface ReaderThemeStyle {
 const PAPER_GRAIN = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 .09 0 0 0 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")`;
 
 export const READER_THEMES: Record<ReaderTheme, ReaderThemeStyle> = {
-  // Cream and sage keep their own warm colours: the app theme is blue, a reading page need not be.
-  cream: { bg: '#f5ead8', fg: '#201e1d' },
+  // Blue and white only. The keys stay as they were so saved settings still apply:
+  // 'cream' is now plain white and 'sage' a pale blue.
+  cream: { bg: '#ffffff', fg: '#0e1d42' },
   paper: { bg: 'var(--color-neutral-100)', fg: 'var(--color-text)' },
-  sage: { bg: '#e1eecc', fg: '#272e1b' },
+  sage: { bg: '#e3eeff', fg: '#0f2752' },
   night: { bg: 'var(--color-neutral-900)', fg: 'var(--color-neutral-200)' },
   eink: {
     bg: `${PAPER_GRAIN} #ecebe6`,
