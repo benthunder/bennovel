@@ -9,7 +9,7 @@ export interface LocalSectionMeta {
   label: string | null;
   /** First and last page (1-based) for PDF sections. */
   pages: [number, number] | null;
-  /** Chapter number to show ("Chương 12"): from the file name for folder imports, or a "Chương 12:" heading. */
+  /** Chapter number to show ("Chương 12"), as stored: its place in a folder import. Never read off the text. */
   number?: number;
 }
 
