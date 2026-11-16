@@ -527,10 +527,30 @@ alter table chapters add column page_to integer;
 -- The rows kept as plain text are rewritten by `blocks::convert_all` (see `migrate`).
 select 1;
 "#,
+    r#"
+-- A chapter's content, one row per block (segments.rs). The book's own text (raw) has
+-- style '' and `position` is the block's place in the chapter, from 0; a translation
+-- is other rows with its language and AI style, each at the position of the raw
+-- segment it translates. `content`: a JSON array of sentences for text, the key in
+-- chapter_images for img. `chapter_translations` keeps the title, state and model;
+-- its `content` is moved here by `segments::migrate_all` (see `migrate`) and left ''.
+create table segments (
+  id         integer primary key,
+  chapter_id integer not null references chapters (id) on delete cascade,
+  lang       text not null,
+  style      text not null default '',
+  position   integer not null check (position >= 0),
+  type       text not null check (type in ('text', 'img')),
+  content    text not null,
+  unique (chapter_id, lang, style, position)
+);
+"#,
 ];
 
 /// The migration (1-based) after which `content` holds blocks.
 const BLOCKS_VERSION: usize = 18;
+/// The migration (1-based) that moves `content` into table `segments`.
+const SEGMENTS_VERSION: usize = 19;
 
 /// Epoch milliseconds now.
 pub fn now_ms() -> i64 {
@@ -588,6 +608,9 @@ fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
             if i + 1 == BLOCKS_VERSION {
                 super::blocks::convert_all(&tx)?;
             }
+            if i + 1 == SEGMENTS_VERSION {
+                super::segments::migrate_all(&tx)?;
+            }
             tx.pragma_update(None, "user_version", i as i64 + 1)?;
             tx.commit()?;
         }
@@ -618,14 +641,50 @@ mod tests {
                values (1, 'vi', 'original', 'C1', 'Câu một. Câu hai.' || char(10, 10, 65532) || 'img_1');",
         )
         .unwrap();
+        // An older app's AI text, half way: its second block was still to come.
+        conn.execute(
+            "insert into chapter_translations (chapter_id, lang, style, source, state, title, content)
+             values (1, 'en', 'natural', 'ai', 'draft', 'C1', ?1)",
+            [r#"[null,{"type":"img","content":"img_1"}]"#],
+        )
+        .unwrap();
         migrate(&mut conn).unwrap();
-        let content: String = conn
-            .query_row("select content from chapter_translations", [], |r| r.get(0))
+        assert!(MIGRATIONS[SEGMENTS_VERSION - 1].contains("create table segments"));
+        let rows: Vec<(String, String, i64, String, String)> = conn
+            .prepare("select lang, style, position, type, content from segments order by lang desc, position")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
             .unwrap();
         assert_eq!(
-            content,
-            r#"[{"type":"text","content":["Câu một.","Câu hai."]},{"type":"img","content":"img_1"}]"#
+            rows,
+            vec![
+                (
+                    "vi".into(),
+                    "".into(),
+                    0,
+                    "text".into(),
+                    r#"["Câu một.","Câu hai."]"#.into()
+                ),
+                ("vi".into(), "".into(), 1, "img".into(), "img_1".into()),
+                (
+                    "en".into(),
+                    "natural".into(),
+                    1,
+                    "img".into(),
+                    "img_1".into()
+                ),
+            ]
         );
+        let left: i64 = conn
+            .query_row(
+                "select count(*) from chapter_translations where content <> ''",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(left, 0);
     }
 
     #[test]
