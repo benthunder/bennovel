@@ -13,6 +13,7 @@ pub mod names;
 pub mod ocr;
 pub mod queue;
 pub mod rules;
+pub mod segments;
 pub mod sync;
 pub mod translate;
 pub mod wiki;
@@ -212,8 +213,7 @@ pub fn import(
                 .filter(|p| image::key_of(p).is_none())
                 .map(|p| word_count(p))
                 .sum();
-            let content = blocks::encode(&section.paragraphs);
-            // Titles and numbers are stored as the book gives them (its table of
+                        // Titles and numbers are stored as the book gives them (its table of
             // contents, or a folder's file names); nothing is guessed from the text.
             let title = meta.label.clone().or_else(|| source.section_title(i));
             let pages = meta.pages;
@@ -229,9 +229,11 @@ pub fn import(
                 chapter_id,
                 lang,
                 title.unwrap_or_default(),
-                content,
+                // The text itself goes in `segments`, one row per block.
+                "",
                 words
             ])?;
+            segments::write(&tx, chapter_id, lang, None, &section.paragraphs)?;
             on_progress(i + 1, total);
         }
     }
@@ -597,19 +599,26 @@ impl BookSource for DbBook {
             .get(index)
             .ok_or(BookError::NoSection(index))?;
         // Prefer the original text; otherwise any text in the book language.
-        let content: Option<String> = self
+        let row: Option<(String, Option<String>)> = self
             .conn
             .query_row(
-                "select content from chapter_translations where chapter_id = ?1 and lang = ?2
+                "select content, style from chapter_translations where chapter_id = ?1 and lang = ?2
+                   and (source <> 'ai' or state = 'published')
                  order by source = 'original' desc, updated_at desc limit 1",
                 params![chapter_id, self.lang],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?;
-        let content = content.unwrap_or_default();
+        let (content, style) = row.unwrap_or_default();
         Ok(Section {
             index,
-            paragraphs: blocks::paragraphs(&content),
+            paragraphs: segments::paragraphs_or(
+                &self.conn,
+                *chapter_id,
+                &self.lang,
+                style.as_deref(),
+                &content,
+            )?,
         })
     }
 }

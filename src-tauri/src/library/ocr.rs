@@ -147,18 +147,24 @@ pub fn save(
     let paragraphs = pdf_pages_to_paragraphs(pages);
     let words: i64 = paragraphs.iter().map(|p| super::word_count(p)).sum();
     let tx = conn.transaction()?;
-    tx.execute(
-        "update chapter_translations set content = ?3, word_count = ?4,
-           updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-         where source = 'original'
-           and chapter_id = (select id from chapters where novel_id = ?1 and number = ?2)",
-        params![
-            novel_id,
-            index as i64 + 1,
-            super::blocks::encode(&paragraphs),
-            words
-        ],
-    )?;
+    let original: Option<(i64, String)> = tx
+        .query_row(
+            "select t.chapter_id, t.lang from chapter_translations t
+             join chapters c on c.id = t.chapter_id
+             where c.novel_id = ?1 and c.number = ?2 and t.source = 'original'",
+            params![novel_id, index as i64 + 1],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    if let Some((chapter_id, lang)) = original {
+        tx.execute(
+            "update chapter_translations set content = '', word_count = ?3,
+               updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             where source = 'original' and chapter_id = ?1 and lang = ?2",
+            params![chapter_id, lang, words],
+        )?;
+        super::segments::write(&tx, chapter_id, &lang, None, &paragraphs)?;
+    }
     let next = if index + 1 >= chapters {
         DONE.to_string()
     } else {
@@ -249,15 +255,13 @@ mod tests {
         .unwrap();
         let content: String = conn
             .query_row(
-                "select content from chapter_translations where chapter_id = 71",
+                "select '[' || group_concat(content, ',') || ']' from (
+                   select content from segments where chapter_id = 71 order by position)",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(
-            content,
-            r#"[{"type":"text","content":["Dòng một của trang ba."]},{"type":"text","content":["Trang bốn."]}]"#
-        );
+        assert_eq!(content, r#"[["Dòng một của trang ba."],["Trang bốn."]]"#);
         assert!(next(&conn, &db_file, open).unwrap().is_none());
         assert_eq!(
             db::get_state(&conn, "ocr:7").unwrap().as_deref(),

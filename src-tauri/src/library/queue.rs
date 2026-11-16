@@ -78,15 +78,15 @@ pub fn enqueue(
         params![novel_id, lang, style],
     )?;
     conn.execute(
-        "insert or ignore into ai_jobs (novel_id, chapter_id, lang, style, glossary, created_at)
+        &format!("insert or ignore into ai_jobs (novel_id, chapter_id, lang, style, glossary, created_at)
          select c.novel_id, c.id, ?3, ?4, ?5, ?6 from chapters c
          where c.novel_id = ?1
            and c.number >= (select number from chapters where novel_id = ?1 order by number limit 1 offset ?2)
            and exists (select 1 from chapter_translations t where t.chapter_id = c.id and t.source <> 'ai'
-                       and length(trim(t.content)) > 0 and trim(t.content) <> '[]')
+                       and {has_text})
            and not exists (select 1 from chapter_translations t where t.chapter_id = c.id
                            and t.lang = ?3 and t.style = ?4 and t.source = 'ai'
-                             and t.state = 'published')",
+                             and t.state = 'published')", has_text = super::segments::HAS_TEXT),
         params![novel_id, from_index as i64, lang, style, glossary, db::now_ms()],
     )
 }
