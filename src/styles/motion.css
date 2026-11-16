@@ -17,64 +17,100 @@
   --dur: .26s;
   --dur-slow: .36s;
 
-  --glass-blur: blur(18px) saturate(170%);
-  --glass-bg: color-mix(in srgb, var(--color-bg) 72%, transparent);
-  --glass-bg-strong: color-mix(in srgb, var(--color-bg) 84%, transparent);
-  --glass-surface: color-mix(in srgb, var(--color-surface) 62%, transparent);
-  --glass-edge: color-mix(in srgb, #ffffff 65%, transparent);
-  --glass-shadow: 0 10px 34px color-mix(in srgb, #16264a 16%, transparent), 0 1px 0 var(--glass-edge) inset;
+  /* Real blur, used on the surfaces that sit over content: bars, sheets, dialogs, toasts. */
+  --glass-blur: blur(32px) saturate(185%);
+  /* The dimmed page behind a dialog or sheet is blurred too; it does not move while the dialog is up. */
+  --scrim-blur: blur(16px) saturate(150%);
+  --glass-bg: color-mix(in srgb, #ffffff 58%, transparent);
+  --glass-bg-strong: color-mix(in srgb, #ffffff 70%, transparent);
+  --glass-surface: color-mix(in srgb, #ffffff 46%, transparent);
+  --glass-edge: color-mix(in srgb, #ffffff 80%, transparent);
+  --glass-shadow: 0 12px 40px color-mix(in srgb, #0f2a6b 18%, transparent), 0 1px 0 var(--glass-edge) inset;
+  /* Frosted cards inside scrolling pages. They lie on the still blue wash, where a blur
+     would look the same as a see-through white, so they get the look without the cost. */
+  --frost: linear-gradient(160deg, color-mix(in srgb, #ffffff 78%, transparent), color-mix(in srgb, #ffffff 46%, transparent));
+  --frost-hover: linear-gradient(160deg, color-mix(in srgb, #ffffff 92%, transparent), color-mix(in srgb, #ffffff 62%, transparent));
+  --frost-shadow: 0 6px 22px color-mix(in srgb, #1d4ed8 10%, transparent), 0 1px 0 color-mix(in srgb, #ffffff 90%, transparent) inset;
 }
 
-/* A soft blue wash behind everything, so the glass has colour to pick up. Static: costs nothing on scroll. */
+/* A blue wash behind everything, so the glass has colour to pick up. Static: costs nothing on scroll. */
 .app {
   background:
-    radial-gradient(120% 60% at 100% 0%, color-mix(in srgb, var(--color-accent-300) 45%, transparent), transparent 60%),
-    radial-gradient(90% 50% at 0% 100%, color-mix(in srgb, var(--color-accent-2-300) 40%, transparent), transparent 65%),
+    radial-gradient(120% 55% at 100% 0%, color-mix(in srgb, var(--color-accent-400) 55%, transparent), transparent 62%),
+    radial-gradient(90% 50% at 0% 55%, color-mix(in srgb, var(--color-accent-2-300) 55%, transparent), transparent 66%),
+    radial-gradient(110% 55% at 100% 100%, color-mix(in srgb, var(--color-accent-300) 60%, transparent), transparent 64%),
     var(--color-bg);
 }
 body { background: var(--color-neutral-200); }
 
 /* — glass surfaces — */
-.bottom-nav, .rail, .side, .sheet, .dialog, .toast, .glass {
+.bottom-nav, .rail, .side, .sheet, .dialog, .toast, .glass, .reader-chrome--glass {
   -webkit-backdrop-filter: var(--glass-blur);
   backdrop-filter: var(--glass-blur);
 }
 .bottom-nav {
   background: var(--glass-bg);
   border-top: 1px solid var(--glass-edge);
-  box-shadow: 0 -6px 24px color-mix(in srgb, #16264a 10%, transparent);
+  box-shadow: 0 -6px 28px color-mix(in srgb, #0f2a6b 12%, transparent);
 }
 .bottom-nav__fab-circle {
-  background: linear-gradient(145deg, var(--color-accent-500), var(--color-accent-700));
-  border-color: color-mix(in srgb, var(--color-bg) 90%, transparent);
-  box-shadow: 0 8px 20px color-mix(in srgb, var(--color-accent) 40%, transparent);
+  background: linear-gradient(145deg, var(--color-accent-400), var(--color-accent-700));
+  border-color: color-mix(in srgb, #ffffff 75%, transparent);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--color-accent) 45%, transparent);
 }
 .rail, .side {
   background: var(--glass-surface);
   border-right: 1px solid var(--glass-edge);
 }
-.side__continue { background: var(--glass-bg-strong); }
+.side__continue { background: var(--frost); border: 1px solid var(--glass-edge); box-shadow: var(--frost-shadow); }
 .sheet, .dialog {
   background: var(--glass-bg-strong);
   border: 1px solid var(--glass-edge);
   box-shadow: var(--glass-shadow);
 }
+/* Inside a sheet, its rows and fields are a lighter frost over the glass. */
+.dialog .input, .sheet .input { background: color-mix(in srgb, #ffffff 62%, transparent) !important; }
 /* The sticky buttons fade the list out under them instead of sitting on a hard block. */
 .dialog--sheet > .dialog-actions {
-  background: linear-gradient(to top, var(--color-bg) 55%, color-mix(in srgb, var(--color-bg) 0%, transparent));
+  background: linear-gradient(to top, color-mix(in srgb, #ffffff 82%, transparent) 55%, transparent);
 }
 .toast {
-  background: color-mix(in srgb, var(--color-neutral-900) 78%, transparent);
-  border: 1px solid color-mix(in srgb, #ffffff 14%, transparent);
+  background: color-mix(in srgb, var(--color-accent-900) 70%, transparent);
+  border: 1px solid color-mix(in srgb, #ffffff 22%, transparent);
 }
 .scrim, .dialog-backdrop {
-  background: color-mix(in srgb, var(--color-neutral-900) 34%, transparent);
+  background: color-mix(in srgb, var(--color-accent-900) 26%, transparent);
+  -webkit-backdrop-filter: var(--scrim-blur);
+  backdrop-filter: var(--scrim-blur);
 }
 
+/* A sheet or dialog over a blurred backdrop does not blur again: the page under it is
+   already blurred, and two blurs stacked made scrolling a long sheet drop frames
+   (25 ms a frame instead of 16.5 on a 4x slower CPU). */
+.dialog-backdrop .dialog, .dialog-backdrop .sheet, .scrim + .sheet {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+/* — frosted cards: white glass over the wash, with a bright top edge — */
+.card, .import-action, .chip:not(.chip--active):not(.chip--sm), .icon-btn:not(.icon-btn--accent):not(.icon-btn--plain),
+.input, .seg, .side__item[aria-current='page'], .tag-neutral {
+  background: var(--frost);
+  border-color: var(--glass-edge);
+}
+.card, .import-action { border: 1px solid var(--glass-edge); box-shadow: var(--frost-shadow); }
+.icon-btn:not(.icon-btn--accent):not(.icon-btn--plain), .chip:not(.chip--active):not(.chip--sm) { box-shadow: var(--frost-shadow); }
+.input { border: 1px solid var(--glass-edge); }
+.import-action--primary, .chip--active { background: linear-gradient(145deg, var(--color-accent-500), var(--color-accent-700)); }
+.icon-btn:hover:not(.icon-btn--accent):not(.icon-btn--plain), .chip:hover:not(.chip--active), .import-action:not(.import-action--primary):hover { background: var(--frost-hover); }
+.menu-row:hover, .novel-row:hover { background: color-mix(in srgb, #ffffff 60%, transparent); }
+.progress, .import-progress__bar { background: color-mix(in srgb, #ffffff 60%, transparent); }
+
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  .bottom-nav, .sheet, .dialog, .side__continue { background: var(--color-bg); }
+  .bottom-nav, .sheet, .dialog { background: var(--color-bg); }
   .rail, .side { background: var(--color-surface); }
-  .toast { background: var(--color-neutral-900); }
+  .toast { background: var(--color-accent-900); }
+  .scrim, .dialog-backdrop { background: color-mix(in srgb, var(--color-accent-900) 45%, transparent); }
 }
 
 /* — controls: smooth hover, a little give on press — */

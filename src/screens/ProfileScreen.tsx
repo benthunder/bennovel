@@ -59,7 +59,7 @@ export function ProfileScreen() {
           </div>
         </div>
 
-        <div style={{ gridArea: 'settings', borderRadius: 28, background: 'var(--color-surface)', padding: 6 }}>
+        <div style={{ gridArea: 'settings', borderRadius: 28, background: 'var(--frost)', padding: 6 }}>
           <button className="menu-row" onClick={app.openLangDialog}>
             <LanguagesIcon style={{ color: 'var(--color-accent-2-700)' }} />
             <span style={{ flex: 1, fontSize: 14, fontWeight: 600 }}>{t('profile.defaultLang')}</span>
@@ -125,7 +125,7 @@ function AccountCard() {
   const plan = app.plan;
   const until = plan?.expiresAt ? new Date(plan.expiresAt * 1000).toLocaleDateString(uiLang) : null;
   return (
-    <div style={{ borderRadius: 34, background: 'var(--color-surface)', padding: 22, display: 'flex', flexDirection: lay.wide ? 'column' : 'row', gap: 16, alignItems: lay.wide ? 'flex-start' : 'center' }}>
+    <div style={{ borderRadius: 34, background: 'var(--frost)', padding: 22, display: 'flex', flexDirection: lay.wide ? 'column' : 'row', gap: 16, alignItems: lay.wide ? 'flex-start' : 'center' }}>
       <span className="display" style={{ width: 72, height: 72, flex: 'none', borderRadius: '50%', background: 'var(--color-accent-2-300)', color: 'var(--color-accent-2-900)', display: 'grid', placeItems: 'center', fontSize: 26 }}>{initials}</span>
       <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-start' }}>
         <div className="display" style={{ fontSize: 22, lineHeight: 1.1 }}>{user.name}</div>
@@ -177,7 +177,7 @@ function BackupCard() {
   );
 
   return (
-    <div style={{ borderRadius: 28, background: 'var(--color-surface)', padding: '14px 12px 10px 18px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+    <div style={{ borderRadius: 28, background: 'var(--frost)', padding: '14px 12px 10px 18px', display: 'flex', flexDirection: 'column', gap: 6 }}>
       <div style={{ fontSize: 14, fontWeight: 700 }}>{t('backup.title')}</div>
       <div className="muted" style={{ fontSize: 12 }}>{t('backup.hint')}</div>
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, borderTop: '1px solid var(--color-neutral-200)', paddingTop: 6 }}>

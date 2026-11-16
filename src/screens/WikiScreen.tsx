@@ -88,7 +88,7 @@ export function WikiScreen({ novelId, title, lang: startLang }: { novelId: numbe
     const rels = relCount.get(e.uid) ?? 0;
     const level = wiki && e.kind === 'character' ? levelOf(wiki, e.uid) : null;
     return (
-      <div key={e.uid} data-entry={e.name} role="button" tabIndex={0} className="novel-row" style={{ alignItems: 'flex-start', gap: 10, padding: '12px 14px', borderRadius: 22, background: 'var(--color-surface)', minWidth: 0, textAlign: 'left', width: '100%' }}
+      <div key={e.uid} data-entry={e.name} role="button" tabIndex={0} className="novel-row" style={{ alignItems: 'flex-start', gap: 10, padding: '12px 14px', borderRadius: 22, background: 'var(--frost)', minWidth: 0, textAlign: 'left', width: '100%' }}
         onClick={() => setOpen(e)} onKeyDown={ev => { if (ev.target === ev.currentTarget && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); setOpen(e); } }}>
         <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 3 }}>
           <span style={{ display: 'flex', gap: 6, alignItems: 'baseline', flexWrap: 'wrap' }}>
@@ -154,7 +154,7 @@ export function WikiScreen({ novelId, title, lang: startLang }: { novelId: numbe
               </div>
             )}
 
-            <div style={{ padding: 14, borderRadius: 24, background: 'var(--color-surface)' }}>
+            <div style={{ padding: 14, borderRadius: 24, background: 'var(--frost)' }}>
               <Checkbox checked={wiki.auto} onChange={toggleAuto} size={22}>
                 <span style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                   <span style={{ fontSize: 14, fontWeight: 700 }}>{t('wiki.auto')}</span>
