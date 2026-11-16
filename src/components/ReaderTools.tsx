@@ -86,7 +86,7 @@ function ReadingTab() {
       </div>
       <div>
         <Label>{t('tools.background')}</Label>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: 8, justifyItems: 'center' }}>
           {(Object.keys(READER_THEMES) as (keyof typeof READER_THEMES)[]).map(k => (
             <button key={k} aria-pressed={p.theme === k} onClick={() => set({ theme: k })}
               style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, border: 'none', background: 'none', cursor: 'pointer', font: 'inherit', fontSize: 11, color: 'var(--color-text)' }}>
@@ -160,7 +160,7 @@ function ReplaceTab({ lang, rules, onChange }: { lang: ContentLang; rules: Repla
   );
 }
 
-const panel: React.CSSProperties = { borderRadius: 30, background: 'var(--color-surface)', padding: 16, display: 'flex', flexDirection: 'column', gap: 12 };
+const panel: React.CSSProperties = { borderRadius: 30, background: 'var(--frost)', padding: 16, display: 'flex', flexDirection: 'column', gap: 12 };
 const panelIcon = (bg: string, fg: string): React.CSSProperties => ({ width: 34, height: 34, borderRadius: '50%', background: bg, color: fg, display: 'grid', placeItems: 'center' });
 
 function AiTab({ glossary: terms, currentLang, onTranslate, onTranslateFrom, langs, hint }: {

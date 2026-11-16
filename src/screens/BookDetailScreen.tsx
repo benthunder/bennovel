@@ -100,7 +100,7 @@ export function BookDetailScreen({ novelId }: { novelId: number }) {
     <div className="screen" style={{ paddingBottom: 'calc(var(--nav-h) + 32px)' }}>
       <div style={{ display: 'grid', gridTemplateColumns: lay.detailCols, gap: lay.detailGap, padding: lay.wide ? `${lay.v(0, 44, 32)}px ${lay.px}px 0` : 0, alignItems: 'start' }}>
         <div style={{
-          position: lay.wide ? 'sticky' : 'relative', top: lay.wide ? lay.v(0, 44, 32) : 'auto', background: 'var(--color-surface)',
+          position: lay.wide ? 'sticky' : 'relative', top: lay.wide ? lay.v(0, 44, 32) : 'auto', background: 'var(--frost)',
           borderRadius: lay.wide ? 34 : '0 0 44px 44px', padding: lay.wide ? 20 : 'calc(var(--safe-top) + 12px) 20px 24px'
         }}>
           <div style={{ display: 'flex', gap: 8, marginBottom: 18 }}>
@@ -350,7 +350,7 @@ function AiBox({ novelId, lang, sections, live, onRead }: {
       )}
       {!hasLlm && llmQ.status === 'ready' && <div className="muted" style={{ fontSize: 12 }}>{t('ai.err.notSet')}</div>}
       {open && (
-        <div role="group" aria-label={t('tr.novel')} style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: 14, borderRadius: 26, background: 'var(--color-surface)', border: '2px solid var(--color-neutral-200)' }}>
+        <div role="group" aria-label={t('tr.novel')} style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: 14, borderRadius: 26, background: 'var(--frost)', border: '2px solid var(--color-neutral-200)' }}>
           <div className="display" style={{ fontSize: 17, display: 'flex', alignItems: 'center', gap: 8 }}><SparklesIcon size={16} />{t('tr.novel')}</div>
           <div className="muted" style={{ fontSize: 12, marginTop: -4 }}>{t('ai.hint')}</div>
           <TranslateFields value={choice} onChange={setTr} langs={[...AI_LANGS]} glossaryCount={0} />
