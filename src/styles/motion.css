@@ -18,12 +18,12 @@
   --dur: .26s;
   --dur-slow: .36s;
 
-  /* Without a blur the glass needs more white, or the text under it would compete.
-     Bars stay a little see-through; sheets, dialogs and menus hold text of their own,
-     where even a few percent of the page under them reads as smudges, so they are solid. */
-  --glass-bg: color-mix(in srgb, #ffffff 88%, transparent);
-  --glass-bg-strong: #ffffff;
-  --glass-surface: color-mix(in srgb, #ffffff 76%, transparent);
+  /* Frosted without a blur: a white-to-pale-blue gradient that lets a little of the
+     page through. The dimmed scrim under a sheet keeps that page faint, so the sheet's
+     own text stays clear. */
+  --glass-bg: linear-gradient(180deg, color-mix(in srgb, #ffffff 86%, transparent), color-mix(in srgb, var(--color-accent-100) 80%, transparent));
+  --glass-bg-strong: linear-gradient(165deg, color-mix(in srgb, #ffffff 96%, transparent), color-mix(in srgb, var(--color-accent-100) 90%, transparent));
+  --glass-surface: linear-gradient(180deg, color-mix(in srgb, #ffffff 80%, transparent), color-mix(in srgb, var(--color-accent-100) 70%, transparent));
   --glass-edge: color-mix(in srgb, #ffffff 80%, transparent);
   /* Depth: a tight contact shadow plus one soft drop. Still, never transitioned. */
   --shadow-tint: #0f2a6b;
@@ -83,7 +83,7 @@ body { background: var(--color-neutral-200); }
 }
 /* The page behind a dialog or sheet is dimmed with a blue tint, not blurred. */
 .scrim, .dialog-backdrop {
-  background: color-mix(in srgb, var(--color-accent-900) 40%, transparent);
+  background: color-mix(in srgb, var(--color-accent-900) 50%, transparent);
 }
 
 /* — frosted cards: white glass over the wash, with a bright top edge — */
@@ -106,6 +106,9 @@ body { background: var(--color-neutral-200); }
    (a 2-3px blur is cheap; the wide soft drop is not), and only colours change on hover
    and press; a spinner turns in steps instead of every frame. */
 :root[data-engine='webkitgtk'] {
+  --glass-bg: color-mix(in srgb, #ffffff 86%, transparent);
+  --glass-bg-strong: color-mix(in srgb, #ffffff 95%, transparent);
+  --glass-surface: color-mix(in srgb, #ffffff 80%, transparent);
   --frost: color-mix(in srgb, #ffffff 70%, var(--color-bg));
   --frost-hover: #ffffff;
   --frost-shadow: 0 1px 2px color-mix(in srgb, var(--shadow-tint) 14%, transparent);
