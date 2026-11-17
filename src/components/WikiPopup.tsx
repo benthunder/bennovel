@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import { messageIn, useI18n } from '../i18n';
 import type { MessageKey } from '../i18n/en';
-import { RAW, isRelType, wikiLabel, wikiSummary, type Wiki, type WikiEntry, type WikiRelation } from '../lib/wiki';
+import { RAW, isRelType, metaStage, wikiLabel, wikiSummary, type Wiki, type WikiEntry, type WikiRelation } from '../lib/wiki';
 import { Modal } from './Modal';
 
 /**
@@ -98,8 +98,14 @@ export function WikiPopup({ wiki, entry, lang, onPick, onOpenWiki, onClose }: {
             {entry.aliases.length > 0 && <span>· {entry.aliases.join(', ')}</span>}
           </div>
         </div>
-        {level && <div style={{ fontSize: 14 }}><b>{t('wiki.currentLevel')}:</b> {wikiLabel(level, lang)}</div>}
-        {entry.kind === 'level' && entry.rank != null && <div style={{ fontSize: 14 }}>{t('wiki.rankN', { n: entry.rank })}</div>}
+        {(level || entry.meta?.level) && (
+          <div style={{ fontSize: 14 }}>
+            <b>{t('wiki.currentLevel')}:</b> {[level ? wikiLabel(level, lang) : entry.meta?.level, metaStage(entry.meta, n => t('wiki.stageN', { n }))].filter(Boolean).join(', ')}
+          </div>
+        )}
+        {entry.kind === 'level' && (entry.rank != null || entry.meta?.system) && (
+          <div style={{ fontSize: 14 }}>{[entry.meta?.system, entry.rank != null ? t('wiki.rankN', { n: entry.rank }) : ''].filter(Boolean).join(' · ')}</div>
+        )}
         {sum.text
           ? <p style={{ margin: 0, fontSize: 15, lineHeight: 1.5 }}>{sum.text}</p>
           : <p className="muted" style={{ margin: 0, fontSize: 14 }}>{t('wiki.noSummary')}</p>}

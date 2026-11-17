@@ -12,8 +12,7 @@ import { useThrottledValue } from '../lib/useThrottledValue';
 import {
   RAW, REL_TYPES, WIKI_KINDS, addWikiRelation, getWiki, getWikiMissing, mergeWikiEntry, removeWikiEntry, removeWikiRelation, saveWikiEntry,
   searchWiki, setWikiAuto, translateWiki, wikiChapter, wikiLabel, wikiSummary,
-  type Wiki, type WikiEntry, type WikiKind
-} from '../lib/wiki';
+  type Wiki, type WikiEntry, type WikiKind, metaStage } from '../lib/wiki';
 import { useApp } from '../store/AppStore';
 
 /** The wiki's languages: the raw text, then the AI ones. */
@@ -102,8 +101,13 @@ export function WikiScreen({ novelId, title, lang: startLang }: { novelId: numbe
           )}
           <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 2 }}>
             <span className="tag tag-neutral" style={{ fontSize: 11 }}>{t(`wiki.kind.${e.kind}`)}</span>
+            {e.kind === 'level' && e.meta?.system && <span className="tag tag-neutral" style={{ fontSize: 11 }}>{e.meta.system}</span>}
             {e.kind === 'level' && e.rank != null && <span className="tag tag-accent-2" style={{ fontSize: 11 }}>{t('wiki.rankN', { n: e.rank })}</span>}
-            {level && <span className="tag tag-accent-2" style={{ fontSize: 11 }}>{wikiLabel(level, lang)}</span>}
+            {(level || e.meta?.level) && (
+              <span className="tag tag-accent-2" style={{ fontSize: 11 }}>
+                {[level ? wikiLabel(level, lang) : e.meta?.level, metaStage(e.meta, n => t('wiki.stageN', { n }))].filter(Boolean).join(', ')}
+              </span>
+            )}
             {rels > 0 && <span className="tag tag-accent-2" style={{ fontSize: 11 }}>{t('wiki.relCount', { n: rels })}</span>}
             {e.firstChapter != null && <span className="muted" style={{ fontSize: 11 }}>{t('wiki.fromChapter', { n: wikiChapter(e)! })}</span>}
           </span>
@@ -236,7 +240,8 @@ function Summary({ text, children }: { text: string; children?: ReactNode }) {
 /** The levels in order, lowest first, with who has reached each. */
 function Ladder({ wiki, lang, card }: { wiki: Wiki; lang: string; card: (e: WikiEntry, extra?: ReactNode) => ReactNode }) {
   const levels = wiki.entries.filter(e => e.kind === 'level')
-    .sort((a, b) => (a.rank ?? Infinity) - (b.rank ?? Infinity) || a.name.localeCompare(b.name));
+    .sort((a, b) => (a.meta?.system ?? '').localeCompare(b.meta?.system ?? '')
+      || (a.rank ?? Infinity) - (b.rank ?? Infinity) || a.name.localeCompare(b.name));
   const byUid = new Map(wiki.entries.map(e => [e.uid, e]));
   return (
     <ol data-wiki-ladder style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -313,6 +318,9 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
   const [names, setNames] = useState<Record<string, string>>(entry?.names ?? {});
   const [summaries, setSummaries] = useState<Record<string, string>>(entry?.summaries ?? {});
   const [rank, setRank] = useState(entry?.rank != null ? String(entry.rank) : '');
+  const [system, setSystem] = useState(entry?.meta?.system ?? '');
+  const [curLevel, setCurLevel] = useState(entry?.meta?.level ?? '');
+  const [stageName, setStageName] = useState(entry?.meta?.stageName ?? '');
   const [aliases, setAliases] = useState(entry?.aliases.join(', ') ?? '');
   // The language whose words are being edited; starts at the wiki's.
   const [editLang, setEditLang] = useState(lang);
@@ -347,6 +355,7 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
       const n = Number.parseInt(rank, 10);
       const e = await saveWikiEntry(user, novelId, {
         uid: saved?.uid, kind, name, names, summaries, rank: kind === 'level' && Number.isFinite(n) ? n : null,
+        meta: { ...saved?.meta, system: system.trim(), level: curLevel.trim(), stageName: stageName.trim() },
         aliases: aliases.split(/[,，、]/).map(a => a.trim()).filter(Boolean)
       });
       setSaved(e);
@@ -439,6 +448,24 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
           <div className="field">
             <label htmlFor="wiki-rank">{t('wiki.rank')}</label>
             <input id="wiki-rank" className="input" style={{ height: 42 }} inputMode="numeric" value={rank} onChange={e => setRank(e.target.value.replace(/[^\d-]/g, ''))} />
+          </div>
+        )}
+        {kind === 'level' && (
+          <div className="field">
+            <label htmlFor="wiki-system">{t('wiki.system')}</label>
+            <input id="wiki-system" className="input" style={{ height: 42 }} value={system} placeholder={t('wiki.systemPh')} onChange={e => setSystem(e.target.value)} />
+          </div>
+        )}
+        {kind === 'character' && (
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            <div className="field" style={{ flex: '2 1 180px' }}>
+              <label htmlFor="wiki-cur-level">{t('wiki.curLevel')}</label>
+              <input id="wiki-cur-level" className="input" style={{ height: 42 }} value={curLevel} onChange={e => setCurLevel(e.target.value)} />
+            </div>
+            <div className="field" style={{ flex: '1 1 120px' }}>
+              <label htmlFor="wiki-stage">{t('wiki.stage')}</label>
+              <input id="wiki-stage" className="input" style={{ height: 42 }} value={stageName} placeholder={t('wiki.stagePh')} onChange={e => setStageName(e.target.value)} />
+            </div>
           </div>
         )}
         <div className="field">

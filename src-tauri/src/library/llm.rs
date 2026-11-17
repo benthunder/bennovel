@@ -206,6 +206,16 @@ pub trait Chat: Send + Sync {
     ) -> Result<serde_json::Value, AiError> {
         Err(AiError::Other("tools-unsupported".into()))
     }
+    /// `chat_tools` with a `tool_choice` ("auto", "required", or one function) and the
+    /// temperature of a translation. A reply cut at the length limit is `Truncated`.
+    fn chat_tools_with(
+        &self,
+        messages: &[serde_json::Value],
+        tools: &serde_json::Value,
+        _choice: &serde_json::Value,
+    ) -> Result<serde_json::Value, AiError> {
+        self.chat_tools(messages, tools)
+    }
     /// The embedding model, when one is set.
     fn embed_model(&self) -> Option<&str> {
         None
@@ -360,6 +370,30 @@ impl Chat for OpenAi {
             .and_then(|c| c.get("message"))
             .cloned()
             .ok_or(AiError::Empty)
+    }
+
+    fn chat_tools_with(
+        &self,
+        messages: &[serde_json::Value],
+        tools: &serde_json::Value,
+        choice: &serde_json::Value,
+    ) -> Result<serde_json::Value, AiError> {
+        let body = serde_json::json!({
+            "model": self.config.model,
+            "messages": messages,
+            "tools": tools,
+            "tool_choice": choice,
+            "temperature": 0.3,
+        });
+        let data = self.retry(|| self.post_to("chat/completions", &body))?;
+        let choice = data
+            .get("choices")
+            .and_then(|c| c.get(0))
+            .ok_or(AiError::Empty)?;
+        if choice.get("finish_reason").and_then(|f| f.as_str()) == Some("length") {
+            return Err(AiError::Truncated(String::new()));
+        }
+        choice.get("message").cloned().ok_or(AiError::Empty)
     }
 
     fn embed_model(&self) -> Option<&str> {

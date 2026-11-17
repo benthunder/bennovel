@@ -349,19 +349,19 @@ fn graph(
                     ) + &book_rules(&f.genre, &f.req.lang, &f.instructions);
                     let extract = super::wiki::extract_prompt(&f.req.lang, WIKI_MARK, &f.genre);
                     let system = |part: &str| {
-                        format!(
-                            "{system}{}{}{extract}",
-                            f.recall.prompt(part),
-                            f.cast.prompt(part)
-                        )
+                        format!("{system}{}{}", f.recall.prompt(part), f.cast.prompt(part))
                     };
+                    let lookup = |q: &str| lookup_name(&f, llm.as_ref(), q);
+                    let tools = part_tools(&f, &lookup);
                     let title = (!f.title.trim().is_empty())
                         .then(|| (title_prompt(&f.req.lang), f.title.clone()));
                     let cache = PartCache::open(&f.db, &f.req)?
                         .map(|c| c.with_draft(&f.title, &f.paragraphs));
-                    let (out, title, found) = run_chunks(
+                    let (out, title, found) = run_chunks_with(
                         llm.as_ref(),
                         &system,
+                        &extract,
+                        Some(&tools),
                         &f.paragraphs,
                         title,
                         progress.as_deref(),
@@ -397,17 +397,17 @@ fn graph(
                         + &book_rules(&f.genre, &f.req.lang, &f.instructions);
                     let extract = super::wiki::extract_prompt(&f.req.lang, WIKI_MARK, &f.genre);
                     let system = |part: &str| {
-                        format!(
-                            "{system}{}{}{extract}",
-                            f.recall.prompt(part),
-                            f.cast.prompt(part)
-                        )
+                        format!("{system}{}{}", f.recall.prompt(part), f.cast.prompt(part))
                     };
+                    let lookup = |q: &str| lookup_name(&f, llm.as_ref(), q);
+                    let tools = part_tools(&f, &lookup);
                     let cache = PartCache::open(&f.db, &f.req)?
                         .map(|c| c.with_draft(&f.title, &f.paragraphs));
-                    let (out, _, found) = run_chunks(
+                    let (out, _, found) = run_chunks_with(
                         llm.as_ref(),
                         &system,
+                        &extract,
+                        Some(&tools),
                         &f.paragraphs,
                         None,
                         progress.as_deref(),
@@ -780,6 +780,30 @@ fn rewrite_prompt(lang: &str, style: &str, wiki: &str) -> String {
     s + wiki
 }
 
+/// The tools a chapter's parts are asked with.
+fn part_tools<'a>(f: &Flow, lookup: &'a (dyn Fn(&str) -> String + Sync)) -> PartTools<'a> {
+    PartTools {
+        defs: super::wiki::part_tools(&f.req.lang),
+        note: super::wiki::tool_prompt(&f.req.lang, &f.genre),
+        lookup,
+        off: AtomicBool::new(false),
+    }
+}
+
+/// `tra_ten` for a chapter: what the book's wiki has under `name`, as JSON.
+fn lookup_name(f: &Flow, llm: &dyn Chat, name: &str) -> String {
+    let found = super::db::open(std::path::Path::new(&f.db))
+        .map_err(|e| e.to_string())
+        .and_then(|conn| {
+            super::wiki::lookup(&conn, Some(llm), f.req.novel_id, &f.req.lang, name)
+                .map_err(|e| e.to_string())
+        });
+    match found {
+        Ok(v) => v.to_string(),
+        Err(e) => format!("{{\"error\": {}}}", serde_json::Value::String(e)),
+    }
+}
+
 /// How characters address each other and are referred to in a genre, for a
 /// translation into `lang`.
 fn genre_rules(genre: &str, lang: &str) -> &'static str {
@@ -910,9 +934,29 @@ type Parts = (Vec<String>, Option<String>, Vec<String>);
 /// of losing its end; and a reply that put its paragraphs on single lines is split
 /// on those lines, so the parts do not run into each other.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 fn run_chunks(
     llm: &dyn Chat,
     system: &(dyn Fn(&str) -> String + Sync),
+    paragraphs: &[String],
+    title: Option<(String, String)>,
+    progress: Option<&(dyn Fn(usize, usize) + Send + Sync)>,
+    cache: Option<&PartCache>,
+    stop: Option<&AtomicBool>,
+) -> Result<Parts, AiError> {
+    run_chunks_with(
+        llm, system, "", None, paragraphs, title, progress, cache, stop,
+    )
+}
+
+/// `run_chunks` where each part is first asked through `tools` (when given and the
+/// model takes them), and otherwise as text with `extract` added to its prompt.
+#[allow(clippy::too_many_arguments)]
+fn run_chunks_with(
+    llm: &dyn Chat,
+    system: &(dyn Fn(&str) -> String + Sync),
+    extract: &str,
+    tools: Option<&PartTools>,
     paragraphs: &[String],
     title: Option<(String, String)>,
     progress: Option<&(dyn Fn(usize, usize) + Send + Sync)>,
@@ -1005,7 +1049,21 @@ fn run_chunks(
                             Some(c) => format!("{}{}", system(text), context_prompt(c)),
                             None => system(text),
                         };
-                        ask_part(llm, &prompt, paras)
+                        let by_tools = match tools {
+                            Some(t) if !t.off.load(Ordering::SeqCst) => {
+                                ask_part_tools(llm, &prompt, paras, t)
+                            }
+                            _ => Ok(None),
+                        };
+                        match by_tools {
+                            Ok(Some(reply)) => Ok(reply),
+                            Ok(None) => {
+                                let with_extract =
+                                    |text: &str| format!("{}{extract}", prompt(text));
+                                ask_part(llm, &with_extract, paras)
+                            }
+                            Err(e) => Err(e),
+                        }
                     }
                     Ask::Title(prompt, text) => AiError::keep_cut(llm.chat(prompt, text)),
                 };
@@ -1146,6 +1204,122 @@ fn context_prompt(context: &str) -> String {
 /// The reply for `paras`. A reply cut off by the model's length limit is asked again
 /// in two halves (a long paragraph is cut between sentences), and the halves' replies
 /// are put back together.
+/// The tools a translation or rewrite offers each part (wiki.rs `part_tools`).
+pub(crate) struct PartTools<'a> {
+    defs: serde_json::Value,
+    /// Added to the part's prompt: how to answer through the tools, the wiki's rules.
+    note: String,
+    /// The answer to `tra_ten` for a name.
+    lookup: &'a (dyn Fn(&str) -> String + Sync),
+    /// The API or model refused tools: the remaining parts are asked as text.
+    off: AtomicBool,
+}
+
+/// Lookups a part may make before it must hand in its text.
+const MAX_LOOKUPS: usize = 3;
+
+/// A part asked through `tools`: the text from `nop_ban_viet`, then `WIKI_MARK` and
+/// the facts from `ghi_wiki` (the reply a text answer gives, so the cache and the
+/// wiki read both alike). `tra_ten` is answered and the part asked again, up to
+/// `MAX_LOOKUPS` times. None when the part has to be asked as text instead: the model
+/// answered without the text tool, its arguments were not JSON, or the reply was cut
+/// off (the text way splits the part). A refusal of tools turns them off for the rest.
+fn ask_part_tools(
+    llm: &dyn Chat,
+    prompt: &dyn Fn(&str) -> String,
+    paras: &[&str],
+    tools: &PartTools,
+) -> Result<Option<String>, AiError> {
+    use serde_json::{json, Value};
+    let text = paras.join("\n\n");
+    let mut messages = vec![
+        json!({ "role": "system", "content": format!("{}{}", prompt(&text), tools.note) }),
+        json!({ "role": "user", "content": text }),
+    ];
+    let mut facts: Vec<String> = Vec::new();
+    for round in 0..=MAX_LOOKUPS {
+        let choice = if round < MAX_LOOKUPS {
+            json!("auto")
+        } else {
+            json!({ "type": "function", "function": { "name": super::wiki::PART_TEXT } })
+        };
+        let msg = match llm.chat_tools_with(&messages, &tools.defs, &choice) {
+            Ok(m) => m,
+            Err(AiError::Truncated(_)) => return Ok(None),
+            Err(e) if super::wiki::tools_refused(&e) => {
+                tools.off.store(true, Ordering::SeqCst);
+                return Ok(None);
+            }
+            Err(e) => return Err(e),
+        };
+        let calls: Vec<Value> = msg
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if calls.is_empty() {
+            // Answered in words: that is the text, as a text answer would be.
+            let content = msg.get("content").and_then(Value::as_str).unwrap_or("");
+            return Ok((!content.trim().is_empty()).then(|| content.to_string()));
+        }
+        let mut written: Option<String> = None;
+        let mut answers: Vec<Value> = Vec::new();
+        for call in &calls {
+            let id = call.get("id").and_then(Value::as_str).unwrap_or("");
+            let f = call.get("function");
+            let name = f
+                .and_then(|f| f.get("name"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let args: Option<Value> = f
+                .and_then(|f| f.get("arguments"))
+                .and_then(Value::as_str)
+                .and_then(|a| serde_json::from_str(a).ok());
+            let answer = match name {
+                n if n == super::wiki::PART_TEXT => {
+                    let Some(doan) = args
+                        .as_ref()
+                        .and_then(|a| a.get("doan"))
+                        .and_then(Value::as_array)
+                    else {
+                        return Ok(None);
+                    };
+                    let blocks: Vec<&str> = doan.iter().filter_map(Value::as_str).collect();
+                    written = Some(blocks.join("\n\n"));
+                    "ok".to_string()
+                }
+                n if n == super::wiki::PART_FACTS => {
+                    if let Some(a) = args.filter(Value::is_object) {
+                        facts.push(a.to_string());
+                    }
+                    "ok".to_string()
+                }
+                n if n == super::wiki::PART_LOOKUP => {
+                    let q = args
+                        .as_ref()
+                        .and_then(|a| a.get("ten"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    (tools.lookup)(q)
+                }
+                _ => "unknown tool".to_string(),
+            };
+            answers.push(json!({ "role": "tool", "tool_call_id": id, "content": answer }));
+        }
+        if let Some(written) = written {
+            let mut reply = written;
+            if !facts.is_empty() {
+                reply.push_str(&format!("\n{WIKI_MARK}\n{}", facts.join("\n")));
+            }
+            return Ok(Some(reply));
+        }
+        // Looked up (or only recorded facts): answer every call and ask again.
+        messages.push(msg);
+        messages.extend(answers);
+    }
+    Ok(None)
+}
+
 fn ask_part(
     llm: &dyn Chat,
     prompt: &dyn Fn(&str) -> String,
@@ -2266,5 +2440,222 @@ pub(crate) mod tests {
         assert_eq!(parse_lang("The text is zh").as_deref(), Some("zh"));
         assert_eq!(parse_lang("???"), None);
         assert_eq!(first_words("a b c d", 2), "a b");
+    }
+
+    /// Answers tool requests from a script, one reply per request, and text requests
+    /// as "[txt] …".
+    struct Tooly {
+        script: Mutex<std::collections::VecDeque<Result<serde_json::Value, AiError>>>,
+        asked: Mutex<Vec<Vec<serde_json::Value>>>,
+        texts: Mutex<usize>,
+    }
+
+    impl Tooly {
+        fn new(script: Vec<Result<serde_json::Value, AiError>>) -> Self {
+            Tooly {
+                script: Mutex::new(script.into()),
+                asked: Mutex::new(Vec::new()),
+                texts: Mutex::new(0),
+            }
+        }
+    }
+
+    impl Chat for Tooly {
+        fn chat(&self, _: &str, user: &str) -> Result<String, AiError> {
+            *self.texts.lock().unwrap() += 1;
+            Ok(user
+                .split("\n\n")
+                .map(|p| format!("[txt] {p}"))
+                .collect::<Vec<_>>()
+                .join("\n\n"))
+        }
+        fn model(&self) -> &str {
+            "tooly"
+        }
+        fn chat_tools_with(
+            &self,
+            messages: &[serde_json::Value],
+            _: &serde_json::Value,
+            _: &serde_json::Value,
+        ) -> Result<serde_json::Value, AiError> {
+            self.asked.lock().unwrap().push(messages.to_vec());
+            self.script
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or(Err(AiError::Empty))
+        }
+    }
+
+    fn call(id: &str, name: &str, args: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({ "id": id, "type": "function",
+            "function": { "name": name, "arguments": args.to_string() } })
+    }
+
+    fn calls(list: Vec<serde_json::Value>) -> Result<serde_json::Value, AiError> {
+        Ok(serde_json::json!({ "role": "assistant", "content": null, "tool_calls": list }))
+    }
+
+    fn tools_with<'a>(lookup: &'a (dyn Fn(&str) -> String + Sync)) -> PartTools<'a> {
+        PartTools {
+            defs: super::super::wiki::part_tools("vi"),
+            note: super::super::wiki::tool_prompt("vi", ""),
+            lookup,
+            off: AtomicBool::new(false),
+        }
+    }
+
+    #[test]
+    fn a_part_comes_back_through_the_tools_in_one_request() {
+        let paragraphs = vec![
+            "Trần Bình An đối với Tề tiên sinh nói.".to_string(),
+            "Hắn đi.".to_string(),
+        ];
+        let facts =
+            serde_json::json!({ "entries": [{ "name": "Tề tiên sinh", "kind": "character" }] });
+        let llm = Tooly::new(vec![calls(vec![
+            call(
+                "c1",
+                "nop_ban_viet",
+                serde_json::json!({ "doan": ["Trần Bình An nói với Tề tiên sinh.", "Hắn rời đi."] }),
+            ),
+            call("c2", "ghi_wiki", facts.clone()),
+        ])]);
+        let lookup = |_: &str| "[]".to_string();
+        let tools = tools_with(&lookup);
+        let (out, _, found) = run_chunks_with(
+            &llm,
+            &|_: &str| "sys".to_string(),
+            "EXTRACT",
+            Some(&tools),
+            &paragraphs,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            vec!["Trần Bình An nói với Tề tiên sinh.", "Hắn rời đi."]
+        );
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].trim(), facts.to_string());
+        // One request, no text request; the prompt says how to answer, not the JSON way.
+        let asked = llm.asked.lock().unwrap();
+        assert_eq!(asked.len(), 1);
+        assert_eq!(*llm.texts.lock().unwrap(), 0);
+        let system = asked[0][0]["content"].as_str().unwrap();
+        assert!(system.starts_with("sys") && system.contains("nop_ban_viet"));
+        assert!(!system.contains("EXTRACT"));
+    }
+
+    #[test]
+    fn a_name_looked_up_is_answered_and_the_part_asked_again() {
+        let paragraphs = vec!["Tề tiên sinh cười.".to_string()];
+        let llm = Tooly::new(vec![
+            calls(vec![call(
+                "t1",
+                "tra_ten",
+                serde_json::json!({ "ten": "Tề tiên sinh" }),
+            )]),
+            calls(vec![call(
+                "c1",
+                "nop_ban_viet",
+                serde_json::json!({ "doan": ["Tề tiên sinh mỉm cười."] }),
+            )]),
+        ]);
+        let asked_for = Mutex::new(Vec::<String>::new());
+        let lookup = |q: &str| {
+            asked_for.lock().unwrap().push(q.to_string());
+            r#"[{"name":"Tề Tĩnh Xuân","aliases":["Tề tiên sinh"]}]"#.to_string()
+        };
+        let tools = tools_with(&lookup);
+        let (out, _, found) = run_chunks_with(
+            &llm,
+            &|_: &str| "sys".to_string(),
+            "",
+            Some(&tools),
+            &paragraphs,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(out, vec!["Tề tiên sinh mỉm cười."]);
+        assert!(found.is_empty());
+        assert_eq!(*asked_for.lock().unwrap(), vec!["Tề tiên sinh"]);
+        // The second request carries the call and its answer.
+        let asked = llm.asked.lock().unwrap();
+        assert_eq!(asked.len(), 2);
+        let second = &asked[1];
+        assert_eq!(second.len(), 4);
+        assert_eq!(second[3]["role"], "tool");
+        assert_eq!(second[3]["tool_call_id"], "t1");
+        assert!(second[3]["content"]
+            .as_str()
+            .unwrap()
+            .contains("Tề Tĩnh Xuân"));
+    }
+
+    #[test]
+    fn without_tools_the_parts_are_asked_as_text() {
+        let paragraphs = vec!["Một.".to_string(), "Hai.".to_string()];
+        // The API refuses tools: the part is asked as text, and tools stay off.
+        let llm = Tooly::new(vec![Err(AiError::Http(400, "tools".into()))]);
+        let lookup = |_: &str| "[]".to_string();
+        let tools = tools_with(&lookup);
+        let (out, _, _) = run_chunks_with(
+            &llm,
+            &|_: &str| "sys".to_string(),
+            "EXTRACT",
+            Some(&tools),
+            &paragraphs,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(out, vec!["[txt] Một.", "[txt] Hai."]);
+        assert!(tools.off.load(Ordering::SeqCst));
+        assert_eq!(*llm.texts.lock().unwrap(), 1);
+        // A reply in words instead of the tool is the text, as a text answer is.
+        let llm = Tooly::new(vec![Ok(
+            serde_json::json!({ "role": "assistant", "content": "Một!\n\nHai!" }),
+        )]);
+        let tools = tools_with(&lookup);
+        let (out, _, _) = run_chunks_with(
+            &llm,
+            &|_: &str| "sys".to_string(),
+            "",
+            Some(&tools),
+            &paragraphs,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(out, vec!["Một!", "Hai!"]);
+        // Arguments that are not JSON: asked again as text.
+        let llm = Tooly::new(vec![calls(vec![
+            serde_json::json!({ "id": "x", "function": { "name": "nop_ban_viet", "arguments": "{\"doan\": [\"cut" } }),
+        ])]);
+        let tools = tools_with(&lookup);
+        let (out, _, _) = run_chunks_with(
+            &llm,
+            &|_: &str| "sys".to_string(),
+            "",
+            Some(&tools),
+            &paragraphs,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(out, vec!["[txt] Một.", "[txt] Hai."]);
     }
 }
