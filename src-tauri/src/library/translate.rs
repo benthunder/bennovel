@@ -147,8 +147,9 @@ struct Flow {
     source_lang: Option<String>,
     mode: Option<Mode>,
     terms: Vec<(String, String)>,
-    /// The wiki part of the prompt (recall).
-    wiki: String,
+    /// The proper nouns the chapter names and what the wiki knows of them (recall), put
+    /// in each part's prompt.
+    recall: super::wiki::Recall,
     /// The book's genre (`GENRES`, or '') and the user's own extra instructions.
     genre: String,
     instructions: String,
@@ -208,7 +209,7 @@ pub fn run_with(
         source_lang: None,
         mode: None,
         terms,
-        wiki: String::new(),
+        recall: super::wiki::Recall::default(),
         genre,
         instructions,
         cast,
@@ -304,16 +305,17 @@ fn graph(
         });
     }
     {
-        let (failed, enter) = (failed.clone(), enter.clone());
+        let (llm, failed, enter) = (llm.clone(), failed.clone(), enter.clone());
         g.add_node("recall", move |mut f: Flow, _: &Config| {
-            let failed = failed.clone();
+            let (llm, failed) = (llm.clone(), failed.clone());
             enter(Stage::Recall);
             async move {
                 let r = (|| {
                     let conn = super::db::open(std::path::Path::new(&f.db))?;
                     super::wiki::index_names(&conn, None, f.req.novel_id, &f.req.lang)?;
-                    f.wiki = super::wiki::context(
+                    f.recall = super::wiki::recall(
                         &conn,
+                        Some(llm.as_ref()),
                         f.req.novel_id,
                         &f.paragraphs.join("\n\n"),
                         &f.req.lang,
@@ -343,10 +345,16 @@ fn graph(
                         &f.req.lang,
                         &f.req.style,
                         &f.terms,
-                        &f.wiki,
+                        "",
                     ) + &book_rules(&f.genre, &f.req.lang, &f.instructions);
                     let extract = super::wiki::extract_prompt(&f.req.lang, WIKI_MARK, &f.genre);
-                    let system = |part: &str| format!("{system}{}{extract}", f.cast.prompt(part));
+                    let system = |part: &str| {
+                        format!(
+                            "{system}{}{}{extract}",
+                            f.recall.prompt(part),
+                            f.cast.prompt(part)
+                        )
+                    };
                     let title = (!f.title.trim().is_empty())
                         .then(|| (title_prompt(&f.req.lang), f.title.clone()));
                     let cache = PartCache::open(&f.db, &f.req)?
@@ -385,10 +393,16 @@ fn graph(
                     return Ok(f);
                 }
                 let r = (|| {
-                    let system = rewrite_prompt(&f.req.lang, &f.req.style, &f.wiki)
+                    let system = rewrite_prompt(&f.req.lang, &f.req.style, "")
                         + &book_rules(&f.genre, &f.req.lang, &f.instructions);
                     let extract = super::wiki::extract_prompt(&f.req.lang, WIKI_MARK, &f.genre);
-                    let system = |part: &str| format!("{system}{}{extract}", f.cast.prompt(part));
+                    let system = |part: &str| {
+                        format!(
+                            "{system}{}{}{extract}",
+                            f.recall.prompt(part),
+                            f.cast.prompt(part)
+                        )
+                    };
                     let cache = PartCache::open(&f.db, &f.req)?
                         .map(|c| c.with_draft(&f.title, &f.paragraphs));
                     let (out, _, found) = run_chunks(

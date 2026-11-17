@@ -1540,31 +1540,171 @@ pub fn merge_near(conn: &Connection, novel_id: i64, lang: &str) -> rusqlite::Res
 /// The wiki part of a translation prompt for chapter `text`: the proper nouns of the
 /// vector table it names, as the translation must write them (raw → translated, kind),
 /// and how those entries relate, with the circumstances. Empty when there are none.
+#[cfg(test)]
 pub fn context(
     conn: &Connection,
     novel_id: i64,
     text: &str,
     lang: &str,
 ) -> rusqlite::Result<String> {
-    let found = names_in(conn, novel_id, lang, text)?;
-    if found.is_empty() {
-        return Ok(String::new());
-    }
-    let mut by_entry: BTreeMap<&str, Vec<&Name>> = BTreeMap::new();
-    let mut order: Vec<&str> = Vec::new();
-    for n in &found {
-        if !by_entry.contains_key(n.entry_uid.as_str()) {
-            order.push(&n.entry_uid);
+    Ok(recall(conn, None, novel_id, text, lang)?.prompt(text))
+}
+
+/// A name looked up in the vector table counts when it is closer than this to a row…
+const FIND: f64 = 0.25;
+/// Phrases of a chapter looked up in the vector table at most.
+const FIND_MAX: usize = 64;
+/// Entries a chapter's recall keeps (each part then takes up to `CONTEXT_ENTRIES`).
+const RECALL_ENTRIES: usize = 300;
+
+/// The proper nouns a chapter names, with what the wiki knows of them, found before it
+/// is translated: by the exact names in the vector table, and with an embedding model
+/// also by the phrases that look like names and land next to a row of it (a name the
+/// convert wrote a little differently). Each part of the chapter then gets only the
+/// names it has (`prompt`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Recall {
+    vi: bool,
+    items: Vec<Recalled>,
+    /// From uid, to uid, the line.
+    rels: Vec<(String, String, String)>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Recalled {
+    uid: String,
+    /// What finds the entry in a text: its names, aliases and the phrases found near it.
+    terms: Vec<String>,
+    line: String,
+}
+
+/// Words that start with a capital letter, one to four in a row: what may be a name in
+/// a text in a cased script ("Vương thành", "Lâm Động ca"). Not for Chinese and the like.
+fn name_phrases(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut add = |run: &[&str]| {
+        for n in (1..=run.len().min(4)).rev() {
+            for w in run.windows(n) {
+                let p = w.join(" ");
+                if p.chars().count() >= 2 && !out.contains(&p) {
+                    out.push(p);
+                }
+            }
         }
-        by_entry.entry(&n.entry_uid).or_default().push(n);
+    };
+    for sentence in text.split(|c: char| ".,;:!?…\"“”()[]「」—\n".contains(c)) {
+        let mut run: Vec<&str> = Vec::new();
+        for w in sentence.split_whitespace() {
+            let w = w.trim_matches(|c: char| !c.is_alphanumeric());
+            if w.chars().next().is_some_and(char::is_uppercase) {
+                run.push(w);
+            } else {
+                add(&run);
+                run.clear();
+            }
+        }
+        add(&run);
     }
-    order.truncate(CONTEXT_ENTRIES);
+    out
+}
+
+/// Whether `phrase` shares a word with `name`, ignoring case.
+fn shares_word(phrase: &str, name: &str) -> bool {
+    let words: Vec<String> = name.split_whitespace().map(str::to_lowercase).collect();
+    phrase
+        .split_whitespace()
+        .any(|w| words.contains(&w.to_lowercase()))
+}
+
+/// The rows of the vector table next to the phrases of `text` that may be names and are
+/// not already found: (phrase, row). Needs `llm` with an embedding model and the rows
+/// embedded by it; nothing otherwise, or when the embedding fails.
+fn near_names(
+    conn: &Connection,
+    llm: Option<&dyn Chat>,
+    novel_id: i64,
+    lang: &str,
+    text: &str,
+    found: &[Name],
+) -> rusqlite::Result<Vec<(String, Name)>> {
+    let Some((llm, model)) = llm.and_then(|l| l.embed_model().map(|m| (l, m.to_string()))) else {
+        return Ok(Vec::new());
+    };
+    let known = |p: &str| {
+        found
+            .iter()
+            .any(|n| n.raw.contains(p) || p.contains(n.raw.as_str()) || n.translated == p)
+    };
+    let phrases: Vec<String> = name_phrases(text)
+        .into_iter()
+        .filter(|p| !known(p))
+        .take(FIND_MAX)
+        .collect();
+    if phrases.is_empty() {
+        return Ok(Vec::new());
+    }
+    let Ok(vectors) = llm.embed(&phrases) else {
+        return Ok(Vec::new());
+    };
+    let mut stmt = conn.prepare(
+        "select raw, translated, kind, entry_uid, vec_distance_cosine(embedding, ?3) as d
+         from wiki_names
+         where novel_id = ?1 and lang = ?2 and model = ?4 and embedding is not null
+           and length(embedding) = length(?3)
+         order by d limit 1",
+    )?;
+    let mut out = Vec::new();
+    for (p, v) in phrases.into_iter().zip(vectors) {
+        let hit = stmt
+            .query_row(params![novel_id, lang, to_blob(&v), model], |r| {
+                Ok((
+                    Name {
+                        raw: r.get(0)?,
+                        translated: r.get(1)?,
+                        kind: r.get(2)?,
+                        entry_uid: r.get(3)?,
+                    },
+                    r.get::<_, f64>(4)?,
+                ))
+            })
+            .optional()?;
+        if let Some((n, d)) = hit {
+            let close = d < NEAR
+                || (d < FIND && (shares_word(&p, &n.raw) || shares_word(&p, &n.translated)));
+            if close {
+                out.push((p, n));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// What the wiki knows of the proper nouns `text` names (`Recall`).
+pub fn recall(
+    conn: &Connection,
+    llm: Option<&dyn Chat>,
+    novel_id: i64,
+    text: &str,
+    lang: &str,
+) -> rusqlite::Result<Recall> {
     let vi = lang == "vi";
-    let mut s = String::from(if vi {
-        "\nDANH SÁCH TÊN RIÊNG trong đoạn này (tên gốc → tên viết trong bản tiếng Việt, loại). Luôn viết đúng như vậy; tên gọi khác của một mục chỉ người hay vật đó, giữ tên gọi khác khi văn bản dùng nó như biệt danh:\n"
-    } else {
-        "\nProper nouns in this text (original → as this translation writes it, kind); always write them this way, and an alias the same as its entry's name unless the text uses it as a nickname:\n"
-    });
+    let found = names_in(conn, novel_id, lang, text)?;
+    let near = near_names(conn, llm, novel_id, lang, text, &found)?;
+    let mut order: Vec<String> = Vec::new();
+    let mut extra: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for n in &found {
+        if !order.contains(&n.entry_uid) {
+            order.push(n.entry_uid.clone());
+        }
+    }
+    for (p, n) in near {
+        if !order.contains(&n.entry_uid) {
+            order.push(n.entry_uid.clone());
+        }
+        extra.entry(n.entry_uid).or_default().push(p);
+    }
+    order.truncate(RECALL_ENTRIES);
+    let mut items = Vec::new();
     let mut picked: BTreeMap<String, Entry> = BTreeMap::new();
     for uid in &order {
         let Some(e) = by_uid(conn, uid)? else {
@@ -1576,27 +1716,40 @@ pub fn context(
         } else {
             format!("{} → {translated}", e.name)
         };
+        let mut line = String::new();
         if vi {
-            s.push_str(&format!("- {shown} ({})", kind_vi(&e.kind)));
+            line.push_str(&format!("- {shown} ({})", kind_vi(&e.kind)));
             if !e.aliases.is_empty() {
-                s.push_str(&format!("; tên gọi khác: {}", e.aliases.join(", ")));
+                line.push_str(&format!("; tên gọi khác: {}", e.aliases.join(", ")));
             }
             if let Some(rank) = e.rank {
-                s.push_str(&format!("; bậc {rank}"));
+                line.push_str(&format!("; bậc {rank}"));
             }
         } else {
-            s.push_str(&format!("- {shown} ({})", e.kind));
+            line.push_str(&format!("- {shown} ({})", e.kind));
             if !e.aliases.is_empty() {
-                s.push_str(&format!("; also called {}", e.aliases.join(", ")));
+                line.push_str(&format!("; also called {}", e.aliases.join(", ")));
             }
             if let Some(rank) = e.rank {
-                s.push_str(&format!("; rank {rank}"));
+                line.push_str(&format!("; rank {rank}"));
             }
         }
-        s.push('\n');
+        line.push('\n');
+        let mut terms: Vec<String> = std::iter::once(e.name.clone())
+            .chain(e.aliases.iter().cloned())
+            .chain((!translated.is_empty()).then(|| translated.to_string()))
+            .chain(extra.remove(uid).unwrap_or_default())
+            .filter(|t| !t.trim().is_empty())
+            .collect();
+        terms.dedup();
+        items.push(Recalled {
+            uid: e.uid.clone(),
+            terms,
+            line,
+        });
         picked.insert(e.uid.clone(), e);
     }
-    let rels: Vec<String> = relations(conn, novel_id)?
+    let rels = relations(conn, novel_id)?
         .into_iter()
         .filter_map(|r| {
             let a = picked.get(&r.from_uid)?;
@@ -1617,19 +1770,63 @@ pub fn context(
                 line.push_str(&format!(" ({})", head(r.note.trim(), 160)));
             }
             line.push('\n');
-            Some(line)
+            Some((r.from_uid.clone(), r.to_uid.clone(), line))
         })
-        .take(CONTEXT_ENTRIES)
         .collect();
-    if !rels.is_empty() {
-        s.push_str(if vi {
-            "Quan hệ:\n"
+    Ok(Recall { vi, items, rels })
+}
+
+impl Recall {
+    /// The names part of the prompt for one part of the chapter: only the entries the
+    /// part names, the most mentioned first, and the relationships between them.
+    pub fn prompt(&self, text: &str) -> String {
+        if self.items.is_empty() {
+            return String::new();
+        }
+        let finder = super::names::Finder::new(
+            &self
+                .items
+                .iter()
+                .map(|i| i.terms.clone())
+                .collect::<Vec<_>>(),
+        );
+        let mut hits: Vec<(usize, &Recalled)> = finder
+            .hits(text)
+            .into_iter()
+            .zip(&self.items)
+            .filter(|(h, _)| *h > 0)
+            .collect();
+        if hits.is_empty() {
+            return String::new();
+        }
+        hits.sort_by_key(|(h, _)| std::cmp::Reverse(*h));
+        hits.truncate(CONTEXT_ENTRIES);
+        let mut s = String::from(if self.vi {
+            "\nDANH SÁCH TÊN RIÊNG trong đoạn này (tên gốc → tên viết trong bản tiếng Việt, loại). Luôn viết đúng như vậy; tên gọi khác của một mục chỉ người hay vật đó, giữ tên gọi khác khi văn bản dùng nó như biệt danh:\n"
         } else {
-            "Relationships:\n"
+            "\nProper nouns in this text (original → as this translation writes it, kind); always write them this way, and an alias the same as its entry's name unless the text uses it as a nickname:\n"
         });
-        s.extend(rels);
+        for (_, i) in &hits {
+            s.push_str(&i.line);
+        }
+        let here = |uid: &str| hits.iter().any(|(_, i)| i.uid == uid);
+        let rels: Vec<&str> = self
+            .rels
+            .iter()
+            .filter(|(a, b, _)| here(a) && here(b))
+            .map(|(_, _, l)| l.as_str())
+            .take(CONTEXT_ENTRIES)
+            .collect();
+        if !rels.is_empty() {
+            s.push_str(if self.vi {
+                "Quan hệ:\n"
+            } else {
+                "Relationships:\n"
+            });
+            s.extend(rels);
+        }
+        s
     }
-    Ok(s)
 }
 
 /* ---------- Learning from a chapter ---------- */
@@ -2981,6 +3178,56 @@ mod tests {
                 })
                 .collect())
         }
+    }
+
+    #[test]
+    fn each_part_gets_the_names_it_has_found_through_the_vector_table() {
+        let (conn, novel) = book("find");
+        upsert_ai(
+            &conn,
+            novel,
+            "vi",
+            Some(1),
+            ai("Vương thành", "place", "Vương thành", &[]),
+        )
+        .unwrap()
+        .unwrap();
+        upsert_ai(
+            &conn,
+            novel,
+            "vi",
+            Some(1),
+            ai("Lâm Động", "character", "Lâm Động", &["Động thiếu"]),
+        )
+        .unwrap()
+        .unwrap();
+        let llm = Embedder(Mutex::new(0));
+        index_names(&conn, Some(&llm), novel, "vi").unwrap();
+        // The convert wrote the city with a capital T: no exact match, but the vector
+        // table finds it.
+        let text = "Lâm Động đi vào Vương Thành.\n\nĐộng thiếu ngồi xuống.";
+        let none = recall(&conn, None, novel, text, "vi").unwrap();
+        assert!(!none.prompt(text).contains("Vương thành (địa danh)"));
+        let r = recall(&conn, Some(&llm), novel, text, "vi").unwrap();
+        let all = r.prompt(text);
+        assert!(all.contains("- Vương thành → Vương thành (địa danh)"));
+        assert!(all.contains("- Lâm Động → Lâm Động (nhân vật); tên gọi khác: Động thiếu"));
+        // A part only gets the names it has, an alias finding its entry.
+        let second = r.prompt("Động thiếu ngồi xuống.");
+        assert!(second.contains("Lâm Động") && !second.contains("Vương thành"));
+        assert_eq!(r.prompt("Không ai cả."), "");
+        assert_eq!(
+            name_phrases("Lâm Động đi vào Vương Thành. Hắn cười."),
+            vec![
+                "Lâm Động",
+                "Lâm",
+                "Động",
+                "Vương Thành",
+                "Vương",
+                "Thành",
+                "Hắn"
+            ]
+        );
     }
 
     #[test]
