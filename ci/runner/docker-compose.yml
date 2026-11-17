@@ -1,0 +1,39 @@
+# Two runners so the Linux and Android jobs of one release build at the same time.
+# Start:  docker compose up -d --build      Logs:  docker compose logs -f
+x-runner: &runner
+  build: .
+  image: bennovel-runner:latest
+  restart: unless-stopped
+  env_file: .env              # ACCESS_TOKEN, REPO_URL, ... (see .env.example)
+  # Leave a little for the host. Android (Gradle + 3 Rust targets) is the heavy one.
+  mem_limit: ${RUNNER_MEM_LIMIT:-7g}
+
+services:
+  runner-1:
+    <<: *runner
+    hostname: bennovel-runner-1
+    environment:
+      RUNNER_NAME: bennovel-runner-1
+    volumes:
+      - work-1:/_work                     # checkout + Rust target/ dir stay between builds
+      - cargo-registry:/usr/local/cargo/registry
+      - gradle:/root/.gradle
+      - npm:/root/.npm
+
+  runner-2:
+    <<: *runner
+    hostname: bennovel-runner-2
+    environment:
+      RUNNER_NAME: bennovel-runner-2
+    volumes:
+      - work-2:/_work
+      - cargo-registry:/usr/local/cargo/registry
+      - gradle:/root/.gradle
+      - npm:/root/.npm
+
+volumes:
+  work-1:
+  work-2:
+  cargo-registry:
+  gradle:
+  npm:
