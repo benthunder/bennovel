@@ -111,5 +111,11 @@ export const wikiChapter = (x: { firstChapter: number | null; firstChapterShown?
 export const wikiMissingIn = (e: WikiEntry, lang: string) =>
   lang !== RAW && (!e.names[lang] || (Object.keys(e.summaries).length > 0 && !e.summaries[lang]));
 
-/** What the wiki knew by chapter `number` (reading order, from 1), for the reader. */
-export const getWikiAt = (user: string, novelId: number, number: number) => invoke<Wiki>('wiki_at', { user, novelId, number });
+/** Makes entry `fromUid` part of `intoUid` (one character written two ways): its names become aliases, its relations move over. */
+export async function mergeWikiEntry(user: string, novelId: number, fromUid: string, intoUid: string) {
+  try {
+    return await invoke<WikiEntry>('wiki_merge', { user, novelId, fromUid, intoUid });
+  } catch (e) {
+    throw new AiFailure(e);
+  }
+}

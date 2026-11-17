@@ -189,18 +189,119 @@ impl HtmlText {
 pub fn pdf_text_to_paragraphs(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
+    // A big first letter of a chapter, on a line of its own ("V" before "ương…").
+    let mut cap: Option<String> = None;
     for line in text.lines().map(str::trim) {
         if line.is_empty() {
-            flush(&mut out, &mut cur);
+            if cap.is_none() {
+                flush(&mut out, &mut cur);
+            }
             continue;
         }
+        if is_heading(line) {
+            flush(&mut out, &mut cur);
+            out.push(line.to_string());
+            continue;
+        }
+        if is_drop_cap(line) {
+            flush(&mut out, &mut cur);
+            cap = Some(line.to_string());
+            continue;
+        }
+        let line = match cap.take() {
+            Some(c) if line.starts_with(char::is_lowercase) => format!("{c}{line}"),
+            Some(c) => {
+                join_line(&mut cur, &c);
+                line.to_string()
+            }
+            None if cur.is_empty() => join_spaced_cap(line),
+            None => line.to_string(),
+        };
+        let line = line.as_str();
         join_line(&mut cur, line);
         if line.ends_with(['.', '!', '?', '。', '！', '？', '”', '"', '」', '…', ':']) {
             flush(&mut out, &mut cur);
         }
     }
+    if let Some(c) = cap {
+        join_line(&mut cur, &c);
+    }
     flush(&mut out, &mut cur);
     out
+}
+
+/// A chapter heading on a line of its own: "Chương 347: Vương thành", "Chapter 12",
+/// "Hồi 5", "Quyển 2", "第三百章 …". It is kept as its own paragraph, so the first
+/// sentence of the chapter is not glued to it.
+fn is_heading(line: &str) -> bool {
+    if line.chars().count() > 80 {
+        return false;
+    }
+    let lower = line.to_lowercase();
+    for word in [
+        "chương", "chapter", "hồi", "quyển", "tập", "phần", "book", "part",
+    ] {
+        let Some(rest) = lower.strip_prefix(word) else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        let num: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || "ivxlcdm".contains(*c))
+            .collect();
+        if num.is_empty() {
+            continue;
+        }
+        let tail = &rest[num.len()..];
+        let ok_after = tail
+            .chars()
+            .next()
+            .is_none_or(|c| c.is_whitespace() || ":.-–—)".contains(c));
+        let tail = tail.trim();
+        // Words that also start sentences ("Hồi 5 giờ sáng…", "Tập 2 người…") need a
+        // mark after the number; a heading has no comma and no closing full stop.
+        let common = matches!(word, "hồi" | "tập" | "phần" | "part" | "book");
+        let marked = tail.is_empty() || tail.starts_with([':', '.', '-', '–', '—', ')']);
+        if ok_after
+            && (marked || !common)
+            && (tail.is_empty() || (!tail.contains(',') && !line.ends_with(['.', ';', '?', '!'])))
+        {
+            return true;
+        }
+    }
+    // 第…章 / 第…回 / 第…卷
+    let cs: Vec<char> = line.chars().collect();
+    cs.first() == Some(&'第')
+        && cs
+            .iter()
+            .skip(1)
+            .take(12)
+            .position(|c| matches!(c, '章' | '回' | '卷' | '节'))
+            .is_some_and(|i| {
+                cs[1..=i]
+                    .iter()
+                    .all(|c| c.is_ascii_digit() || "零〇一二三四五六七八九十百千万两".contains(*c))
+                    && i > 0
+            })
+}
+
+/// A capital letter alone on a line: the big first letter of a chapter.
+fn is_drop_cap(line: &str) -> bool {
+    let mut cs = line.chars();
+    matches!((cs.next(), cs.next()), (Some(c), None) if c.is_uppercase())
+}
+
+/// "V ương thành…" at the start of a paragraph: a big first letter the PDF put a
+/// space after, joined back ("Vương thành…"). Only a letter that is not a word on its
+/// own (A, I, O, Ô… are).
+fn join_spaced_cap(line: &str) -> String {
+    let mut cs = line.chars();
+    if let (Some(c), Some(' '), Some(n)) = (cs.next(), cs.next(), cs.next()) {
+        if c.is_ascii_uppercase() && !"AIOUY".contains(c) && n.is_lowercase() {
+            return format!("{c}{}", &line[2..]);
+        }
+    }
+    line.to_string()
 }
 
 /// Splits the text of several pages (in order) into paragraphs, as if they were one
@@ -415,6 +516,33 @@ mod tests {
     }
 
     #[test]
+    fn a_pdf_heading_and_drop_cap_stay_apart_from_the_text() {
+        let text = "Chương 347: Vương thành\nV\nương thành đêm nay rất yên\ntĩnh.\nHắn đi.";
+        assert_eq!(
+            pdf_text_to_paragraphs(text),
+            vec![
+                "Chương 347: Vương thành",
+                "Vương thành đêm nay rất yên tĩnh.",
+                "Hắn đi."
+            ]
+        );
+        // The letter with a space after it, and a blank line between.
+        assert_eq!(
+            pdf_text_to_paragraphs("Chapter 12\n\nV ương thành rất yên."),
+            vec!["Chapter 12", "Vương thành rất yên."]
+        );
+        assert_eq!(
+            pdf_text_to_paragraphs("第三百章 夜\n他走了。"),
+            vec!["第三百章 夜", "他走了。"]
+        );
+        // Not headings, not drop caps.
+        assert_eq!(
+            pdf_text_to_paragraphs("Hồi 5 giờ sáng, hắn\ndậy.\nA man came.\nPhần lớn họ đi."),
+            vec!["Hồi 5 giờ sáng, hắn dậy.", "A man came.", "Phần lớn họ đi."]
+        );
+    }
+
+    #[test]
     fn joins_broken_words_and_chinese_lines() {
         assert_eq!(
             pdf_text_to_paragraphs("a well-\nknown Self-\nService - \nand 1990-\n1999."),
@@ -438,7 +566,8 @@ mod tests {
         assert_eq!(
             pdf_pages_to_paragraphs(&pages),
             vec![
-                "Chapter 1 He walked into the room and sat down.",
+                "Chapter 1",
+                "He walked into the room and sat down.",
                 "The end.",
                 "New page."
             ]

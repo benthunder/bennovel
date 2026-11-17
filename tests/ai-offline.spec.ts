@@ -117,7 +117,7 @@ test('the LLM is set up in Profile and kept on the device', async ({ page }) => 
   await page.getByRole('button', { name: 'Save' }).click();
   await expect(page.getByText('LLM saved.')).toBeVisible();
   const set = (await calls(page)).find(c => c.cmd === 'llm_config_set');
-  expect(set?.args.config).toEqual({ provider: 'custom', baseUrl: 'http://localhost:11434/v1', model: 'qwen2.5:7b', apiKey: '' });
+  expect(set?.args.config).toEqual({ provider: 'custom', baseUrl: 'http://localhost:11434/v1', model: 'qwen2.5:7b', embedModel: '', apiKey: '' });
   await expect(page.getByRole('button', { name: /AI translation \(your LLM\)/ })).toContainText('qwen2.5:7b');
 });
 
@@ -223,8 +223,14 @@ test('the whole book goes to the background queue from its page', async ({ page 
   await page.goto('/');
   await page.getByText('Device Diary').filter({ visible: true }).first().click();
   await page.getByRole('button', { name: 'Translate the whole novel' }).filter({ visible: true }).first().click();
+  // The genre sets the forms of address; the reader's own instructions go in the prompt.
+  await page.getByLabel('Genre').selectOption('xianxia');
+  await expect(page.getByText(/đạo hữu/)).toBeVisible();
+  await page.getByLabel('Extra instructions for the AI (optional)').fill('Gọi nhân vật chính là Lâm thiếu.');
   await page.getByRole('button', { name: 'Start translating' }).click();
   await expect(page.getByText(/Queued 2 chapters into Tiếng Việt/)).toBeVisible();
+  const prefs = (await calls(page)).find(c => c.cmd === 'ai_prefs_set');
+  expect(prefs?.args).toMatchObject({ novelId: 1, prefs: { genre: 'xianxia', instructions: 'Gọi nhân vật chính là Lâm thiếu.' } });
   const req = (await calls(page)).find(c => c.cmd === 'ai_translate_book');
   expect(req?.args).toMatchObject({ novelId: 1, fromIndex: 0, lang: 'vi', style: 'natural', uiLang: 'en' });
 });

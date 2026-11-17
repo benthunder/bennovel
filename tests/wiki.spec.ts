@@ -22,7 +22,7 @@ async function nativeApp(page: Page) {
       ({ uid, kind, name, names: vi ? { vi } : {}, aliases: [], summaries: summary ? { vi: summary } : {}, rank: null, firstChapter, source: 'ai', updatedAt: 1, ...extra });
     const wiki = {
       entries: [
-        entry('a', 'character', '林动', 'Lâm Động', 'Thiếu niên Lâm gia ở Thanh Dương trấn, tu luyện nhờ thạch phù bí ẩn.', 1),
+        entry('a', 'character', '林动', 'Lâm Động', 'Thiếu niên Lâm gia ở Thanh Dương trấn, tu luyện nhờ thạch phù bí ẩn.', 1, { aliases: ['动少'] }),
         entry('b', 'character', '小貂', 'Tiểu Điêu', 'Yêu thú trong thạch phù, bạn đồng hành của Lâm Động.', 3),
         entry('c', 'faction', '道宗', 'Đạo Tông', 'Một trong những tông môn lớn nhất Đông Huyền vực, chia thành nhiều mạch như Đan Tông, Phù Tông, Thiên Tông và Hoang Điện. Tông chủ là Ứng Huyền Tử. Mỗi lần thi đấu giữa các mạch, đệ tử ưu tú được vào Hoang Điện tu luyện, nơi cất giữ những bí thuật cổ xưa nhất của tông môn.', 40),
         entry('d', 'place', '青阳镇', 'Thanh Dương trấn', 'Thị trấn nhỏ, quê của Lâm gia.', 1),
@@ -31,7 +31,7 @@ async function nativeApp(page: Page) {
         entry('g', 'level', '淬体', 'Thối Thể', 'Cảnh giới đầu tiên.', 1, { rank: 1 })
       ],
       relations: [
-        { uid: 'r1', fromUid: 'b', toUid: 'a', kind: 'bạn đồng hành của', labels: { vi: 'bạn đồng hành của' }, note: '', firstChapter: 3 },
+        { uid: 'r1', fromUid: 'b', toUid: 'a', kind: 'bạn đồng hành của', labels: { vi: 'bạn đồng hành của' }, note: 'Gặp nhau trong thạch phù.', firstChapter: 3 },
         { uid: 'r3', fromUid: 'd', toUid: 'e', kind: 'located_in', labels: {}, note: '', firstChapter: 2 },
         { uid: 'r4', fromUid: 'a', toUid: 'g', kind: 'has_level', labels: {}, note: '', firstChapter: 1 },
         { uid: 'r5', fromUid: 'a', toUid: 'f', kind: 'has_level', labels: {}, note: '', firstChapter: 5 }
@@ -57,15 +57,6 @@ async function nativeApp(page: Page) {
           case 'book_section':
             if (Number(w.__sectionFails) > 0) { w.__sectionFails = Number(w.__sectionFails) - 1; throw 'book 9 is not open'; }
             return { index: args.index, paragraphs: ['林动 看着 道宗 的 人。', '动少 笑了。'] };
-          case 'wiki_at': {
-            // As of chapter 1: only what was met by then, with the description written then.
-            const n = Number(args.number);
-            const entries = wiki.entries.filter(e => (e.firstChapter ?? 0) <= n)
-              .map(e => (e.uid === 'a' ? { ...e, aliases: ['动少'], summaries: { vi: 'Thiếu niên Lâm gia (chương 1).' } } : e));
-            const ids = new Set(entries.map(e => e.uid));
-            const relations = wiki.relations.filter(r => (r.firstChapter ?? 0) <= n && ids.has(r.fromUid) && ids.has(r.toUid));
-            return { ...wiki, entries, relations };
-          }
           case 'wiki_search': return wiki.entries.filter(e => e.kind === 'faction');
           case 'wiki_set_auto': wiki.auto = Boolean(args.auto); return null;
           case 'wiki_missing': return args.lang === 'en' ? 7 : 0;
@@ -184,7 +175,7 @@ test('the wiki follows the reading language, with levels in order and places as 
   await page.screenshot({ path: `test-results/wiki-${info.project.name}-map.png` });
 });
 
-test('names in a chapter open the wiki as known by that chapter', async ({ page }, info) => {
+test('names in a chapter open the whole wiki with its links', async ({ page }, info) => {
   await nativeApp(page);
   await page.addInitScript(() => {
     localStorage.setItem('bennovel.aiView.:1', JSON.stringify({ lang: 'vi', style: 'Natural', dict: true, view: 'vi' }));
@@ -193,18 +184,19 @@ test('names in a chapter open the wiki as known by that chapter', async ({ page 
   await page.getByText('Võ Động Càn Khôn').filter({ visible: true }).first().click();
   await page.getByRole('button', { name: /Bắt đầu đọc|Đọc tiếp/ }).filter({ visible: true }).first().click();
   const first = page.locator('[data-part="0"]');
-  // Names (and aliases) the wiki knew by chapter 1 are marked; 道宗 comes in chapter 40.
+  // Names and aliases are marked, those met in later chapters too (spoilers are fine).
   await expect(first.locator('[data-wiki-term="a"]')).toHaveCount(2);
-  await expect(first.locator('[data-wiki-term="c"]')).toHaveCount(0);
-  expect((await calls(page)).find(c => c.cmd === 'wiki_at')?.args).toMatchObject({ novelId: 1, number: 1 });
+  await expect(first.locator('[data-wiki-term="c"]')).toHaveCount(1);
+  expect((await calls(page)).some(c => c.cmd === 'wiki_at')).toBe(false);
   await first.locator('[data-wiki-term="a"]').first().click();
   const card = page.getByRole('dialog', { name: 'Lâm Động' });
-  await expect(card.getByText('Thiếu niên Lâm gia (chương 1).')).toBeVisible();
-  await expect(card.getByText('Cảnh giới hiện tại: Thối Thể')).toBeVisible();
-  await expect(card.getByText('Thông tin tới Phần 1 / 2, không có gì từ các chương sau.')).toBeVisible();
-  // The later realm and the sect are not known yet.
-  await expect(card.getByText('Địa Nguyên cảnh')).toHaveCount(0);
-  await expect(card.getByText('Đạo Tông')).toHaveCount(0);
+  await expect(card.getByText('Thiếu niên Lâm gia ở Thanh Dương trấn, tu luyện nhờ thạch phù bí ẩn.')).toBeVisible();
+  // The level reached last, and the relationships with their circumstances.
+  await expect(card.getByText('Cảnh giới hiện tại: Địa Nguyên cảnh')).toBeVisible();
+  await expect(card.getByText('Gặp nhau trong thạch phù.')).toBeVisible();
+  await card.getByRole('button', { name: /Tiểu Điêu/ }).click();
+  await expect(page.getByRole('dialog', { name: 'Tiểu Điêu' })).toBeVisible();
+  await page.getByRole('dialog', { name: 'Tiểu Điêu' }).getByRole('button', { name: /Lâm Động/ }).click();
   await page.waitForTimeout(500);
   await page.screenshot({ path: `test-results/wiki-${info.project.name}-reader-card.png` });
   await card.getByRole('button', { name: 'Wiki truyện' }).click();

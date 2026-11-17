@@ -545,12 +545,47 @@ create table segments (
   unique (chapter_id, lang, style, position)
 );
 "#,
+    r#"
+-- Local only (wiki.rs `index_names`): the vector table of a book's proper nouns. One
+-- row per name as the original writes it (an entry's name or one of its aliases) and
+-- target language: the name the translation uses and its kind. `embedding` (float32,
+-- read by sqlite-vec) is made by the embedding model set with the LLM from the raw
+-- name and the translated one; null while there is none. Names that land close
+-- together are the same entity written two ways, and their entries are merged.
+create table wiki_names (
+  id         integer primary key,
+  novel_id   integer not null references novels (id) on delete cascade,
+  raw        text not null,
+  lang       text not null,
+  translated text not null default '',
+  kind       text not null,
+  entry_uid  text not null,
+  model      text,
+  embedding  blob,
+  updated_at integer not null,
+  unique (novel_id, raw, lang)
+);
+create index wiki_names_entry on wiki_names (entry_uid);
+alter table llm_config add column embed_model text not null default '';
+
+-- Local only (translate.rs): how a book is translated besides language and style: its
+-- genre (forms of address follow it) and the user's own extra instructions for the
+-- prompt.
+create table ai_book_prefs (
+  novel_id     integer primary key references novels (id) on delete cascade,
+  genre        text not null default '',
+  instructions text not null default ''
+);
+"#,
 ];
 
 /// The migration (1-based) after which `content` holds blocks.
 const BLOCKS_VERSION: usize = 18;
 /// The migration (1-based) that moves `content` into table `segments`.
 const SEGMENTS_VERSION: usize = 19;
+/// The migration (1-based) after which the wiki only keeps proper nouns: common nouns
+/// older versions let in are cleaned out by `wiki::tidy_all`.
+const TIDY_VERSION: usize = 20;
 
 /// Epoch milliseconds now.
 pub fn now_ms() -> i64 {
@@ -582,7 +617,20 @@ pub fn set_state(conn: &Connection, key: &str, value: &str) -> rusqlite::Result<
     Ok(())
 }
 
+/// Builds sqlite-vec (`vec_distance_cosine`…) into every connection opened from here
+/// on; it is compiled into the app, so it works on Android too.
+fn load_vec() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| unsafe {
+        #[allow(clippy::missing_transmute_annotations)]
+        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+            sqlite_vec::sqlite3_vec_init as *const (),
+        )));
+    });
+}
+
 pub fn open(path: &Path) -> rusqlite::Result<Connection> {
+    load_vec();
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
@@ -610,6 +658,9 @@ fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
             }
             if i + 1 == SEGMENTS_VERSION {
                 super::segments::migrate_all(&tx)?;
+            }
+            if i + 1 == TIDY_VERSION {
+                super::wiki::tidy_all(&tx)?;
             }
             tx.pragma_update(None, "user_version", i as i64 + 1)?;
             tx.commit()?;

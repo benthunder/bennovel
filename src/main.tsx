@@ -14,6 +14,7 @@ import './styles/organic.css';
 import './styles/app.css';
 import './styles/motion.css';
 import App from './App';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { I18nProvider } from './i18n';
 import { AppStoreProvider } from './store/AppStore';
 
@@ -26,10 +27,12 @@ if (/Linux/.test(navigator.userAgent) && !/Android|Chrome|Firefox/.test(navigato
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <I18nProvider>
-      <AppStoreProvider>
-        <App />
-      </AppStoreProvider>
-    </I18nProvider>
+    <ErrorBoundary>
+      <I18nProvider>
+        <AppStoreProvider>
+          <App />
+        </AppStoreProvider>
+      </I18nProvider>
+    </ErrorBoundary>
   </StrictMode>
 );

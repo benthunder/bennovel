@@ -46,6 +46,16 @@ use std::sync::{Arc, Mutex};
 /// Target languages offered: English and Vietnamese.
 pub const LANGS: &[&str] = &["en", "vi"];
 pub const STYLES: &[&str] = &["literal", "natural", "literary", "casual"];
+/// Genres a book can be set to (`ai_book_prefs`); forms of address follow them. '' is
+/// none chosen.
+pub const GENRES: &[&str] = &[
+    "wuxia",
+    "xianxia",
+    "supernatural",
+    "romance",
+    "politics",
+    "nonfiction",
+];
 
 /// Paragraphs that stand for a picture (U+FFFC + key) pass through untouched.
 const IMAGE_MARK: char = '\u{FFFC}';
@@ -137,8 +147,12 @@ struct Flow {
     source_lang: Option<String>,
     mode: Option<Mode>,
     terms: Vec<(String, String)>,
-    /// The wiki part of the prompt (recall).
-    wiki: String,
+    /// The proper nouns the chapter names and what the wiki knows of them (recall), put
+    /// in each part's prompt.
+    recall: super::wiki::Recall,
+    /// The book's genre (`GENRES`, or '') and the user's own extra instructions.
+    genre: String,
+    instructions: String,
     /// The cast the chapter names: genders, ages and forms of address found before
     /// (cast.rs), put in each part's prompt.
     cast: super::cast::Cast,
@@ -182,6 +196,10 @@ pub fn run_with(
     } else {
         Vec::new()
     };
+    let Prefs {
+        genre,
+        instructions,
+    } = prefs(conn, req.novel_id)?;
     let flow = Flow {
         db: conn.path().unwrap_or_default().to_string(),
         req,
@@ -191,7 +209,9 @@ pub fn run_with(
         source_lang: None,
         mode: None,
         terms,
-        wiki: String::new(),
+        recall: super::wiki::Recall::default(),
+        genre,
+        instructions,
         cast,
         title,
         paragraphs: split_paragraphs(&content),
@@ -285,15 +305,17 @@ fn graph(
         });
     }
     {
-        let (failed, enter) = (failed.clone(), enter.clone());
+        let (llm, failed, enter) = (llm.clone(), failed.clone(), enter.clone());
         g.add_node("recall", move |mut f: Flow, _: &Config| {
-            let failed = failed.clone();
+            let (llm, failed) = (llm.clone(), failed.clone());
             enter(Stage::Recall);
             async move {
                 let r = (|| {
                     let conn = super::db::open(std::path::Path::new(&f.db))?;
-                    f.wiki = super::wiki::context(
+                    super::wiki::index_names(&conn, None, f.req.novel_id, &f.req.lang)?;
+                    f.recall = super::wiki::recall(
                         &conn,
+                        Some(llm.as_ref()),
                         f.req.novel_id,
                         &f.paragraphs.join("\n\n"),
                         &f.req.lang,
@@ -323,10 +345,16 @@ fn graph(
                         &f.req.lang,
                         &f.req.style,
                         &f.terms,
-                        &f.wiki,
-                    );
-                    let extract = super::wiki::extract_prompt(&f.req.lang, WIKI_MARK);
-                    let system = |part: &str| format!("{system}{}{extract}", f.cast.prompt(part));
+                        "",
+                    ) + &book_rules(&f.genre, &f.req.lang, &f.instructions);
+                    let extract = super::wiki::extract_prompt(&f.req.lang, WIKI_MARK, &f.genre);
+                    let system = |part: &str| {
+                        format!(
+                            "{system}{}{}{extract}",
+                            f.recall.prompt(part),
+                            f.cast.prompt(part)
+                        )
+                    };
                     let title = (!f.title.trim().is_empty())
                         .then(|| (title_prompt(&f.req.lang), f.title.clone()));
                     let cache = PartCache::open(&f.db, &f.req)?
@@ -365,9 +393,16 @@ fn graph(
                     return Ok(f);
                 }
                 let r = (|| {
-                    let system = rewrite_prompt(&f.req.lang, &f.req.style, &f.wiki);
-                    let extract = super::wiki::extract_prompt(&f.req.lang, WIKI_MARK);
-                    let system = |part: &str| format!("{system}{}{extract}", f.cast.prompt(part));
+                    let system = rewrite_prompt(&f.req.lang, &f.req.style, "")
+                        + &book_rules(&f.genre, &f.req.lang, &f.instructions);
+                    let extract = super::wiki::extract_prompt(&f.req.lang, WIKI_MARK, &f.genre);
+                    let system = |part: &str| {
+                        format!(
+                            "{system}{}{}{extract}",
+                            f.recall.prompt(part),
+                            f.cast.prompt(part)
+                        )
+                    };
                     let cache = PartCache::open(&f.db, &f.req)?
                         .map(|c| c.with_draft(&f.title, &f.paragraphs));
                     let (out, _, found) = run_chunks(
@@ -641,6 +676,9 @@ fn translate_prompt(
     terms: &[(String, String)],
     wiki: &str,
 ) -> String {
+    if target == "vi" {
+        return translate_prompt_vi(source, style, terms, wiki);
+    }
     let mut s = format!(
         "You are a professional novel translator. Translate the user's text from {} into {}. Translate the meaning, then {} Style: {}. Keep character names and terms consistent. {FORMAT_RULES}",
         lang_name(source),
@@ -658,7 +696,81 @@ fn translate_prompt(
     s
 }
 
+/// `translate_prompt` into Vietnamese, written in Vietnamese.
+fn translate_prompt_vi(
+    source: &str,
+    style: &str,
+    terms: &[(String, String)],
+    wiki: &str,
+) -> String {
+    let from = match source {
+        "en" => "tiếng Anh",
+        "zh" => "tiếng Trung",
+        "ko" => "tiếng Hàn",
+        "ja" => "tiếng Nhật",
+        _ => "ngôn ngữ gốc",
+    };
+    let mut s = VI_TRANSLATE
+        .replace("{from}", from)
+        .replace("{style}", style_rule_vi(style));
+    if !terms.is_empty() {
+        s.push_str("\nLuôn dịch các tên và thuật ngữ này như sau:\n");
+        for (k, v) in terms {
+            s.push_str(&format!("- {k} → {v}\n"));
+        }
+    }
+    s.push_str(wiki);
+    s
+}
+
+const VI_TRANSLATE: &str = r#"Bạn là dịch giả truyện chuyên nghiệp. Dịch văn bản người dùng gửi từ {from} sang tiếng Việt.
+
+LUẬT CHUNG
+1. Dịch ý, không dịch từng chữ: hiểu ý cả câu rồi viết thành câu tiếng Việt hoàn chỉnh, có nghĩa, đúng ngữ pháp.
+2. Trật tự tiếng Việt: chủ ngữ, rồi động từ, rồi bổ ngữ; tính từ và định ngữ đứng sau danh từ; người sở hữu đứng sau vật được sở hữu; thời gian, nơi chốn đứng đầu hoặc cuối câu.
+3. Tự kiểm tra: một người Việt đọc câu dịch phải hiểu ngay, không phải đoán.
+4. Từ ngữ: dùng từ thuần Việt khi cùng nghĩa với từ Hán Việt vụng; giữ Hán Việt cho tên riêng, danh hiệu, cảnh giới, chiêu thức và thuật ngữ của truyện.
+5. Xưng hô: chọn theo quan hệ, tuổi tác, vai vế và giọng của từng cặp nhân vật, giữ nhất quán.
+6. Giữ nội dung: không thêm, không tóm tắt, không bỏ ý; tên riêng và thuật ngữ dịch nhất quán.
+
+VĂN PHONG: {style}
+
+ĐỊNH DẠNG: mỗi đoạn vào là đúng một đoạn ra, cùng thứ tự, cách nhau một dòng trống; không gộp, không bỏ đoạn; không thêm tiêu đề, ghi chú, lời giải thích hay dấu ngoặc bao quanh. Chỉ trả về bản dịch."#;
+
+/// The rewrite of a Vietnamese "convert" text (a word-for-word machine translation
+/// from Chinese that keeps the Chinese sentence order and phrasing), written in
+/// Vietnamese as a few general rules, not a list of cases. Every sentence must come out
+/// as a whole, meaningful, grammatical Vietnamese sentence.
+const VI_REWRITE: &str = r#"Bạn là biên tập viên truyện tiếng Việt. Văn bản người dùng gửi là bản convert: chữ đã là tiếng Việt nhưng câu còn theo trật tự và lối nói của tiếng gốc. Việc của bạn là viết lại thành văn tiếng Việt tự nhiên, không dịch sang ngôn ngữ khác.
+
+LUẬT CHUNG
+1. Câu hoàn chỉnh: mỗi câu viết ra phải là câu tiếng Việt hoàn chỉnh, có nghĩa, đúng ngữ pháp, có chủ ngữ và vị ngữ rõ ràng (được lược chủ ngữ khi ngữ cảnh đã rõ ai làm).
+2. Viết lại cả câu: hiểu ý cả câu rồi viết lại theo trật tự tiếng Việt, không giữ khung câu convert, không chỉ thay từng từ. Trật tự tiếng Việt: chủ ngữ, rồi động từ, rồi bổ ngữ; tính từ và định ngữ đứng sau danh từ; người sở hữu đứng sau vật được sở hữu; thời gian, nơi chốn đứng đầu hoặc cuối câu.
+3. Tự kiểm tra: đọc lại từng câu như một người Việt chưa từng biết tiếng gốc. Câu nào phải đoán mới hiểu, hoặc hiểu theo nghĩa đen thì vô nghĩa, thì suy ra ý thật từ ngữ cảnh và viết lại bằng cách nói tiếng Việt quen thuộc.
+4. Câu gọn: bỏ từ đệm, lượng từ, phó từ thừa và cách diễn đạt dịch nguyên văn; tách câu quá dài, gộp ý lặp.
+5. Từ ngữ: dùng từ thuần Việt khi cùng nghĩa với từ Hán Việt vụng; giữ Hán Việt cho tên riêng, danh hiệu, cảnh giới, chiêu thức và thuật ngữ của truyện.
+6. Xưng hô: chọn theo quan hệ, tuổi tác, vai vế và giọng của từng cặp nhân vật, giữ nhất quán suốt truyện.
+7. Giữ nội dung: không thêm tình tiết, cảm xúc hay chi tiết mới; không tóm tắt; không bỏ ý.
+8. Giữ tên riêng đúng như danh sách tên riêng bên dưới (nếu có).
+
+VĂN PHONG: {style}
+
+ĐỊNH DẠNG: mỗi đoạn vào là đúng một đoạn ra, cùng thứ tự, cách nhau một dòng trống; không gộp, không tách, không bỏ đoạn; không thêm tiêu đề, ghi chú, lời giải thích hay dấu ngoặc bao quanh. Chỉ trả về văn bản đã viết lại."#;
+
+/// `style_rule` in Vietnamese, for `VI_REWRITE`.
+fn style_rule_vi(style: &str) -> &'static str {
+    match style {
+        "literal" => "Sát nghĩa: bám sát từng ý của bản gốc, không thêm thắt, chỉ sửa trật tự câu và từ ngữ cho đúng tiếng Việt.",
+        "literary" => "Văn chương: giàu hình ảnh, chọn từ tinh tế, nhịp câu theo không khí từng cảnh; vẫn không thêm chi tiết mới.",
+        "casual" => "Đời thường: giản dị, hiện đại, câu ngắn, từ thông dụng; hạn chế Hán Việt trừ tên riêng và thuật ngữ.",
+        _ => "Tự nhiên: trôi chảy, dễ đọc như truyện mạng tiếng Việt viết tốt; câu gọn, nhịp đều, thoại đúng giọng từng nhân vật.",
+    }
+}
+
 fn rewrite_prompt(lang: &str, style: &str, wiki: &str) -> String {
+    if lang == "vi" {
+        return VI_REWRITE.replace("{style}", style_rule_vi(style)) + wiki;
+    }
     let s = format!(
         "You are a professional {name} novel editor. The user's text is already in {name} but may be a rough machine translation; do not translate it into another language. Rewrite it so it reads as if written in {name} from the start. {} Fix spelling, punctuation and wrong word choices. Style: {}. Keep the meaning, events, dialogue and names; do not summarize, shorten or add anything. {FORMAT_RULES}",
         grammar_rules(lang),
@@ -668,7 +780,100 @@ fn rewrite_prompt(lang: &str, style: &str, wiki: &str) -> String {
     s + wiki
 }
 
+/// How characters address each other and are referred to in a genre, for a
+/// translation into `lang`.
+fn genre_rules(genre: &str, lang: &str) -> &'static str {
+    match (genre, lang) {
+        ("wuxia", "vi") => "Thể loại: kiếm hiệp. Xưng hô trong thoại: ta / ngươi giữa người ngang hàng hoặc với người dưới; tại hạ / các hạ khi lịch sự với người lạ; huynh / đệ / tỷ / muội giữa anh em kết nghĩa, đồng môn; sư phụ / đồ nhi giữa thầy và trò; lão phu, lão nạp cho người già, nhà sư; bổn cô nương cho thiếu nữ kiêu kỳ. Trong lời kể: hắn hoặc y cho nam, nàng cho thiếu nữ, lão cho người già. Giữ thuật ngữ võ học bằng Hán Việt (nội công, khinh công, chưởng môn); giọng văn gọn, hào sảng.",
+        ("xianxia", "vi") => "Thể loại: tiên hiệp. Xưng hô trong thoại: mặc định ta / ngươi; bản tọa, bổn tọa hoặc lão phu khi bậc tiền bối mạnh tự xưng; tiền bối / vãn bối giữa người trên và người dưới; đạo hữu giữa tu sĩ ngang hàng; sư tôn / sư phụ và đệ tử giữa thầy và trò; sư huynh / sư đệ / sư tỷ / sư muội trong cùng tông môn. Trong lời kể: hắn cho nam, nàng cho nữ. Giữ mọi cảnh giới, công pháp, pháp bảo, danh hiệu tông môn bằng Hán Việt (Luyện Khí, Trúc Cơ, Kim Đan, Nguyên Anh, linh thạch, pháp bảo).",
+        ("supernatural", "vi") => "Thể loại: linh dị. Thường là bối cảnh hiện đại: tôi / anh / em / cậu / chị trong thoại theo tuổi và độ thân; mày / tao chỉ giữa bạn bè thô lỗ hoặc khi tức giận. Trong lời kể: anh ta / cô ta, hắn cho kẻ đáng sợ, nó cho ma quỷ, xác chết hay đồ vật. Giọng văn căng thẳng, rờn rợn, câu ngắn ở đoạn đáng sợ; thuật ngữ Đạo giáo, ma quỷ giữ Hán Việt (âm khí, lệ quỷ, phù chú).",
+        ("romance", "vi") => "Thể loại: tình yêu - lãng mạn. Bối cảnh hiện đại: người yêu xưng anh / em, người chưa thân xưng tôi / anh / cô, xưng hô ấm dần theo mối quan hệ; trong lời kể dùng anh / cô (anh ấy / cô ấy), không dùng hắn / nàng. Bối cảnh cổ đại: chàng / nàng, ta / chàng, thiếp / phu quân giữa vợ chồng. Cảm xúc và suy nghĩ nội tâm viết mềm mại, tự nhiên, không cứng.",
+        ("politics", "vi") => "Thể loại: chính trị. Chốn cung đình: trẫm / khanh giữa vua và quan, thần / bệ hạ khi quan nói với vua, bản cung / bổn cung cho hoàng hậu, phi tần, điện hạ cho hoàng tử, nô tài / nô tì cho người hầu. Bối cảnh hiện đại: tôi / ông / bà / ngài / đồng chí theo cấp bậc và mức trang trọng; lời kể dùng ông ta / bà ta. Giữ chức danh, quan hàm đúng dạng Hán Việt hoặc chính thức; giọng văn trang trọng, chừng mực.",
+        ("nonfiction", "vi") => "Thể loại: tài liệu thực tế. Giữ nguyên mọi danh từ riêng (người, nơi chốn, tổ chức, công ty, sản phẩm, sự kiện, tác phẩm) đúng tên gốc tiếng Anh, không dịch, không phiên âm sang tiếng Việt; nếu tên gốc không phải tiếng Anh thì dùng dạng tiếng Anh thông dụng của tên đó. Gọi người một cách trung tính theo tuổi và vai trò: ông / bà / anh / chị + tên, tác giả xưng tôi / chúng tôi; giọng văn rõ ràng, khách quan, không bay bướm.",
+        ("wuxia", _) => "Genre: wuxia. Use martial-world forms of address in English: Brother, Sister, Master, Senior, Junior, \"this old man\" for an elder speaking of himself; keep a terse, knightly tone.",
+        ("xianxia", _) => "Genre: xianxia. Use cultivation forms of address in English: Senior, Junior, Fellow Daoist, Master, Senior Brother, Junior Sister, \"this venerable one\" for a proud elder; keep cultivation realms and techniques as consistent English names.",
+        ("supernatural", _) => "Genre: supernatural horror. Modern, plain forms of address; keep the tone tense and eerie, with short sentences in frightening moments.",
+        ("romance", _) => "Genre: romance. Warm, natural dialogue whose tone grows with the relationship; in a historical setting use my lord / my lady and similar.",
+        ("politics", _) => "Genre: politics. Formal forms of address by rank: Your Majesty, Your Highness, this official, Minister; keep titles and offices consistent.",
+        ("nonfiction", _) => "Genre: non-fiction. Keep every proper noun (people, places, organisations, companies, products, events, works) exactly as its original English name; when the original is not in English, use the name's common English form. A clear, factual tone.",
+        _ => "",
+    }
+}
+
+/// What a book adds to every prompt: its genre's rules and the user's own instructions.
+fn book_rules(genre: &str, lang: &str, instructions: &str) -> String {
+    let mut s = String::new();
+    let rules = genre_rules(genre, lang);
+    if !rules.is_empty() {
+        s.push('\n');
+        s.push_str(rules);
+    }
+    let own = instructions.trim();
+    if !own.is_empty() {
+        s.push_str(if lang == "vi" {
+            "\nYêu cầu riêng của người đọc cho truyện này (làm theo, trừ khi yêu cầu gộp, bỏ hay thêm đoạn):\n<<<\n"
+        } else {
+            "\nThe reader's own instructions for this book (follow them, unless they ask to merge, drop or add paragraphs):\n<<<\n"
+        });
+        s.push_str(own);
+        s.push_str("\n>>>");
+    }
+    s
+}
+
+/// How a book is translated besides language and style (`ai_book_prefs`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Prefs {
+    pub genre: String,
+    pub instructions: String,
+}
+
+/// Instructions the user may write for a book, in characters.
+const MAX_INSTRUCTIONS: usize = 2000;
+
+pub fn prefs(conn: &Connection, novel_id: i64) -> rusqlite::Result<Prefs> {
+    Ok(conn
+        .query_row(
+            "select genre, instructions from ai_book_prefs where novel_id = ?1",
+            [novel_id],
+            |r| {
+                Ok(Prefs {
+                    genre: r.get(0)?,
+                    instructions: r.get(1)?,
+                })
+            },
+        )
+        .optional()?
+        .unwrap_or_default())
+}
+
+/// Keeps a book's genre (an unknown one is none) and instructions (cut to
+/// `MAX_INSTRUCTIONS`).
+pub fn set_prefs(conn: &Connection, novel_id: i64, p: &Prefs) -> rusqlite::Result<()> {
+    let genre = if GENRES.contains(&p.genre.as_str()) {
+        p.genre.as_str()
+    } else {
+        ""
+    };
+    let instructions: String = p
+        .instructions
+        .trim()
+        .chars()
+        .take(MAX_INSTRUCTIONS)
+        .collect();
+    conn.execute(
+        "insert into ai_book_prefs (novel_id, genre, instructions) values (?1, ?2, ?3)
+         on conflict (novel_id) do update set genre = excluded.genre, instructions = excluded.instructions",
+        params![novel_id, genre, instructions],
+    )?;
+    Ok(())
+}
+
 fn title_prompt(target: &str) -> String {
+    if target == "vi" {
+        return "Dịch tiêu đề chương truyện này sang tiếng Việt. Chỉ trả về tiêu đề đã dịch, trên một dòng.".into();
+    }
     format!(
         "Translate this novel chapter title into {}. Reply with only the translated title on one line.",
         lang_name(target)
@@ -1371,7 +1576,7 @@ pub(crate) mod tests {
                 .push((system.into(), user.into()));
             Ok(if system == DETECT_PROMPT {
                 self.detect.to_string()
-            } else if system.contains("editor") {
+            } else if system.contains("editor") || system.contains("biên tập viên") {
                 split_paragraphs(user)
                     .iter()
                     .map(|p| format!("[re] {p}"))
@@ -1499,6 +1704,7 @@ pub(crate) mod tests {
                 base_url: "http://x/v1/".into(),
                 api_key: "sk".into(),
                 model: "m".into(),
+                embed_model: String::new(),
             }),
         )
         .unwrap();
@@ -1554,8 +1760,55 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_books_genre_and_instructions_go_in_its_prompts() {
+        let (conn, novel) = book("prefs");
+        assert_eq!(prefs(&conn, novel).unwrap(), Prefs::default());
+        set_prefs(
+            &conn,
+            novel,
+            &Prefs {
+                genre: "xianxia".into(),
+                instructions: "  Gọi nhân vật chính là \"Lâm thiếu\".  ".into(),
+            },
+        )
+        .unwrap();
+        let p = prefs(&conn, novel).unwrap();
+        assert_eq!(p.instructions, "Gọi nhân vật chính là \"Lâm thiếu\".");
+        let rules = book_rules(&p.genre, "vi", &p.instructions);
+        assert!(rules.contains("đạo hữu") && rules.contains("Lâm thiếu"));
+        // An unknown genre is none.
+        set_prefs(
+            &conn,
+            novel,
+            &Prefs {
+                genre: "space opera".into(),
+                instructions: String::new(),
+            },
+        )
+        .unwrap();
+        assert_eq!(prefs(&conn, novel).unwrap().genre, "");
+        assert_eq!(book_rules("", "vi", ""), "");
+        // Non-fiction keeps the English names, in the wiki's rules too.
+        assert!(book_rules("nonfiction", "vi", "").contains("tên gốc tiếng Anh"));
+        assert!(
+            super::super::wiki::extract_prompt("vi", WIKI_MARK, "nonfiction")
+                .contains("tên gốc tiếng Anh")
+        );
+        for g in GENRES {
+            assert!(!genre_rules(g, "vi").is_empty() && !genre_rules(g, "en").is_empty());
+        }
+    }
+
+    #[test]
     fn prompts_ask_for_the_target_word_order() {
-        assert!(rewrite_prompt("vi", "natural", "").contains("subject, then verb, then object"));
+        let vi = rewrite_prompt("vi", "natural", "");
+        assert!(vi.contains("câu tiếng Việt hoàn chỉnh, có nghĩa, đúng ngữ pháp"));
+        assert!(vi.contains("Tự nhiên: trôi chảy") && vi.contains("Tự kiểm tra"));
+        // General rules, all in Vietnamese: no list of cases, no English.
+        assert!(!vi.contains("→") && !vi.contains("You are"));
+        assert!(translate_prompt("zh", "vi", "natural", &[], "")
+            .contains("Dịch văn bản người dùng gửi từ tiếng Trung sang tiếng Việt"));
+        assert!(rewrite_prompt("en", "natural", "").contains("subject, then verb, then object"));
         assert!(translate_prompt("zh", "en", "literal", &[], "")
             .contains("subject, then verb, then object"));
         assert!(!rewrite_prompt("vi", "natural", "").contains("English order"));
@@ -1576,9 +1829,9 @@ pub(crate) mod tests {
         let calls = llm.calls.lock().unwrap();
         let translate = calls
             .iter()
-            .find(|(s, _)| s.contains("novel translator"))
+            .find(|(s, _)| s.contains("dịch giả truyện"))
             .unwrap();
-        assert!(translate.0.contains("- Second → Thứ Hai (term)"));
+        assert!(translate.0.contains("- Second → Thứ Hai (thuật ngữ)"));
         // Fake has no tools, so the wiki was asked for as JSON after the translation.
         assert!(calls.last().unwrap().0.contains("JSON"));
         drop(calls);
@@ -1964,7 +2217,7 @@ pub(crate) mod tests {
         let (out, _, _) = run_chunks(
             &llm,
             &|_: &str| "t".to_string(),
-            &[long.clone()],
+            std::slice::from_ref(&long),
             None,
             None,
             None,

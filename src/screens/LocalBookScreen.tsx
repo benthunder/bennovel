@@ -20,7 +20,7 @@ import { runOcr } from '../lib/ocr';
 import { load, save as store } from '../lib/storage';
 import { useAsync } from '../lib/useAsync';
 import { useLayout } from '../lib/useLayout';
-import { getWikiAt, type Wiki, type WikiEntry } from '../lib/wiki';
+import { getWiki, type Wiki, type WikiEntry } from '../lib/wiki';
 import { READER_THEMES, useApp } from '../store/AppStore';
 
 const GAP_PX = { tight: 6, normal: 16, airy: 28 };
@@ -530,7 +530,6 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
 
       {wikiPop && place && (
         <WikiPopup key={wikiPop.entry.uid} wiki={wikiPop.wiki} entry={wikiPop.entry} lang={wikiPop.lang}
-          chapter={sectionName(book.sections[wikiPop.at], wikiPop.at, total)}
           onPick={e => setWikiPop(w => w && { ...w, entry: e })} onClose={() => setWikiPop(null)}
           onOpenWiki={() => { setWikiPop(null); app.push({ s: 'bookWiki', novelId: place.novelId, title: book.title ?? t('book.untitled'), lang: wikiPop.lang }); }} />
       )}
@@ -610,8 +609,8 @@ function BookPart({ bookId, index, meta, name, fix, st, color, onReady, onLayout
   useLayoutEffect(() => onLayout());
   // The text loaded can still be the last version's while a switch to another one loads.
   const isAi = q.status === 'ready' && q.data.isAi && !!ai;
-  // The wiki as of this chapter (reading order from 1), so later chapters give nothing away.
-  const wikiQ = useAsync(() => (wiki ? getWikiAt(wiki.user, wiki.novelId, index + 1) : Promise.resolve(null)), [wiki?.user, wiki?.novelId, wiki?.rev, index]);
+  // The whole wiki, later chapters included: spoilers are fine, the links are what count.
+  const wikiQ = useAsync(() => (wiki ? getWiki(wiki.user, wiki.novelId) : Promise.resolve(null)), [wiki?.user, wiki?.novelId, wiki?.rev]);
   const wikiAt = wikiQ.status === 'ready' ? wikiQ.data : null;
   // Names are found as the text shows them; the card speaks the reading language.
   const termsLang = isAi ? ai!.lang : 'raw';

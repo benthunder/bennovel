@@ -34,17 +34,20 @@ export interface WikiTerms { re: RegExp | null; byTerm: Map<string, WikiEntry> }
 /**
  * The names to look for in text shown in `lang`: the raw name and aliases in a raw text,
  * the entry's name in that language in a translation. Longest first, so "Lâm Động Thiên"
- * wins over "Lâm Động"; one letter is too common to mark.
+ * wins over "Lâm Động"; one letter is too common to mark. A name only counts as a whole
+ * word: "Từ" is not marked inside "Từng" (Chinese and other scripts without spaces have
+ * no such letters around them, so their names are found anywhere).
  */
 export function wikiTerms(wiki: Wiki | null, lang: string): WikiTerms {
   const byTerm = new Map<string, WikiEntry>();
   for (const e of wiki?.entries ?? []) {
-    const terms = lang === RAW ? [e.name, ...e.aliases] : [e.names[lang], e.name];
+    const terms = lang === RAW ? [e.name, ...e.aliases] : [e.names[lang], e.name, ...e.aliases];
     for (const term of terms) if (term && [...term.trim()].length >= 2 && !byTerm.has(term.trim())) byTerm.set(term.trim(), e);
   }
   if (!byTerm.size) return { re: null, byTerm };
   const alts = [...byTerm.keys()].sort((a, b) => b.length - a.length).map(s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-  return { re: new RegExp(alts.join('|'), 'g'), byTerm };
+  const word = '[\\p{Script=Latin}\\p{Script=Cyrillic}\\p{Script=Greek}\\p{M}\\p{Nd}]';
+  return { re: new RegExp(`(?<!${word})(?:${alts.join('|')})(?!${word})`, 'gu'), byTerm };
 }
 
 /** `text` with the wiki's names bold and tappable. */
@@ -70,11 +73,11 @@ export function markWikiTerms(text: string, terms: WikiTerms, onPick: (e: WikiEn
 }
 
 /**
- * One wiki entry over the reader, as known by the chapter being read: what the wiki held
- * by then (`wiki` is that chapter's view), so nothing from later chapters shows.
+ * One wiki entry over the reader: everything the wiki knows of it, later chapters
+ * included, and the entries it is linked to (tap one to go there).
  */
-export function WikiPopup({ wiki, entry, lang, chapter, onPick, onOpenWiki, onClose }: {
-  wiki: Wiki; entry: WikiEntry; lang: string; chapter: string;
+export function WikiPopup({ wiki, entry, lang, onPick, onOpenWiki, onClose }: {
+  wiki: Wiki; entry: WikiEntry; lang: string;
   onPick: (e: WikiEntry) => void; onOpenWiki: () => void; onClose: () => void;
 }) {
   const { t } = useI18n();
@@ -107,14 +110,17 @@ export function WikiPopup({ wiki, entry, lang, chapter, onPick, onOpenWiki, onCl
               const other = byUid.get(r.fromUid === entry.uid ? r.toUid : r.fromUid);
               return other && (
                 <button key={r.uid} type="button" data-relation={r.kind} onClick={() => onPick(other)}
-                  style={{ display: 'flex', gap: 6, alignItems: 'baseline', padding: '8px 12px', borderRadius: 16, border: 'none', background: 'var(--color-bg)', color: 'inherit', font: 'inherit', fontSize: 14, textAlign: 'left', cursor: 'pointer' }}>
-                  <span>{relWords(r, entry.uid, lang, wt)}</span><b>{wikiLabel(other, lang)}</b>
+                  style={{ display: 'flex', flexDirection: 'column', gap: 2, padding: '8px 12px', borderRadius: 16, border: 'none', background: 'var(--color-bg)', color: 'inherit', font: 'inherit', fontSize: 14, textAlign: 'left', cursor: 'pointer' }}>
+                  <span style={{ display: 'flex', gap: 6, alignItems: 'baseline', flexWrap: 'wrap' }}>
+                    <span>{relWords(r, entry.uid, lang, wt)}</span><b>{wikiLabel(other, lang)}</b>
+                    {other.aliases.length > 0 && <span className="muted" style={{ fontSize: 12 }}>({other.aliases.slice(0, 3).join(', ')})</span>}
+                  </span>
+                  {r.note && <span className="muted" data-relation-note style={{ fontSize: 12, lineHeight: 1.4 }}>{r.note}</span>}
                 </button>
               );
             })}
           </div>
         )}
-        <div className="muted" style={{ fontSize: 12 }}>{t('wiki.asOf', { chapter })}</div>
         <div className="dialog-actions">
           <button type="button" className="btn btn-secondary" style={{ height: 44, padding: '0 18px' }} onClick={onOpenWiki}>{t('wiki.open')}</button>
           <button type="button" className="btn btn-primary" style={{ height: 44, padding: '0 22px' }} onClick={onClose}>{t('common.close')}</button>
