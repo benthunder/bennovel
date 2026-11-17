@@ -1,9 +1,10 @@
 /* Glass surfaces and motion, layered over app.css.
  *
- * Glass: bars and sheets are translucent and blur what scrolls under them. The blur
- * radius stays small and is only used on surfaces that sit still (nav, sheets, dialogs,
- * toasts), never on anything that moves while it scrolls, so Android WebViews keep up.
- * Where backdrop-filter is missing the same surfaces fall back to solid colours.
+ * Glass: bars, sheets and dialogs are white or blue at a high alpha, so what lies under
+ * them shows through faintly. There is no backdrop-filter anywhere: a live blur costs
+ * the GPU on every frame (an old Intel GPU on Linux could not keep up), while a
+ * translucent colour costs nothing. Depth comes from short, still box-shadows that are
+ * never animated.
  *
  * Motion: only transform and opacity are animated, so every animation stays on the
  * compositor. prefers-reduced-motion turns it all off.
@@ -17,20 +18,23 @@
   --dur: .26s;
   --dur-slow: .36s;
 
-  /* Real blur, used on the surfaces that sit over content: bars, sheets, dialogs, toasts. */
-  --glass-blur: blur(32px) saturate(185%);
-  /* The dimmed page behind a dialog or sheet is blurred too; it does not move while the dialog is up. */
-  --scrim-blur: blur(16px) saturate(150%);
-  --glass-bg: color-mix(in srgb, #ffffff 58%, transparent);
-  --glass-bg-strong: color-mix(in srgb, #ffffff 70%, transparent);
-  --glass-surface: color-mix(in srgb, #ffffff 46%, transparent);
+  /* Without a blur the glass needs more white, or the text under it would compete.
+     Bars stay a little see-through; sheets, dialogs and menus hold text of their own,
+     where even a few percent of the page under them reads as smudges, so they are solid. */
+  --glass-bg: color-mix(in srgb, #ffffff 88%, transparent);
+  --glass-bg-strong: #ffffff;
+  --glass-surface: color-mix(in srgb, #ffffff 76%, transparent);
   --glass-edge: color-mix(in srgb, #ffffff 80%, transparent);
-  --glass-shadow: 0 12px 40px color-mix(in srgb, #0f2a6b 18%, transparent), 0 1px 0 var(--glass-edge) inset;
+  /* Depth: a tight contact shadow plus one soft drop. Still, never transitioned. */
+  --shadow-tint: #0f2a6b;
+  --glass-shadow: 0 1px 2px color-mix(in srgb, var(--shadow-tint) 10%, transparent),
+    0 10px 24px color-mix(in srgb, var(--shadow-tint) 16%, transparent), 0 1px 0 var(--glass-edge) inset;
   /* Frosted cards inside scrolling pages. They lie on the still blue wash, where a blur
      would look the same as a see-through white, so they get the look without the cost. */
   --frost: linear-gradient(160deg, color-mix(in srgb, #ffffff 78%, transparent), color-mix(in srgb, #ffffff 46%, transparent));
   --frost-hover: linear-gradient(160deg, color-mix(in srgb, #ffffff 92%, transparent), color-mix(in srgb, #ffffff 62%, transparent));
-  --frost-shadow: 0 6px 22px color-mix(in srgb, #1d4ed8 10%, transparent), 0 1px 0 color-mix(in srgb, #ffffff 90%, transparent) inset;
+  --frost-shadow: 0 1px 2px color-mix(in srgb, var(--shadow-tint) 8%, transparent),
+    0 4px 10px color-mix(in srgb, #1d4ed8 9%, transparent), 0 1px 0 color-mix(in srgb, #ffffff 90%, transparent) inset;
 }
 
 /* A blue wash behind everything, so the glass has colour to pick up. Static: costs nothing on scroll. */
@@ -44,24 +48,21 @@
 body { background: var(--color-neutral-200); }
 
 /* — glass surfaces — */
-.bottom-nav, .rail, .side, .sheet, .dialog, .toast, .glass, .reader-chrome--glass {
-  -webkit-backdrop-filter: var(--glass-blur);
-  backdrop-filter: var(--glass-blur);
-}
 .bottom-nav {
   background: var(--glass-bg);
   border-top: 1px solid var(--glass-edge);
-  box-shadow: 0 -6px 28px color-mix(in srgb, #0f2a6b 12%, transparent);
+  box-shadow: 0 -1px 2px color-mix(in srgb, var(--shadow-tint) 6%, transparent), 0 -6px 16px color-mix(in srgb, var(--shadow-tint) 10%, transparent);
 }
 .bottom-nav__fab-circle {
   /* A solid white ring: the gradient stops at the padding edge so no blue shows through it. */
   background: linear-gradient(145deg, var(--color-accent-400), var(--color-accent-700)) padding-box;
   border-color: #ffffff;
-  box-shadow: 0 8px 24px color-mix(in srgb, var(--color-accent) 45%, transparent);
+  box-shadow: 0 2px 4px color-mix(in srgb, var(--shadow-tint) 18%, transparent), 0 8px 18px color-mix(in srgb, var(--color-accent) 35%, transparent);
 }
 .rail, .side {
   background: var(--glass-surface);
   border-right: 1px solid var(--glass-edge);
+  box-shadow: 1px 0 2px color-mix(in srgb, var(--shadow-tint) 6%, transparent), 6px 0 16px color-mix(in srgb, var(--shadow-tint) 8%, transparent);
 }
 .side__continue { background: var(--frost); border: 1px solid var(--glass-edge); box-shadow: var(--frost-shadow); }
 .sheet, .dialog {
@@ -76,21 +77,13 @@ body { background: var(--color-neutral-200); }
   background: linear-gradient(to top, color-mix(in srgb, #ffffff 82%, transparent) 55%, transparent);
 }
 .toast {
-  background: color-mix(in srgb, var(--color-accent-900) 70%, transparent);
+  background: color-mix(in srgb, var(--color-accent-900) 92%, transparent);
   border: 1px solid color-mix(in srgb, #ffffff 22%, transparent);
+  box-shadow: 0 2px 4px color-mix(in srgb, var(--shadow-tint) 20%, transparent), 0 10px 24px color-mix(in srgb, var(--shadow-tint) 24%, transparent);
 }
+/* The page behind a dialog or sheet is dimmed with a blue tint, not blurred. */
 .scrim, .dialog-backdrop {
-  background: color-mix(in srgb, var(--color-accent-900) 26%, transparent);
-  -webkit-backdrop-filter: var(--scrim-blur);
-  backdrop-filter: var(--scrim-blur);
-}
-
-/* A sheet or dialog over a blurred backdrop does not blur again: the page under it is
-   already blurred, and two blurs stacked made scrolling a long sheet drop frames
-   (25 ms a frame instead of 16.5 on a 4x slower CPU). */
-.dialog-backdrop .dialog, .dialog-backdrop .sheet, .scrim + .sheet {
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
+  background: color-mix(in srgb, var(--color-accent-900) 40%, transparent);
 }
 
 /* — frosted cards: white glass over the wash, with a bright top edge — */
@@ -107,34 +100,21 @@ body { background: var(--color-neutral-200); }
 .menu-row:hover, .novel-row:hover { background: color-mix(in srgb, #ffffff 60%, transparent); }
 .progress, .import-progress__bar { background: color-mix(in srgb, #ffffff 60%, transparent); }
 
-@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  .bottom-nav, .sheet, .dialog { background: var(--color-bg); }
-  .rail, .side { background: var(--color-surface); }
-  .toast { background: var(--color-accent-900); }
-  .scrim, .dialog-backdrop { background: color-mix(in srgb, var(--color-accent-900) 45%, transparent); }
-}
-
-/* WebKitGTK (desktop Linux): no live blur at all, see main.tsx. Same solid fallback. */
-:root[data-engine='webkitgtk'] :is(.bottom-nav, .rail, .side, .sheet, .dialog, .toast, .glass, .reader-chrome--glass, .scrim, .dialog-backdrop) {
-  -webkit-backdrop-filter: none !important;
-  backdrop-filter: none !important;
-}
-:root[data-engine='webkitgtk'] :is(.bottom-nav, .sheet, .dialog) { background: var(--color-bg); }
-:root[data-engine='webkitgtk'] :is(.rail, .side) { background: var(--color-surface); }
-:root[data-engine='webkitgtk'] .toast { background: var(--color-accent-900); }
-:root[data-engine='webkitgtk'] :is(.scrim, .dialog-backdrop) { background: color-mix(in srgb, var(--color-accent-900) 45%, transparent); }
 /* WebKitGTK often paints on the CPU (old GPUs such as Intel HD 4000 get no
    acceleration), and then every repaint redraws the page's gradients and soft shadows
-   under it. There the wash is one colour, cards are flat, shadows are short, and only
-   colours change on hover and press; a spinner turns in steps instead of every frame. */
+   under it. There the wash is one colour, shadows keep only their tight contact edge
+   (a 2-3px blur is cheap; the wide soft drop is not), and only colours change on hover
+   and press; a spinner turns in steps instead of every frame. */
 :root[data-engine='webkitgtk'] {
   --frost: color-mix(in srgb, #ffffff 70%, var(--color-bg));
   --frost-hover: #ffffff;
-  --frost-shadow: none;
-  --glass-shadow: none;
+  --frost-shadow: 0 1px 2px color-mix(in srgb, var(--shadow-tint) 14%, transparent);
+  --glass-shadow: 0 2px 3px color-mix(in srgb, var(--shadow-tint) 18%, transparent);
 }
 :root[data-engine='webkitgtk'] .app { background: var(--color-bg); }
-:root[data-engine='webkitgtk'] :is(.bottom-nav, .bottom-nav__fab-circle, .card, .import-action, .icon-btn, .chip, .cover, .dialog, .sheet, .toast) { box-shadow: none !important; }
+:root[data-engine='webkitgtk'] :is(.bottom-nav, .bottom-nav__fab-circle, .toast) { box-shadow: var(--glass-shadow) !important; }
+:root[data-engine='webkitgtk'] :is(.rail, .side) { box-shadow: 1px 0 2px color-mix(in srgb, var(--shadow-tint) 10%, transparent) !important; }
+:root[data-engine='webkitgtk'] .cover { box-shadow: var(--frost-shadow) !important; }
 :root[data-engine='webkitgtk'] :is(.btn, .icon-btn, .chip, .text-link, .menu-row, .novel-row, .top-row, .shelf-item, .seg-opt, .bottom-nav__item, .rail__item, .side__item, .search__clear, .input, .check__box, .import-action, .cover) {
   transition: background-color var(--dur-fast) ease, color var(--dur-fast) ease !important;
   transform: none !important;
@@ -147,12 +127,12 @@ button, .chip, .btn, .seg-opt, .input, a { touch-action: manipulation; }
 .bottom-nav__item, .rail__item, .side__item, .search__clear, .input, .check__box, .import-action {
   transition:
     background-color var(--dur-fast) ease, color var(--dur-fast) ease, border-color var(--dur-fast) ease,
-    box-shadow var(--dur) ease, opacity var(--dur-fast) ease, transform var(--dur-fast) var(--ease-out);
+    opacity var(--dur-fast) ease, transform var(--dur-fast) var(--ease-out);
 }
 .btn:active:not(:disabled), .icon-btn:active, .chip:active, .search__clear:active, .seg-opt:active { transform: scale(.95); }
 .menu-row:active, .novel-row:active, .top-row:active, .side__item:active { transform: scale(.985); }
 .shelf-item:active .cover { transform: scale(.97); }
-.cover { transition: transform var(--dur) var(--ease-out), box-shadow var(--dur) ease; }
+.cover { transition: transform var(--dur) var(--ease-out); }
 @media (hover: hover) {
   .shelf-item:hover .cover { transform: translateY(-3px); box-shadow: var(--shadow-md); }
   .btn-primary:hover { box-shadow: 0 6px 16px color-mix(in srgb, var(--color-accent) 30%, transparent); }
@@ -163,7 +143,7 @@ button, .chip, .btn, .seg-opt, .input, a { touch-action: manipulation; }
 .bottom-nav__item svg, .rail__item svg { transition: transform var(--dur) var(--ease-spring); }
 .bottom-nav__item[aria-current='page'] svg, .rail__item[aria-current='page'] .rail__pill svg { transform: translateY(-2px) scale(1.08); }
 .bottom-nav__fab:active .bottom-nav__fab-circle, .rail__continue:active .rail__fab { transform: scale(.92); }
-.bottom-nav__fab-circle, .rail__fab { transition: transform var(--dur-fast) var(--ease-out), box-shadow var(--dur) ease; }
+.bottom-nav__fab-circle, .rail__fab { transition: transform var(--dur-fast) var(--ease-out); }
 .rail__pill { transition: background-color var(--dur) ease; }
 .progress > div, .import-progress__bar > div { transition: width var(--dur-slow) var(--ease-out); }
 

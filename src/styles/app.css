@@ -303,4 +303,4 @@ input[type='range'] { accent-color: var(--color-accent); width: 100%; }
 .ai-stages li[data-state='now'] { background: var(--color-accent); color: #fff; font-weight: 700; }
 .ai-draft { overflow-y: auto; margin-top: 12px; padding-right: 4px; line-height: 1.7; font-size: 15px; min-height: 120px; }
 .ai-draft p { margin: 0 0 12px; }
-:root[data-engine='webkitgtk'] :is(.ai-dock__pill, .ai-dock__panel) { background: #ffffff; box-shadow: none; }
+:root[data-engine='webkitgtk'] :is(.ai-dock__pill, .ai-dock__panel) { background: #ffffff; box-shadow: var(--glass-shadow); }
