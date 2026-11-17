@@ -175,10 +175,213 @@ impl Entry {
     }
 }
 
-/// A relation type's code for `kind` ("Master of" → master_of), if it is one.
+/// Words a model writes for a relation type in English or Vietnamese instead of its
+/// code, so "sư phụ của", "Teacher" or "kẻ thù" land on the type, named the same way in
+/// every language, and not on a free relation in a mix of languages.
+const REL_WORDS: &[(&str, &[&str])] = &[
+    (
+        "master_of",
+        &[
+            "master",
+            "teacher",
+            "mentor",
+            "sư phụ",
+            "sư tôn",
+            "thầy",
+            "thầy giáo",
+        ],
+    ),
+    (
+        "disciple_of",
+        &[
+            "disciple",
+            "student",
+            "apprentice",
+            "pupil",
+            "đệ tử",
+            "đồ đệ",
+            "đồ nhi",
+            "học trò",
+            "học sinh",
+        ],
+    ),
+    (
+        "parent_of",
+        &[
+            "parent",
+            "father",
+            "mother",
+            "cha",
+            "bố",
+            "mẹ",
+            "phụ thân",
+            "mẫu thân",
+            "cha mẹ",
+        ],
+    ),
+    (
+        "child_of",
+        &["child", "son", "daughter", "con", "con trai", "con gái"],
+    ),
+    (
+        "sibling_of",
+        &[
+            "sibling",
+            "brother",
+            "sister",
+            "anh em",
+            "chị em",
+            "anh trai",
+            "em trai",
+            "chị gái",
+            "em gái",
+            "huynh đệ",
+            "tỷ muội",
+            "huynh muội",
+            "tỷ đệ",
+        ],
+    ),
+    (
+        "spouse_of",
+        &[
+            "spouse",
+            "husband",
+            "wife",
+            "vợ",
+            "chồng",
+            "vợ chồng",
+            "phu quân",
+            "thê tử",
+            "phu nhân",
+        ],
+    ),
+    (
+        "lover_of",
+        &[
+            "lover",
+            "partner",
+            "girlfriend",
+            "boyfriend",
+            "người yêu",
+            "tình nhân",
+            "người tình",
+        ],
+    ),
+    (
+        "friend_of",
+        &[
+            "friend",
+            "ally",
+            "bạn",
+            "bạn bè",
+            "bằng hữu",
+            "bạn thân",
+            "đồng minh",
+        ],
+    ),
+    (
+        "enemy_of",
+        &[
+            "enemy",
+            "rival",
+            "foe",
+            "nemesis",
+            "kẻ thù",
+            "kẻ địch",
+            "đối thủ",
+            "cừu nhân",
+            "kẻ thù của",
+        ],
+    ),
+    (
+        "member_of",
+        &[
+            "member",
+            "belongs to",
+            "thành viên",
+            "thuộc",
+            "người của",
+            "đệ tử của tông",
+        ],
+    ),
+    (
+        "leader_of",
+        &[
+            "leader",
+            "head",
+            "chief",
+            "ruler",
+            "lord",
+            "thủ lĩnh",
+            "tông chủ",
+            "chưởng môn",
+            "gia chủ",
+            "bang chủ",
+            "cốc chủ",
+            "lãnh đạo",
+        ],
+    ),
+    (
+        "located_in",
+        &[
+            "located in",
+            "inside",
+            "part of",
+            "nằm ở",
+            "nằm trong",
+            "thuộc vùng",
+            "ở trong",
+        ],
+    ),
+    (
+        "owns",
+        &[
+            "owner",
+            "owns",
+            "has",
+            "possesses",
+            "sở hữu",
+            "chủ nhân",
+            "có",
+        ],
+    ),
+    (
+        "has_level",
+        &["level", "realm", "rank", "cảnh giới", "cấp bậc", "tu vi"],
+    ),
+    (
+        "has_skill",
+        &[
+            "skill",
+            "technique",
+            "knows",
+            "công pháp",
+            "võ công",
+            "kỹ năng",
+            "chiêu thức",
+            "bí thuật",
+        ],
+    ),
+];
+
+/// A relation type's code for `kind` ("Master of", "sư phụ của" → master_of), if it is
+/// one.
 pub fn rel_type(kind: &str) -> Option<&'static str> {
-    let k = kind.trim().to_ascii_lowercase().replace([' ', '-'], "_");
-    REL_TYPES.iter().find(|t| **t == k).copied()
+    let k = kind.trim().to_lowercase();
+    let code = k.replace([' ', '-'], "_");
+    if let Some(t) = REL_TYPES.iter().find(|t| **t == code) {
+        return Some(t);
+    }
+    let words = k
+        .trim_end_matches(" of")
+        .trim_end_matches(" của")
+        .trim_start_matches("is ")
+        .trim_start_matches("là ")
+        .trim();
+    REL_WORDS
+        .iter()
+        .find(|(_, w)| w.contains(&words))
+        .map(|(t, _)| *t)
 }
 
 /// How a relation reads in prompts to the model (English words for the types).
@@ -280,7 +483,8 @@ fn set_error(conn: &Connection, novel_id: i64, error: Option<&str>) -> rusqlite:
 }
 
 /// The entry named `name` (or with it as an alias), removed ones too, with its row id
-/// and whether it was removed.
+/// and whether it was removed. A live entry wins over a removed one: a name merged into
+/// another entry (`merge`) is that entry's alias now.
 fn find(
     conn: &Connection,
     novel_id: i64,
@@ -290,7 +494,7 @@ fn find(
         &format!(
             "select {ENTRY_COLS}, e.id, e.deleted from wiki_entries e where e.novel_id = ?1 and (
                e.name = ?2 or exists (select 1 from json_each(e.aliases) a where a.value = ?2))
-             order by e.name = ?2 desc, e.deleted limit 1"
+             order by e.deleted, e.name = ?2 desc limit 1"
         ),
         params![novel_id, name.trim()],
         |r| Ok((r.get(AFTER)?, entry_row(r)?, r.get::<_, bool>(AFTER + 1)?)),
@@ -562,6 +766,143 @@ pub fn remove_relation(conn: &Connection, uid: &str) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// Makes entry `from` part of entry `into`, as one character written two ways ("bé áo
+/// xanh" and her name): `into` takes `from`'s name and aliases as aliases, the names
+/// and descriptions it lacks per language, and its relations; `from` is removed. A
+/// merge the user asked for makes `into` theirs.
+pub fn merge(
+    conn: &Connection,
+    novel_id: i64,
+    from_uid: &str,
+    into_uid: &str,
+    by_user: bool,
+) -> Result<Entry, AiError> {
+    if from_uid == into_uid {
+        return Err(AiError::Other("wiki-merge-same".into()));
+    }
+    let (Some(from), Some(into)) = (by_uid(conn, from_uid)?, by_uid(conn, into_uid)?) else {
+        return Err(AiError::Other("wiki-entry-missing".into()));
+    };
+    let id: i64 = conn.query_row(
+        "select id from wiki_entries where uid = ?1 and novel_id = ?2",
+        params![into_uid, novel_id],
+        |r| r.get(0),
+    )?;
+    let mut aliases = into.aliases.clone();
+    aliases.push(from.name.clone());
+    aliases.extend(from.aliases.iter().cloned());
+    let aliases = clean_list(aliases, &into.name);
+    let mut names = into.names.clone();
+    for (l, n) in &from.names {
+        names.entry(l.clone()).or_insert_with(|| n.clone());
+    }
+    let mut summaries = into.summaries.clone();
+    for (l, t) in &from.summaries {
+        summaries.entry(l.clone()).or_insert_with(|| t.clone());
+    }
+    let source = if by_user {
+        "user"
+    } else {
+        into.source.as_str()
+    };
+    write_entry(
+        conn,
+        id,
+        &Fields {
+            kind: &into.kind,
+            name: &into.name,
+            names: &names,
+            aliases: &aliases,
+            summaries: &summaries,
+            rank: into.rank.or(from.rank),
+            source,
+        },
+    )?;
+    conn.execute(
+        "update wiki_entries set first_chapter = min(coalesce(first_chapter, ?2), coalesce(?2, first_chapter))
+         where id = ?1",
+        params![id, from.first_chapter],
+    )?;
+    // The relations move over, but not onto `into` itself nor onto one it already has.
+    let now = super::db::now_ms();
+    conn.execute(
+        "update wiki_relations set deleted = 1, updated_at = ?3 where deleted = 0 and (
+           (from_uid = ?1 and to_uid = ?2) or (from_uid = ?2 and to_uid = ?1)
+           or (from_uid = ?1 and exists (select 1 from wiki_relations x where x.from_uid = ?2
+                and x.to_uid = wiki_relations.to_uid and x.kind = wiki_relations.kind))
+           or (to_uid = ?1 and exists (select 1 from wiki_relations x where x.to_uid = ?2
+                and x.from_uid = wiki_relations.from_uid and x.kind = wiki_relations.kind)))",
+        params![from_uid, into_uid, now],
+    )?;
+    conn.execute(
+        "update wiki_relations set from_uid = ?2, updated_at = ?3 where from_uid = ?1 and deleted = 0",
+        params![from_uid, into_uid, now],
+    )?;
+    conn.execute(
+        "update wiki_relations set to_uid = ?2, updated_at = ?3 where to_uid = ?1 and deleted = 0",
+        params![from_uid, into_uid, now],
+    )?;
+    conn.execute(
+        "update or ignore wiki_notes set entry_uid = ?2 where entry_uid = ?1",
+        params![from_uid, into_uid],
+    )?;
+    conn.execute(
+        "update wiki_names set entry_uid = ?2 where entry_uid = ?1",
+        params![from_uid, into_uid],
+    )?;
+    remove(conn, from_uid)?;
+    Ok(by_uid(conn, into_uid)?.expect("merged entry"))
+}
+
+/// Cleans what older versions let the AI write: entries of its own that are common
+/// nouns are removed (and so never added again), and one whose name is another entry's
+/// alias is merged into it. The user's own entries stay as they are. Returns the
+/// changes made.
+pub fn tidy(conn: &Connection, novel_id: i64) -> rusqlite::Result<usize> {
+    let all = entries(conn, novel_id)?;
+    let mut changes = 0;
+    for e in all.iter().filter(|e| e.source == "ai") {
+        let translated = e.names.values().next().map(String::as_str).unwrap_or("");
+        let common =
+            !proper_noun(&e.name, translated) || e.names.values().any(|n| !proper_noun(n, ""));
+        if common {
+            remove(conn, &e.uid)?;
+            changes += 1;
+            continue;
+        }
+        let owner = all.iter().find(|o| {
+            o.uid != e.uid && o.aliases.iter().any(|a| a == &e.name) && by_uid_live(conn, &o.uid)
+        });
+        if let Some(o) = owner {
+            if merge(conn, novel_id, &e.uid, &o.uid, false).is_ok() {
+                changes += 1;
+            }
+        }
+    }
+    Ok(changes)
+}
+
+fn by_uid_live(conn: &Connection, uid: &str) -> bool {
+    conn.query_row(
+        "select deleted = 0 from wiki_entries where uid = ?1",
+        [uid],
+        |r| r.get(0),
+    )
+    .unwrap_or(false)
+}
+
+/// `tidy` for every book, once, as the library file is brought up to date (db.rs).
+pub fn tidy_all(conn: &Connection) -> rusqlite::Result<()> {
+    let mut stmt = conn.prepare("select distinct novel_id from wiki_entries")?;
+    let books: Vec<i64> = stmt
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    for b in books {
+        tidy(conn, b)?;
+    }
+    Ok(())
+}
+
 /* ---------- What the AI writes ---------- */
 
 #[derive(Debug, Deserialize)]
@@ -586,6 +927,57 @@ struct AiRelation {
     relation: String,
     #[serde(default)]
     note: String,
+}
+
+/// Whether the AI's `name` (as the original writes it) with its `translated` form reads
+/// as a proper noun: two letters at least, and capitalised wherever its script has
+/// capitals ("núi", "sword" or "linh khí" are common words, not names). A Chinese name
+/// has no capitals, so its translation tells.
+fn proper_noun(name: &str, translated: &str) -> bool {
+    fn capitalised(s: &str) -> Option<bool> {
+        let c = s.trim().chars().find(|c| c.is_alphabetic())?;
+        (c.is_uppercase() || c.is_lowercase()).then(|| c.is_uppercase())
+    }
+    if name.trim().chars().count() < 2 {
+        return false;
+    }
+    match capitalised(name) {
+        Some(cap) => cap,
+        None => capitalised(translated).unwrap_or(true),
+    }
+}
+
+/// The live entry an AI item stands for when its own name is new: one that has any of
+/// its aliases as name or alias ("bé áo xanh" listed with the name of a known girl), or
+/// the same name in `lang`.
+fn find_same(
+    conn: &Connection,
+    novel_id: i64,
+    lang: &str,
+    item: &AiEntry,
+) -> rusqlite::Result<Option<(i64, Entry, bool)>> {
+    for alias in &item.aliases {
+        if alias.trim().chars().count() < 2 {
+            continue;
+        }
+        if let Some(found @ (_, _, false)) = find(conn, novel_id, alias)? {
+            return Ok(Some(found));
+        }
+    }
+    let translated = item.translated.trim();
+    if translated.is_empty() {
+        return Ok(None);
+    }
+    conn.query_row(
+        &format!(
+            "select {ENTRY_COLS}, e.id, e.deleted from wiki_entries e
+             where e.novel_id = ?1 and e.deleted = 0 and json_extract(e.names, '$.' || ?2) = ?3
+             order by e.id limit 1"
+        ),
+        params![novel_id, lang, translated],
+        |r| Ok((r.get(AFTER)?, entry_row(r)?, r.get::<_, bool>(AFTER + 1)?)),
+    )
+    .optional()
 }
 
 /// Adds what the AI found about an entry: a new entry, or the new facts of a known one.
@@ -626,7 +1018,11 @@ fn upsert_ai_entry(
         return Ok(None);
     }
     let translated = item.translated.trim().to_string();
-    match find(conn, novel_id, &name)? {
+    let known = match find(conn, novel_id, &name)? {
+        Some(found) => Some(found),
+        None => find_same(conn, novel_id, lang, &item)?,
+    };
+    match known {
         Some((_, _, true)) => Ok(None),
         Some((id, e, false)) => {
             let mut names = e.names.clone();
@@ -637,7 +1033,10 @@ fn upsert_ai_entry(
             }
             let aliases = clean_list(aliases, &e.name);
             let mine = e.source == "user";
-            if !translated.is_empty() && (!mine || !names.contains_key(lang)) {
+            // Found by another of its names (a nickname): that name's translation is
+            // not the entry's.
+            let own_name = name == e.name;
+            if !translated.is_empty() && ((!mine && own_name) || !names.contains_key(lang)) {
                 names.insert(lang.to_string(), translated);
             }
             let mut summaries = e.summaries.clone();
@@ -676,6 +1075,8 @@ fn upsert_ai_entry(
             }
             Ok(Some(e.uid))
         }
+        // A common noun ("núi", "the sect", "linh khí") is not kept as an entry.
+        None if !proper_noun(&name, &translated) => Ok(None),
         None => {
             let mut names = BTreeMap::new();
             if !translated.is_empty() {
@@ -780,52 +1181,280 @@ fn head(text: &str, chars: usize) -> String {
     text.chars().take(chars).collect()
 }
 
-/// The wiki part of a translation prompt for chapter `text`: the entries it names,
-/// with their relations. Empty when the wiki has nothing for it.
+/* ---------- The vector table of proper nouns ---------- */
+
+/// Names embedded per request.
+const EMBED_BATCH: usize = 64;
+/// Two names closer than this (cosine distance) may be the same entity…
+const NEAR: f64 = 0.12;
+/// …and closer than this they are, whatever else.
+const SAME: f64 = 0.04;
+
+fn to_blob(v: &[f32]) -> Vec<u8> {
+    v.iter().flat_map(|f| f.to_le_bytes()).collect()
+}
+
+/// What a name is embedded as: the raw name, the translated one and the kind.
+fn embed_text(raw: &str, translated: &str, kind: &str) -> String {
+    if translated.is_empty() || translated == raw {
+        format!("{raw} ({kind})")
+    } else {
+        format!("{raw} → {translated} ({kind})")
+    }
+}
+
+/// One proper noun of the vector table.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Name {
+    pub raw: String,
+    pub translated: String,
+    pub kind: String,
+    pub entry_uid: String,
+}
+
+/// Brings the book's vector table (`wiki_names`) for `lang` in line with its wiki: one
+/// row per entry name and alias, with the name the translation uses (an alias takes its
+/// entry's) and the kind. With `llm` and its embedding model, the rows not embedded by
+/// that model yet are embedded. Returns the rows embedded.
+pub fn index_names(
+    conn: &Connection,
+    llm: Option<&dyn Chat>,
+    novel_id: i64,
+    lang: &str,
+) -> Result<usize, AiError> {
+    let now = super::db::now_ms();
+    let mut keep: Vec<(String, String, String, String)> = Vec::new();
+    for e in entries(conn, novel_id)? {
+        let translated = e.names.get(lang).cloned().unwrap_or_default();
+        for raw in std::iter::once(&e.name).chain(e.aliases.iter()) {
+            keep.push((
+                raw.clone(),
+                translated.clone(),
+                e.kind.clone(),
+                e.uid.clone(),
+            ));
+        }
+    }
+    let tx = conn.unchecked_transaction()?;
+    {
+        let mut up = tx.prepare(
+            "insert into wiki_names (novel_id, raw, lang, translated, kind, entry_uid, updated_at)
+             values (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             on conflict (novel_id, raw, lang) do update set
+               translated = excluded.translated, kind = excluded.kind, entry_uid = excluded.entry_uid,
+               updated_at = excluded.updated_at,
+               embedding = case when wiki_names.translated = excluded.translated
+                 and wiki_names.kind = excluded.kind then wiki_names.embedding end,
+               model = case when wiki_names.translated = excluded.translated
+                 and wiki_names.kind = excluded.kind then wiki_names.model end
+             where wiki_names.translated <> excluded.translated or wiki_names.kind <> excluded.kind
+               or wiki_names.entry_uid <> excluded.entry_uid",
+        )?;
+        for (raw, translated, kind, uid) in &keep {
+            up.execute(params![novel_id, raw, lang, translated, kind, uid, now])?;
+        }
+    }
+    let raws: Vec<&str> = keep.iter().map(|k| k.0.as_str()).collect();
+    tx.execute(
+        "delete from wiki_names where novel_id = ?1 and lang = ?2
+           and raw not in (select value from json_each(?3))",
+        params![novel_id, lang, to_json(&raws, "[]")],
+    )?;
+    tx.commit()?;
+    let Some((llm, model)) = llm.and_then(|l| l.embed_model().map(|m| (l, m.to_string()))) else {
+        return Ok(0);
+    };
+    let mut stmt = conn.prepare(
+        "select id, raw, translated, kind from wiki_names
+         where novel_id = ?1 and lang = ?2 and (embedding is null or model is not ?3)",
+    )?;
+    let todo: Vec<(i64, String)> = stmt
+        .query_map(params![novel_id, lang, model], |r| {
+            Ok((
+                r.get(0)?,
+                embed_text(
+                    &r.get::<_, String>(1)?,
+                    &r.get::<_, String>(2)?,
+                    &r.get::<_, String>(3)?,
+                ),
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut done = 0;
+    for batch in todo.chunks(EMBED_BATCH) {
+        let texts: Vec<String> = batch.iter().map(|(_, t)| t.clone()).collect();
+        let vectors = llm.embed(&texts)?;
+        for ((id, _), v) in batch.iter().zip(vectors) {
+            conn.execute(
+                "update wiki_names set embedding = ?2, model = ?3 where id = ?1",
+                params![id, to_blob(&v), model],
+            )?;
+            done += 1;
+        }
+    }
+    Ok(done)
+}
+
+/// The rows of the book's vector table for `lang` whose raw name `text` has (as a whole
+/// word, names.rs), the most mentioned first.
+pub fn names_in(
+    conn: &Connection,
+    novel_id: i64,
+    lang: &str,
+    text: &str,
+) -> rusqlite::Result<Vec<Name>> {
+    let mut stmt = conn.prepare(
+        "select raw, translated, kind, entry_uid from wiki_names where novel_id = ?1 and lang = ?2",
+    )?;
+    let all: Vec<Name> = stmt
+        .query_map(params![novel_id, lang], |r| {
+            Ok(Name {
+                raw: r.get(0)?,
+                translated: r.get(1)?,
+                kind: r.get(2)?,
+                entry_uid: r.get(3)?,
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    let finder =
+        super::names::Finder::new(&all.iter().map(|n| vec![n.raw.as_str()]).collect::<Vec<_>>());
+    let mut found: Vec<(usize, Name)> = finder
+        .hits(text)
+        .into_iter()
+        .zip(all)
+        .filter(|(hits, _)| *hits > 0)
+        .collect();
+    found.sort_by_key(|(hits, _)| std::cmp::Reverse(*hits));
+    Ok(found.into_iter().map(|(_, n)| n).collect())
+}
+
+/// Whether two names may be one entity written two ways: one holds the other, or they
+/// share their translation.
+fn alike(a: &Name, b: &Name) -> bool {
+    let (ra, rb) = (a.raw.to_lowercase(), b.raw.to_lowercase());
+    let (ta, tb) = (a.translated.to_lowercase(), b.translated.to_lowercase());
+    ra.contains(&rb)
+        || rb.contains(&ra)
+        || (!ta.is_empty() && ta == tb)
+        || (!ta.is_empty() && !tb.is_empty() && (ta.contains(&tb) || tb.contains(&ta)))
+}
+
+/// Merges the book's entries whose names land together in the vector table: the same
+/// kind, closer than `SAME`, or closer than `NEAR` and `alike`. The entry met first
+/// keeps its name; two entries of the user's are never merged. Needs the rows embedded
+/// (`index_names` with an embedding model); returns the merges made.
+pub fn merge_near(conn: &Connection, novel_id: i64, lang: &str) -> rusqlite::Result<usize> {
+    let mut stmt = conn.prepare(
+        "select a.raw, a.translated, a.kind, a.entry_uid, b.raw, b.translated, b.kind, b.entry_uid,
+           vec_distance_cosine(a.embedding, b.embedding) as d
+         from wiki_names a join wiki_names b
+           on b.novel_id = a.novel_id and b.lang = a.lang and b.kind = a.kind
+              and b.entry_uid > a.entry_uid and b.model = a.model
+              and length(b.embedding) = length(a.embedding)
+         where a.novel_id = ?1 and a.lang = ?2 and a.embedding is not null
+           and vec_distance_cosine(a.embedding, b.embedding) < ?3
+         order by d",
+    )?;
+    let name = |r: &Row, at: usize| -> rusqlite::Result<Name> {
+        Ok(Name {
+            raw: r.get(at)?,
+            translated: r.get(at + 1)?,
+            kind: r.get(at + 2)?,
+            entry_uid: r.get(at + 3)?,
+        })
+    };
+    let pairs: Vec<(Name, Name, f64)> = stmt
+        .query_map(params![novel_id, lang, NEAR], |r| {
+            Ok((name(r, 0)?, name(r, 4)?, r.get(8)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut merges = 0;
+    for (a, b, d) in pairs {
+        if d >= SAME && !alike(&a, &b) {
+            continue;
+        }
+        let (Some(ea), Some(eb)) = (by_uid(conn, &a.entry_uid)?, by_uid(conn, &b.entry_uid)?)
+        else {
+            continue;
+        };
+        if !by_uid_live(conn, &ea.uid) || !by_uid_live(conn, &eb.uid) {
+            continue;
+        }
+        if ea.source == "user" && eb.source == "user" {
+            continue;
+        }
+        // The user's entry stays, else the one met first.
+        let a_first = match (ea.source.as_str(), eb.source.as_str()) {
+            ("user", _) => true,
+            (_, "user") => false,
+            _ => ea.first_chapter.unwrap_or(i64::MAX) <= eb.first_chapter.unwrap_or(i64::MAX),
+        };
+        let (from, into) = if a_first { (&eb, &ea) } else { (&ea, &eb) };
+        if merge(conn, novel_id, &from.uid, &into.uid, false).is_ok() {
+            merges += 1;
+        }
+    }
+    Ok(merges)
+}
+
+/// The wiki part of a translation prompt for chapter `text`: the proper nouns of the
+/// vector table it names, as the translation must write them (raw → translated, kind),
+/// and how those entries relate, with the circumstances. Empty when there are none.
 pub fn context(
     conn: &Connection,
     novel_id: i64,
     text: &str,
     lang: &str,
 ) -> rusqlite::Result<String> {
-    let mut picked = mentioned(conn, novel_id, text)?;
-    picked.truncate(CONTEXT_ENTRIES);
-    if picked.is_empty() {
+    let found = names_in(conn, novel_id, lang, text)?;
+    if found.is_empty() {
         return Ok(String::new());
     }
-    let label = |e: &Entry| match e.names.get(lang) {
-        Some(n) => format!("{} → {n}", e.name),
-        None => e.name.clone(),
-    };
+    let mut by_entry: BTreeMap<&str, Vec<&Name>> = BTreeMap::new();
+    let mut order: Vec<&str> = Vec::new();
+    for n in &found {
+        if !by_entry.contains_key(n.entry_uid.as_str()) {
+            order.push(&n.entry_uid);
+        }
+        by_entry.entry(&n.entry_uid).or_default().push(n);
+    }
+    order.truncate(CONTEXT_ENTRIES);
     let mut s = String::from(
-        "\nThe novel's wiki (use these names, forms of address and relationships consistently):\n",
+        "\nProper nouns in this text (original → as this translation writes it, kind); always write them this way, and an alias the same as its entry's name unless the text uses it as a nickname:\n",
     );
-    for e in &picked {
-        s.push_str(&format!("- {} ({})", label(e), e.kind));
+    let mut picked: BTreeMap<String, Entry> = BTreeMap::new();
+    for uid in &order {
+        let Some(e) = by_uid(conn, uid)? else {
+            continue;
+        };
+        let translated = e.names.get(lang).map(String::as_str).unwrap_or("");
+        let shown = if translated.is_empty() {
+            e.name.clone()
+        } else {
+            format!("{} → {translated}", e.name)
+        };
+        s.push_str(&format!("- {shown} ({})", e.kind));
         if !e.aliases.is_empty() {
             s.push_str(&format!("; also called {}", e.aliases.join(", ")));
         }
         if let Some(rank) = e.rank {
             s.push_str(&format!("; rank {rank}"));
         }
-        let summary = e.summary_in(lang);
-        if !summary.is_empty() {
-            s.push_str(&format!(": {}", head(summary, 200)));
-        }
         s.push('\n');
+        picked.insert(e.uid.clone(), e);
     }
-    let names: BTreeMap<&str, &Entry> = picked.iter().map(|e| (e.uid.as_str(), e)).collect();
     let rels: Vec<String> = relations(conn, novel_id)?
         .into_iter()
         .filter_map(|r| {
-            let a = names.get(r.from_uid.as_str())?;
-            let b = names.get(r.to_uid.as_str())?;
-            Some(format!(
-                "- {} — {} — {}\n",
-                a.name,
-                rel_words(&r, lang),
-                b.name
-            ))
+            let a = picked.get(&r.from_uid)?;
+            let b = picked.get(&r.to_uid)?;
+            let mut line = format!("- {} — {} — {}", a.name, rel_words(&r, lang), b.name);
+            if !r.note.trim().is_empty() {
+                line.push_str(&format!(" ({})", head(r.note.trim(), 160)));
+            }
+            line.push('\n');
+            Some(line)
         })
         .take(CONTEXT_ENTRIES)
         .collect();
@@ -864,7 +1493,7 @@ fn tools(lang: &str) -> Value {
                         "name": { "type": "string", "description": "The name exactly as written in the original text." },
                         "kind": { "type": "string", "enum": KINDS },
                         "translated": { "type": "string", "description": format!("The name as used in the {lang} translation.") },
-                        "aliases": { "type": "array", "items": { "type": "string" }, "description": "Other names or titles in the original text." },
+                        "aliases": { "type": "array", "items": { "type": "string" }, "description": "Every other way the original text refers to this same one: nicknames, titles, epithets, descriptions that stand for it (\"the girl in green\")." },
                         "summary": { "type": "string", "description": format!("In {lang}, at most three sentences: who or what it is, as known so far. Write the whole summary, old facts included.") },
                         "rank": { "type": "integer", "description": "Only for kind level: its place in its ladder of ranks or cultivation realms, 1 for the lowest." }
                     },
@@ -883,7 +1512,7 @@ fn tools(lang: &str) -> Value {
                         "from": { "type": "string" },
                         "to": { "type": "string" },
                         "relation": { "type": "string", "description": format!("What `from` is to `to`: one of {} (located_in for a place or faction inside a bigger place, has_level for a character's current rank or realm, has_skill for a technique or ability a character knows). Only when none fits, a few words in {lang}.", REL_TYPES.join(", ")) },
-                        "note": { "type": "string" }
+                        "note": { "type": "string", "description": format!("In {lang}: the circumstances (how it came about, what one calls the other), one sentence.") }
                     },
                     "required": ["from", "to", "relation"]
                 }
@@ -892,45 +1521,49 @@ fn tools(lang: &str) -> Value {
     ])
 }
 
-fn learn_rules(lang: &str) -> String {
+fn learn_rules(lang: &str, genre: &str) -> String {
+    let l = super::translate::lang_name(lang);
+    let names = if genre == "nonfiction" {
+        " This book is non-fiction: the translated name is always the original English name, never translated.".to_string()
+    } else {
+        String::new()
+    };
     format!(
-        "You keep the wiki of a novel being translated into {}. From the chapter below, record the characters, places, factions or sects, important items, levels (ranks, cultivation realms, each with its rank number), skills (techniques, martial arts, spells, abilities) and other special terms that matter to the story, and the relationships: between characters, with factions, a character's current level, the skills a character has, and which place lies in which (the map). Skip passers-by and common words. Use the name exactly as written in the original text, and the name the translation uses. Only add what the chapter shows; do not guess.",
-        super::translate::lang_name(lang)
+        "You keep the wiki of a novel being translated into {l}. From the chapter below, record only proper nouns that matter to the story: the names of specific characters, places, factions or sects, items, levels (ranks, cultivation realms, each with its rank number) and skills (named techniques, martial arts, spells). Never record a common noun or a generic word, however important to the scene (mountain, river, sword, city, sect, spirit energy, núi, sông, kiếm, thành, linh khí, tông môn): a place or thing is kept only under its own name. Write each name whole and exactly as the original text writes it, never a piece of a longer word or name (not a surname cut out of another word). A nickname, title, epithet or description that stands for a character or place already named (\"the girl in green\", \"bé áo xanh\", \"the old man\", \"Sư phụ\" for one person) is not a new entry: put it in that entry's aliases. Record the relationships: between characters, with factions, a character's current level, the skills a character has, which place lies in which (the map), each with a note in {l} on the circumstances (how it came about, what one calls the other). Write every translated name, summary, free relation and note in {l} only, never mixing languages. Record all the chapter shows about an entry, later events included (spoilers are fine), and link it to the others it involves; do not guess.{names}"
     )
 }
 
-fn learn_prompt(lang: &str) -> String {
+fn learn_prompt(lang: &str, genre: &str) -> String {
     format!(
-        "{} Use the tools: wiki_search to check what is known, wiki_upsert to add or update an entry, wiki_relate for relationships (add both entries first). When the wiki is up to date, reply with DONE.",
-        learn_rules(lang)
+        "{} Use the tools: wiki_search to check what is known (search a nickname too before adding it as new), wiki_upsert to add or update an entry, wiki_relate for relationships (add both entries first). When the wiki is up to date, reply with DONE.",
+        learn_rules(lang, genre)
     )
 }
 
 /// The JSON object the AI answers with when it does not use the tools.
 fn json_shape(lang: &str) -> String {
     format!(
-        "{{\"entries\": [{{\"name\": original name, \"kind\": one of {}, \"translated\": name in the translation, \"aliases\": [other names], \"summary\": at most three sentences in {}, \"rank\": number for a level only}}], \"relations\": [{{\"from\": original name, \"to\": original name, \"relation\": one of {} (else a few words in {}), \"note\": \"\"}}]}}",
+        "{{\"entries\": [{{\"name\": original name, \"kind\": one of {}, \"translated\": name in the translation, \"aliases\": [nicknames, titles and other ways the original refers to it], \"summary\": at most three sentences in {l}, \"rank\": number for a level only}}], \"relations\": [{{\"from\": original name, \"to\": original name, \"relation\": one of {} (else a few words in {l}), \"note\": the circumstances in {l}}}]}}",
         KINDS.join(", "),
-        super::translate::lang_name(lang),
         REL_TYPES.join(", "),
-        super::translate::lang_name(lang),
+        l = super::translate::lang_name(lang),
     )
 }
 
-fn json_prompt(lang: &str) -> String {
+fn json_prompt(lang: &str, genre: &str) -> String {
     format!(
         "{} Reply with only one JSON object and nothing else: {}",
-        learn_rules(lang),
+        learn_rules(lang, genre),
         json_shape(lang)
     )
 }
 
 /// What a translation prompt adds so the same request also feeds the wiki: after the
 /// translated text, `mark` on its own line and the facts of that part as JSON.
-pub fn extract_prompt(lang: &str, mark: &str) -> String {
+pub fn extract_prompt(lang: &str, mark: &str, genre: &str) -> String {
     format!(
         "\n\nAlso keep the novel's wiki. {} After the translated text, write a line with only {mark}, then one JSON object and nothing else: {}, with two more lists in it: {}. When the text shows nothing worth keeping, write {{\"entries\": [], \"relations\": []}}.",
-        learn_rules(lang),
+        learn_rules(lang, genre),
         json_shape(lang),
         super::cast::shape(lang)
     )
@@ -1096,8 +1729,9 @@ pub fn learn(
         .optional()?;
     let input = learn_input(conn, novel_id, lang, original, translated)?;
     let tools = tools(lang);
+    let genre = super::translate::prefs(conn, novel_id)?.genre;
     let mut messages = vec![
-        json!({ "role": "system", "content": learn_prompt(lang) }),
+        json!({ "role": "system", "content": learn_prompt(lang, &genre) }),
         json!({ "role": "user", "content": input }),
     ];
     let mut changes = 0;
@@ -1105,7 +1739,7 @@ pub fn learn(
         let msg = match llm.chat_tools(&messages, &tools) {
             Ok(m) => m,
             Err(e) if round == 0 && tools_refused(&e) => {
-                let reply = AiError::keep_cut(llm.chat(&json_prompt(lang), &input))?;
+                let reply = AiError::keep_cut(llm.chat(&json_prompt(lang, &genre), &input))?;
                 changes += apply_json(conn, novel_id, lang, chapter, &reply)?;
                 break;
             }
@@ -1291,7 +1925,14 @@ pub fn learn_quietly(
         Ok(None) => learn(conn, llm, novel_id, chapter_id, lang, original, translated),
         Ok(Some(n)) => Ok(n),
         Err(e) => Err(e.into()),
-    };
+    }
+    .and_then(|n| {
+        // The vector table follows, and names it finds written two ways are merged.
+        if index_names(conn, Some(llm), novel_id, lang)? > 0 {
+            merge_near(conn, novel_id, lang)?;
+        }
+        Ok(n)
+    });
     match learnt {
         Ok(_) => set_error(conn, novel_id, None),
         Err(e) => set_error(conn, novel_id, Some(&e.to_string())),
@@ -1666,7 +2307,8 @@ fn parse_object<T: serde::de::DeserializeOwned>(reply: &str) -> Option<T> {
 /// Takes what stays on this device out of a copy about to be synced.
 pub fn strip(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
-        "delete from wiki_books; delete from wiki_chapters;
+        "delete from wiki_books; delete from wiki_chapters; delete from wiki_names;
+         delete from ai_book_prefs;
          delete from chapter_wiki_facts; delete from cast_people;
          delete from cast_address_raw; delete from cast_address;",
     )
@@ -1821,7 +2463,8 @@ mod tests {
             Some(629.0)
         );
         assert_eq!(shown.relations[0].first_chapter_shown, Some(629.0));
-        assert_eq!(w.relations[0].kind, "đệ tử của");
+        // Words for a relation type land on the type.
+        assert_eq!(w.relations[0].kind, "disciple_of");
         // The tool answers went back to the model, the missing entry with an error.
         let seen = llm.seen.lock().unwrap();
         let last = seen.last().unwrap();
@@ -1883,12 +2526,302 @@ mod tests {
             },
         )
         .unwrap();
-        add_relation(&conn, novel, &b.uid, &a.uid, "kẻ thù của", "vi", "").unwrap();
+        add_relation(
+            &conn,
+            novel,
+            &b.uid,
+            &a.uid,
+            "kẻ thù của",
+            "vi",
+            "Tranh ngôi gia chủ.",
+        )
+        .unwrap();
+        index_names(&conn, None, novel, "vi").unwrap();
         let ctx = context(&conn, novel, "动少 看着 林琅天。", "vi").unwrap();
-        assert!(ctx.contains("林动 → Lâm Động (character); also called 动少: Nhân vật chính."));
-        assert!(ctx.contains("林琅天 — kẻ thù của — 林动"));
+        // Names only, no descriptions: raw → translated (kind).
+        assert!(ctx.contains("- 林动 → Lâm Động (character); also called 动少\n"));
+        assert!(!ctx.contains("Nhân vật chính"));
+        assert!(ctx.contains("林琅天 — enemy of — 林动 (Tranh ngôi gia chủ.)"));
         assert!(!ctx.contains("炎城"));
         assert_eq!(context(&conn, novel, "nothing here", "vi").unwrap(), "");
+        // The vector table holds every name and alias with the translation and kind.
+        let names = names_in(&conn, novel, "vi", "动少 林动").unwrap();
+        assert_eq!(names.len(), 2);
+        assert!(names
+            .iter()
+            .all(|n| n.translated == "Lâm Động" && n.kind == "character"));
+    }
+
+    fn ai(name: &str, kind: &str, translated: &str, aliases: &[&str]) -> AiEntry {
+        AiEntry {
+            name: name.into(),
+            kind: kind.into(),
+            translated: translated.into(),
+            aliases: aliases.iter().map(|a| a.to_string()).collect(),
+            summary: String::new(),
+            rank: None,
+        }
+    }
+
+    #[test]
+    fn only_proper_nouns_become_entries() {
+        let (conn, novel) = book("proper");
+        // Common nouns, in a spaced script or by their translation, are left out.
+        for item in [
+            ai("núi", "place", "núi", &[]),
+            ai("sông", "place", "", &[]),
+            ai("灵气", "term", "linh khí", &[]),
+            ai("X", "character", "X", &[]),
+        ] {
+            assert_eq!(upsert_ai(&conn, novel, "vi", Some(1), item).unwrap(), None);
+        }
+        // Names are kept.
+        for item in [
+            ai("Thanh Dương trấn", "place", "Thanh Dương trấn", &[]),
+            ai("林动", "character", "Lâm Động", &[]),
+            ai("道宗", "faction", "", &[]),
+        ] {
+            assert!(upsert_ai(&conn, novel, "vi", Some(1), item)
+                .unwrap()
+                .is_some());
+        }
+        assert_eq!(load(&conn, novel).unwrap().entries.len(), 3);
+    }
+
+    #[test]
+    fn a_nickname_joins_its_character() {
+        let (conn, novel) = book("nick");
+        let girl = upsert_ai(
+            &conn,
+            novel,
+            "vi",
+            Some(1),
+            ai("Thanh Đàn", "character", "Thanh Đàn", &[]),
+        )
+        .unwrap()
+        .unwrap();
+        // A later chapter brings her nickname with her name as an alias: the same entry.
+        let again = upsert_ai(
+            &conn,
+            novel,
+            "vi",
+            Some(2),
+            ai("Bé Áo Xanh", "character", "Bé Áo Xanh", &["Thanh Đàn"]),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(again, girl);
+        // The same translated name is the same entry too.
+        let third = upsert_ai(
+            &conn,
+            novel,
+            "vi",
+            Some(3),
+            ai("青檀", "character", "Thanh Đàn", &[]),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(third, girl);
+        let w = load(&conn, novel).unwrap();
+        assert_eq!(w.entries.len(), 1);
+        assert_eq!(w.entries[0].aliases, vec!["Bé Áo Xanh", "青檀"]);
+    }
+
+    #[test]
+    fn two_entries_merge_into_one() {
+        let (conn, novel) = book("merge");
+        let a = upsert_ai(
+            &conn,
+            novel,
+            "vi",
+            Some(1),
+            ai("Lâm Động", "character", "Lâm Động", &[]),
+        )
+        .unwrap()
+        .unwrap();
+        let b = upsert_ai(
+            &conn,
+            novel,
+            "vi",
+            Some(3),
+            ai("Thiếu Gia", "character", "Thiếu Gia", &[]),
+        )
+        .unwrap()
+        .unwrap();
+        let sect = upsert_ai(
+            &conn,
+            novel,
+            "vi",
+            Some(1),
+            ai("Đạo Tông", "faction", "Đạo Tông", &[]),
+        )
+        .unwrap()
+        .unwrap();
+        add_relation(&conn, novel, &b, &sect, "member_of", "vi", "").unwrap();
+        add_relation(&conn, novel, &a, &b, "friend_of", "vi", "").unwrap();
+        let merged = merge(&conn, novel, &b, &a, true).unwrap();
+        assert_eq!(merged.aliases, vec!["Thiếu Gia"]);
+        assert_eq!(merged.source, "user");
+        let w = load(&conn, novel).unwrap();
+        assert_eq!(w.entries.len(), 2);
+        // The relation moved over; the one between the two is gone.
+        assert_eq!(w.relations.len(), 1);
+        assert_eq!(
+            (
+                w.relations[0].from_uid.as_str(),
+                w.relations[0].kind.as_str()
+            ),
+            (a.as_str(), "member_of")
+        );
+        // The AI naming the merged name again lands on the kept entry.
+        let back = upsert_ai(
+            &conn,
+            novel,
+            "vi",
+            Some(5),
+            ai("Thiếu Gia", "character", "", &[]),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(back, a);
+        assert!(merge(&conn, novel, &a, &a, true).is_err());
+    }
+
+    #[test]
+    fn tidy_removes_common_nouns_and_merges_aliases() {
+        let (conn, novel) = book("tidy");
+        // As an older version wrote them, straight into the table.
+        for (uid, name, names, aliases, source) in [
+            ("a", "núi", r#"{"vi":"núi"}"#, "[]", "ai"),
+            (
+                "b",
+                "Lâm Động",
+                r#"{"vi":"Lâm Động"}"#,
+                r#"["Động Thiếu"]"#,
+                "ai",
+            ),
+            ("c", "Động Thiếu", r#"{"vi":"Động Thiếu"}"#, "[]", "ai"),
+            ("d", "sông", "{}", "[]", "user"),
+        ] {
+            conn.execute(
+                "insert into wiki_entries (uid, novel_id, kind, name, names, aliases, source, updated_at)
+                 values (?1, ?2, 'character', ?3, ?4, ?5, ?6, 1)",
+                params![uid, novel, name, names, aliases, source],
+            )
+            .unwrap();
+        }
+        assert_eq!(tidy(&conn, novel).unwrap(), 2);
+        let names: Vec<String> = load(&conn, novel)
+            .unwrap()
+            .entries
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
+        assert_eq!(names, vec!["Lâm Động", "sông"]);
+    }
+
+    #[test]
+    fn relation_words_land_on_types() {
+        assert_eq!(rel_type("Master of"), Some("master_of"));
+        assert_eq!(rel_type("sư phụ của"), Some("master_of"));
+        assert_eq!(rel_type("Kẻ thù"), Some("enemy_of"));
+        assert_eq!(rel_type("là đệ tử của"), Some("disciple_of"));
+        assert_eq!(rel_type("ân nhân cứu mạng"), None);
+    }
+
+    /// Embeds a name as a direction picked by its first letters, so names that start
+    /// the same land together.
+    struct Embedder(Mutex<usize>);
+
+    impl Chat for Embedder {
+        fn chat(&self, _: &str, _: &str) -> Result<String, AiError> {
+            Ok(String::new())
+        }
+        fn model(&self) -> &str {
+            "m"
+        }
+        fn embed_model(&self) -> Option<&str> {
+            Some("emb")
+        }
+        fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, AiError> {
+            *self.0.lock().unwrap() += texts.len();
+            Ok(texts
+                .iter()
+                .map(|t| {
+                    // One direction per first two letters.
+                    let c: Vec<u32> = t.chars().take(2).map(|c| c as u32).collect();
+                    let mut v = vec![0.0; 64];
+                    v[((c[0] * 31 + c[1]) % 64) as usize] = 1.0;
+                    v
+                })
+                .collect())
+        }
+    }
+
+    #[test]
+    fn names_written_two_ways_merge_through_the_vector_table() {
+        let (conn, novel) = book("vec");
+        let one: String = conn
+            .query_row("select vec_version()", [], |r| r.get(0))
+            .unwrap();
+        assert!(one.starts_with('v'));
+        let a = upsert_ai(
+            &conn,
+            novel,
+            "vi",
+            Some(1),
+            ai("林动", "character", "Lâm Động", &[]),
+        )
+        .unwrap()
+        .unwrap();
+        // The same man under a longer form of his name, met later.
+        upsert_ai(
+            &conn,
+            novel,
+            "vi",
+            Some(4),
+            ai("林动哥", "character", "Lâm Động ca", &[]),
+        )
+        .unwrap()
+        .unwrap();
+        // Another man and a place that start alike are not merged.
+        upsert_ai(
+            &conn,
+            novel,
+            "vi",
+            Some(2),
+            ai("林琅天", "character", "Lâm Lang Thiên", &[]),
+        )
+        .unwrap()
+        .unwrap();
+        upsert_ai(
+            &conn,
+            novel,
+            "vi",
+            Some(2),
+            ai("林家", "faction", "Lâm Gia", &[]),
+        )
+        .unwrap()
+        .unwrap();
+        let llm = Embedder(Mutex::new(0));
+        assert_eq!(index_names(&conn, Some(&llm), novel, "vi").unwrap(), 4);
+        // Embedded once: nothing more to do.
+        assert_eq!(index_names(&conn, Some(&llm), novel, "vi").unwrap(), 0);
+        assert_eq!(merge_near(&conn, novel, "vi").unwrap(), 1);
+        let w = load(&conn, novel).unwrap();
+        assert_eq!(w.entries.len(), 3);
+        let lin = w.entries.iter().find(|e| e.uid == a).unwrap();
+        assert_eq!(lin.aliases, vec!["林动哥"]);
+        // The vector table follows the merge.
+        index_names(&conn, Some(&llm), novel, "vi").unwrap();
+        let rows: i64 = conn
+            .query_row(
+                "select count(*) from wiki_names where entry_uid = ?1",
+                [&a],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 2);
     }
 
     #[test]

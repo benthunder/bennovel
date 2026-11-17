@@ -1017,6 +1017,45 @@ pub async fn wiki_relate<R: Runtime>(
     .await
 }
 
+/// Merges entry `from_uid` into `into_uid` (one entity written two ways).
+#[tauri::command]
+pub async fn wiki_merge<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+    from_uid: String,
+    into_uid: String,
+) -> Result<wiki::Entry, AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || {
+        let conn = db::open(&path)?;
+        wiki::merge(&conn, novel_id, &from_uid, &into_uid, true)
+    })
+    .await
+}
+
+/// A book's genre and the user's own instructions for its prompts.
+#[tauri::command]
+pub async fn ai_prefs_get<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+) -> Result<translate::Prefs, AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || Ok(translate::prefs(&db::open(&path)?, novel_id)?)).await
+}
+
+#[tauri::command]
+pub async fn ai_prefs_set<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+    prefs: translate::Prefs,
+) -> Result<(), AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || Ok(translate::set_prefs(&db::open(&path)?, novel_id, &prefs)?)).await
+}
+
 /// What the wiki is missing in `lang`: entries and free relations without its words.
 #[tauri::command]
 pub async fn wiki_missing<R: Runtime>(

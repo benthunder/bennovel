@@ -46,6 +46,16 @@ use std::sync::{Arc, Mutex};
 /// Target languages offered: English and Vietnamese.
 pub const LANGS: &[&str] = &["en", "vi"];
 pub const STYLES: &[&str] = &["literal", "natural", "literary", "casual"];
+/// Genres a book can be set to (`ai_book_prefs`); forms of address follow them. '' is
+/// none chosen.
+pub const GENRES: &[&str] = &[
+    "wuxia",
+    "xianxia",
+    "supernatural",
+    "romance",
+    "politics",
+    "nonfiction",
+];
 
 /// Paragraphs that stand for a picture (U+FFFC + key) pass through untouched.
 const IMAGE_MARK: char = '\u{FFFC}';
@@ -139,6 +149,9 @@ struct Flow {
     terms: Vec<(String, String)>,
     /// The wiki part of the prompt (recall).
     wiki: String,
+    /// The book's genre (`GENRES`, or '') and the user's own extra instructions.
+    genre: String,
+    instructions: String,
     /// The cast the chapter names: genders, ages and forms of address found before
     /// (cast.rs), put in each part's prompt.
     cast: super::cast::Cast,
@@ -182,6 +195,10 @@ pub fn run_with(
     } else {
         Vec::new()
     };
+    let Prefs {
+        genre,
+        instructions,
+    } = prefs(conn, req.novel_id)?;
     let flow = Flow {
         db: conn.path().unwrap_or_default().to_string(),
         req,
@@ -192,6 +209,8 @@ pub fn run_with(
         mode: None,
         terms,
         wiki: String::new(),
+        genre,
+        instructions,
         cast,
         title,
         paragraphs: split_paragraphs(&content),
@@ -292,6 +311,7 @@ fn graph(
             async move {
                 let r = (|| {
                     let conn = super::db::open(std::path::Path::new(&f.db))?;
+                    super::wiki::index_names(&conn, None, f.req.novel_id, &f.req.lang)?;
                     f.wiki = super::wiki::context(
                         &conn,
                         f.req.novel_id,
@@ -324,8 +344,8 @@ fn graph(
                         &f.req.style,
                         &f.terms,
                         &f.wiki,
-                    );
-                    let extract = super::wiki::extract_prompt(&f.req.lang, WIKI_MARK);
+                    ) + &book_rules(&f.genre, &f.req.lang, &f.instructions);
+                    let extract = super::wiki::extract_prompt(&f.req.lang, WIKI_MARK, &f.genre);
                     let system = |part: &str| format!("{system}{}{extract}", f.cast.prompt(part));
                     let title = (!f.title.trim().is_empty())
                         .then(|| (title_prompt(&f.req.lang), f.title.clone()));
@@ -365,8 +385,9 @@ fn graph(
                     return Ok(f);
                 }
                 let r = (|| {
-                    let system = rewrite_prompt(&f.req.lang, &f.req.style, &f.wiki);
-                    let extract = super::wiki::extract_prompt(&f.req.lang, WIKI_MARK);
+                    let system = rewrite_prompt(&f.req.lang, &f.req.style, &f.wiki)
+                        + &book_rules(&f.genre, &f.req.lang, &f.instructions);
+                    let extract = super::wiki::extract_prompt(&f.req.lang, WIKI_MARK, &f.genre);
                     let system = |part: &str| format!("{system}{}{extract}", f.cast.prompt(part));
                     let cache = PartCache::open(&f.db, &f.req)?
                         .map(|c| c.with_draft(&f.title, &f.paragraphs));
@@ -666,6 +687,92 @@ fn rewrite_prompt(lang: &str, style: &str, wiki: &str) -> String {
         name = lang_name(lang),
     );
     s + wiki
+}
+
+/// How characters address each other and are referred to in a genre, for a
+/// translation into `lang`.
+fn genre_rules(genre: &str, lang: &str) -> &'static str {
+    match (genre, lang) {
+        ("wuxia", "vi") => "Genre: wuxia (kiếm hiệp). Forms of address: in dialogue ta / ngươi between equals or to someone lower, tại hạ / các hạ when polite to a stranger, huynh / đệ / tỷ / muội between sworn or martial siblings, sư phụ / đồ nhi between master and disciple, lão phu or lão nạp for old men and monks, bổn cô nương for a proud young woman; in narration hắn or y for a man, nàng for a young woman, lão for an old man. Keep martial terms in Hán Việt (nội công, khinh công, chưởng môn) and a terse, knightly tone.",
+        ("xianxia", "vi") => "Genre: xianxia (tiên hiệp). Forms of address: ta / ngươi by default, bản tọa / bổn tọa or lão phu for a powerful elder speaking of himself, tiền bối / vãn bối between a senior and a junior, đạo hữu between cultivators of the same standing, sư tôn / sư phụ and đệ tử between master and disciple, sư huynh / sư đệ / sư tỷ / sư muội inside a sect; in narration hắn for a man, nàng for a woman. Keep every cultivation realm, technique, treasure and sect title in Hán Việt (Luyện Khí, Trúc Cơ, Kim Đan, Nguyên Anh, linh thạch, pháp bảo).",
+        ("supernatural", "vi") => "Genre: supernatural horror (linh dị). Usually a modern setting: tôi / anh / em / cậu / chị in dialogue by age and closeness, mày / tao only between rough friends or in anger; in narration anh ta / cô ta / hắn (for someone menacing), and nó for a ghost, a corpse or a thing. Keep the tone tense and eerie, with short sentences in frightening moments; Taoist and spirit terms stay in Hán Việt (âm khí, lệ quỷ, phù chú).",
+        ("romance", "vi") => "Genre: romance (tình yêu - lãng mạn). In a modern setting lovers use anh / em, people who are not yet close use tôi / anh / cô, and the address grows warmer as the relationship does; in narration anh / cô (or anh ấy / cô ấy), not hắn / nàng. In a historical setting: chàng / nàng, ta / chàng, thiếp / phu quân between husband and wife. Keep feelings and inner thoughts soft and natural, never stiff.",
+        ("politics", "vi") => "Genre: politics. At an imperial court: trẫm / khanh between the emperor and officials, thần / bệ hạ from an official, bản cung / bổn cung for an empress or consort, điện hạ for a prince, nô tài / nô tì for servants; in a modern setting tôi / ông / bà / ngài / đồng chí by rank and formality, and ông ta / bà ta in narration. Keep titles and offices in their proper Hán Việt or official form, and a formal, measured tone.",
+        ("nonfiction", "vi") => "Genre: non-fiction (tài liệu thực tế). Keep every proper noun (people, places, organisations, companies, products, events, works) exactly as its original English name, never translated or transliterated into Vietnamese; when the original is not in English, use the name's common English form. Refer to people neutrally by age and role: ông / bà / anh / chị + name, tôi / chúng tôi for the author; a clear, factual tone with no literary flourishes.",
+        ("wuxia", _) => "Genre: wuxia. Use martial-world forms of address in English: Brother, Sister, Master, Senior, Junior, \"this old man\" for an elder speaking of himself; keep a terse, knightly tone.",
+        ("xianxia", _) => "Genre: xianxia. Use cultivation forms of address in English: Senior, Junior, Fellow Daoist, Master, Senior Brother, Junior Sister, \"this venerable one\" for a proud elder; keep cultivation realms and techniques as consistent English names.",
+        ("supernatural", _) => "Genre: supernatural horror. Modern, plain forms of address; keep the tone tense and eerie, with short sentences in frightening moments.",
+        ("romance", _) => "Genre: romance. Warm, natural dialogue whose tone grows with the relationship; in a historical setting use my lord / my lady and similar.",
+        ("politics", _) => "Genre: politics. Formal forms of address by rank: Your Majesty, Your Highness, this official, Minister; keep titles and offices consistent.",
+        ("nonfiction", _) => "Genre: non-fiction. Keep every proper noun (people, places, organisations, companies, products, events, works) exactly as its original English name; when the original is not in English, use the name's common English form. A clear, factual tone.",
+        _ => "",
+    }
+}
+
+/// What a book adds to every prompt: its genre's rules and the user's own instructions.
+fn book_rules(genre: &str, lang: &str, instructions: &str) -> String {
+    let mut s = String::new();
+    let rules = genre_rules(genre, lang);
+    if !rules.is_empty() {
+        s.push('\n');
+        s.push_str(rules);
+    }
+    let own = instructions.trim();
+    if !own.is_empty() {
+        s.push_str("\nThe reader's own instructions for this book (follow them, unless they ask to merge, drop or add paragraphs):\n<<<\n");
+        s.push_str(own);
+        s.push_str("\n>>>");
+    }
+    s
+}
+
+/// How a book is translated besides language and style (`ai_book_prefs`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Prefs {
+    pub genre: String,
+    pub instructions: String,
+}
+
+/// Instructions the user may write for a book, in characters.
+const MAX_INSTRUCTIONS: usize = 2000;
+
+pub fn prefs(conn: &Connection, novel_id: i64) -> rusqlite::Result<Prefs> {
+    Ok(conn
+        .query_row(
+            "select genre, instructions from ai_book_prefs where novel_id = ?1",
+            [novel_id],
+            |r| {
+                Ok(Prefs {
+                    genre: r.get(0)?,
+                    instructions: r.get(1)?,
+                })
+            },
+        )
+        .optional()?
+        .unwrap_or_default())
+}
+
+/// Keeps a book's genre (an unknown one is none) and instructions (cut to
+/// `MAX_INSTRUCTIONS`).
+pub fn set_prefs(conn: &Connection, novel_id: i64, p: &Prefs) -> rusqlite::Result<()> {
+    let genre = if GENRES.contains(&p.genre.as_str()) {
+        p.genre.as_str()
+    } else {
+        ""
+    };
+    let instructions: String = p
+        .instructions
+        .trim()
+        .chars()
+        .take(MAX_INSTRUCTIONS)
+        .collect();
+    conn.execute(
+        "insert into ai_book_prefs (novel_id, genre, instructions) values (?1, ?2, ?3)
+         on conflict (novel_id) do update set genre = excluded.genre, instructions = excluded.instructions",
+        params![novel_id, genre, instructions],
+    )?;
+    Ok(())
 }
 
 fn title_prompt(target: &str) -> String {
@@ -1499,6 +1606,7 @@ pub(crate) mod tests {
                 base_url: "http://x/v1/".into(),
                 api_key: "sk".into(),
                 model: "m".into(),
+                embed_model: String::new(),
             }),
         )
         .unwrap();
@@ -1551,6 +1659,46 @@ pub(crate) mod tests {
             assert!(out.paragraphs[0].starts_with("[tr] "));
         }
         assert_eq!(marks(&conn, 1).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_books_genre_and_instructions_go_in_its_prompts() {
+        let (conn, novel) = book("prefs");
+        assert_eq!(prefs(&conn, novel).unwrap(), Prefs::default());
+        set_prefs(
+            &conn,
+            novel,
+            &Prefs {
+                genre: "xianxia".into(),
+                instructions: "  Gọi nhân vật chính là \"Lâm thiếu\".  ".into(),
+            },
+        )
+        .unwrap();
+        let p = prefs(&conn, novel).unwrap();
+        assert_eq!(p.instructions, "Gọi nhân vật chính là \"Lâm thiếu\".");
+        let rules = book_rules(&p.genre, "vi", &p.instructions);
+        assert!(rules.contains("đạo hữu") && rules.contains("Lâm thiếu"));
+        // An unknown genre is none.
+        set_prefs(
+            &conn,
+            novel,
+            &Prefs {
+                genre: "space opera".into(),
+                instructions: String::new(),
+            },
+        )
+        .unwrap();
+        assert_eq!(prefs(&conn, novel).unwrap().genre, "");
+        assert_eq!(book_rules("", "vi", ""), "");
+        // Non-fiction keeps the English names, in the wiki's rules too.
+        assert!(book_rules("nonfiction", "vi", "").contains("original English name"));
+        assert!(
+            super::super::wiki::extract_prompt("vi", WIKI_MARK, "nonfiction")
+                .contains("original English name")
+        );
+        for g in GENRES {
+            assert!(!genre_rules(g, "vi").is_empty() && !genre_rules(g, "en").is_empty());
+        }
     }
 
     #[test]

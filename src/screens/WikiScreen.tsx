@@ -10,7 +10,7 @@ import { useAsync } from '../lib/useAsync';
 import { useLayout } from '../lib/useLayout';
 import { useThrottledValue } from '../lib/useThrottledValue';
 import {
-  RAW, REL_TYPES, WIKI_KINDS, addWikiRelation, getWiki, getWikiMissing, removeWikiEntry, removeWikiRelation, saveWikiEntry,
+  RAW, REL_TYPES, WIKI_KINDS, addWikiRelation, getWiki, getWikiMissing, mergeWikiEntry, removeWikiEntry, removeWikiRelation, saveWikiEntry,
   searchWiki, setWikiAuto, translateWiki, wikiChapter, wikiLabel, wikiSummary,
   type Wiki, type WikiEntry, type WikiKind
 } from '../lib/wiki';
@@ -321,6 +321,8 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
   const [relTo, setRelTo] = useState('');
   const [relType, setRelType] = useState<string>(REL_TYPES[0]);
   const [relWordsIn, setRelWordsIn] = useState('');
+  const [relNote, setRelNote] = useState('');
+  const [mergeInto, setMergeInto] = useState('');
   const [rels, setRels] = useState(() => wiki.relations.filter(r => entry && (r.fromUid === entry.uid || r.toUid === entry.uid)));
 
   const byUid = useMemo(() => new Map(wiki.entries.map(e => [e.uid, e])), [wiki]);
@@ -371,11 +373,13 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
   const addRel = async () => {
     if (!saved || !relTo || !relKind) return;
     try {
-      const uid = await addWikiRelation(user, novelId, saved.uid, relTo, relKind, wordsLang);
+      const note = relNote.trim();
+      const uid = await addWikiRelation(user, novelId, saved.uid, relTo, relKind, wordsLang, note);
       setRels(r => [...r.filter(x => x.uid !== uid), {
-        uid, fromUid: saved.uid, toUid: relTo, kind: relKind, labels: custom ? { [wordsLang]: relKind } : {}, note: '', firstChapter: null
+        uid, fromUid: saved.uid, toUid: relTo, kind: relKind, labels: custom ? { [wordsLang]: relKind } : {}, note, firstChapter: null
       }]);
       setRelWordsIn('');
+      setRelNote('');
       onChanged();
     } catch (e) {
       failed(e);
@@ -386,6 +390,20 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
     await removeWikiRelation(user, uid).catch(console.error);
     setRels(r => r.filter(x => x.uid !== uid));
     onChanged();
+  };
+
+  // This entry is another one written differently ("bé áo xanh" and her name): it goes into that one.
+  const merge = async () => {
+    const into = byUid.get(mergeInto);
+    if (!saved || !into || !(await ask(t('wiki.mergeAsk', { from: wikiLabel(saved, lang), into: wikiLabel(into, lang) }), { kind: 'warning' }))) return;
+    try {
+      await mergeWikiEntry(user, novelId, saved.uid, into.uid);
+      onChanged();
+      app.showToast(t('wiki.merged', { into: wikiLabel(into, lang) }));
+      onClose();
+    } catch (e) {
+      failed(e);
+    }
   };
 
   const level = saved && saved.kind === 'character' ? levelOf(wiki, saved.uid) : null;
@@ -458,8 +476,9 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
                 const other = r.fromUid === saved.uid ? r.toUid : r.fromUid;
                 return (
                   <div key={r.uid} data-relation={r.kind} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, padding: '6px 6px 6px 12px', borderRadius: 16, background: 'var(--color-bg)' }}>
-                    <span style={{ flex: 1, minWidth: 0 }}>
-                      {relWords(r, saved.uid, lang, wt)} <b>{show(other)}</b>
+                    <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      <span>{relWords(r, saved.uid, lang, wt)} <b>{show(other)}</b></span>
+                      {r.note && <span className="muted" data-relation-note style={{ fontSize: 12 }}>{r.note}</span>}
                     </span>
                     <button type="button" className="icon-btn" style={{ width: 30, height: 30 }} aria-label={t('wiki.remove')} onClick={() => dropRel(r.uid)}><XIcon size={14} /></button>
                   </div>
@@ -479,12 +498,29 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
                     <option value="">{t('wiki.relTo')}…</option>
                     {others.map(e => <option key={e.uid} value={e.uid}>{wikiLabel(e, lang)}</option>)}
                   </select>
+                  <input className="input" style={{ height: 38, flex: '1 1 100%' }} placeholder={t('wiki.relNotePh')} aria-label={t('wiki.relNote')}
+                    value={relNote} onChange={e => setRelNote(e.target.value)} />
                   <button type="button" className="btn btn-secondary" style={{ height: 38, padding: '0 14px' }} disabled={!relTo || !relKind} onClick={addRel}>{t('wiki.relAdd')}</button>
                 </div>
               )}
             </>
           )}
         </div>
+
+        {saved && others.length > 0 && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div style={{ fontSize: 12, fontWeight: 700 }}>{t('wiki.mergeTitle')}</div>
+            <div className="muted" style={{ fontSize: 12 }}>{t('wiki.mergeSub')}</div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              <select className="input" style={{ height: 38, flex: '1 1 180px' }} aria-label={t('wiki.mergeInto')} value={mergeInto} onChange={e => setMergeInto(e.target.value)}>
+                <option value="">{t('wiki.mergeInto')}…</option>
+                {others.filter(e => e.kind === saved.kind).concat(others.filter(e => e.kind !== saved.kind))
+                  .map(e => <option key={e.uid} value={e.uid}>{wikiLabel(e, lang)}{e.kind !== saved.kind ? ` · ${t(`wiki.kind.${e.kind}`)}` : ''}</option>)}
+              </select>
+              <button type="button" className="btn btn-secondary" style={{ height: 38, padding: '0 14px' }} disabled={!mergeInto || busy} onClick={merge}>{t('wiki.merge')}</button>
+            </div>
+          </div>
+        )}
 
         {error && <div role="alert" style={{ fontSize: 13, color: 'var(--color-accent-700)' }}>{error}</div>}
         <div className="dialog-actions">

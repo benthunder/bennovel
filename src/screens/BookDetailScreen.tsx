@@ -8,7 +8,7 @@ import { TranslateFields, defaultTranslation, type Translation } from '../compon
 import { Spinner } from '../components/ui';
 import { useI18n, useT } from '../i18n';
 import {
-  AI_LANGS, AiFailure, aiErrorKey, aiTranslateBook, aiViewKey, cancelAiTranslation, pauseAiTranslation, resumeAiTranslation, getAiLive, getAiMarks, getAiProgress, getAiVersions, getLlmSettings, getReadingLang, onAiLive, styleOf,
+  AI_GENRES, AI_LANGS, AiFailure, aiErrorKey, aiTranslateBook, getAiPrefs, setAiPrefs, type AiPrefs, aiViewKey, cancelAiTranslation, pauseAiTranslation, resumeAiTranslation, getAiLive, getAiMarks, getAiProgress, getAiVersions, getLlmSettings, getReadingLang, onAiLive, styleOf,
   type AiChoice, type AiLang, type AiLive, type AiView, type AiMark, type AiProgress, type AiVersion
 } from '../lib/ai';
 import { save as store } from '../lib/storage';
@@ -245,6 +245,10 @@ function AiBox({ novelId, lang, sections, live, onRead }: {
   const [open, setOpen] = useState(false);
   const [tr, setTr] = useState<Translation | null>(null);
   const [busy, setBusy] = useState(false);
+  // The book's genre and the reader's own instructions, kept with the book for every chapter.
+  const prefsQ = useAsync(() => getAiPrefs(user, novelId), [user, novelId]);
+  const [prefs, setPrefs] = useState<AiPrefs | null>(null);
+  const bookPrefs: AiPrefs = prefs ?? (prefsQ.status === 'ready' && prefsQ.data ? prefsQ.data : { genre: '', instructions: '' });
 
   const langName = (c: string) => AI_LANGS.find(l => l.code === c)?.native ?? c;
   const choice = tr ?? defaultTranslation(lang === 'vi' ? 'vi' : 'en');
@@ -256,6 +260,7 @@ function AiBox({ novelId, lang, sections, live, onRead }: {
     setBusy(true);
     try {
       const c: AiChoice = { lang: choice.lang as AiLang, style: choice.style, dict: choice.dict };
+      await setAiPrefs(user, novelId, bookPrefs);
       const r = await aiTranslateBook(user, novelId, 0, c, uiLang);
       const vars = { n: r.queued, lang: langName(c.lang), style: t(`tr.style.${c.style}`) };
       app.showToast(t(r.queued === 0 ? 'ai.nothing' : r.mode === 'rewrite' ? 'ai.queuedRewrite' : 'ai.queued', vars));
@@ -354,6 +359,21 @@ function AiBox({ novelId, lang, sections, live, onRead }: {
           <div className="display" style={{ fontSize: 17, display: 'flex', alignItems: 'center', gap: 8 }}><SparklesIcon size={16} />{t('tr.novel')}</div>
           <div className="muted" style={{ fontSize: 12, marginTop: -4 }}>{t('ai.hint')}</div>
           <TranslateFields value={choice} onChange={setTr} langs={[...AI_LANGS]} glossaryCount={0} />
+          <div className="field">
+            <label htmlFor="ai-genre">{t('ai.genre')}</label>
+            <select id="ai-genre" className="input" style={{ height: 40 }} value={bookPrefs.genre}
+              onChange={e => setPrefs({ ...bookPrefs, genre: e.target.value as AiPrefs['genre'] })}>
+              <option value="">{t('ai.genre.none')}</option>
+              {AI_GENRES.map(g => <option key={g} value={g}>{t(`ai.genre.${g}`)}</option>)}
+            </select>
+            {bookPrefs.genre && <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>{t(`ai.genreHint.${bookPrefs.genre}`)}</div>}
+          </div>
+          <div className="field">
+            <label htmlFor="ai-instructions">{t('ai.instructions')}</label>
+            <textarea id="ai-instructions" className="input" rows={3} maxLength={2000} style={{ borderRadius: 18, resize: 'vertical', minHeight: 72, padding: '10px 14px' }}
+              placeholder={t('ai.instructionsPh')} value={bookPrefs.instructions}
+              onChange={e => setPrefs({ ...bookPrefs, instructions: e.target.value })} />
+          </div>
           <div style={{ display: 'flex', gap: 8 }}>
             <button className="btn btn-ghost" style={{ flex: 1 }} disabled={busy} onClick={() => setOpen(false)}>{t('common.cancel')}</button>
             <button className="btn btn-primary" style={{ flex: 2, gap: 8 }} disabled={busy} onClick={start}>
