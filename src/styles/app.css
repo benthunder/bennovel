@@ -37,6 +37,18 @@ input[type='range'] { accent-color: var(--color-accent); width: 100%; }
 @media (min-width: 768px) { .app { max-width: none; box-shadow: none; } }
 .app[data-device='tablet'], .app[data-device='desktop'] { --nav-h: 16px; }
 
+/* — crash screen (components/ErrorBoundary.tsx) — */
+.crash {
+  position: absolute; inset: 0; overflow-y: auto; box-sizing: border-box;
+  padding: calc(var(--safe-top) + 16px) 20px calc(var(--nav-h) + 24px);
+  background: var(--color-bg); color: var(--color-text); font-family: var(--font-body);
+}
+.crash__log {
+  margin: 0; padding: 12px; border-radius: 12px; font-size: 11.5px; line-height: 1.45;
+  white-space: pre-wrap; word-break: break-word; max-height: 50vh; overflow-y: auto;
+  background: color-mix(in srgb, var(--color-text) 7%, transparent);
+}
+
 .screen { position: absolute; inset: 0; overflow-y: auto; scrollbar-width: none; }
 .screen::-webkit-scrollbar, .nx-scroll::-webkit-scrollbar { display: none; }
 .nx-scroll { scrollbar-width: none; }

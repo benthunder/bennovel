@@ -1,5 +1,6 @@
 import { useRef } from 'react';
 import { BottomNav } from './components/BottomNav';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { LangDialog } from './components/LangDialog';
 import { NavRail, Sidebar } from './components/SideNav';
 import { useLayout } from './lib/useLayout';
@@ -43,7 +44,10 @@ export default function App() {
 
   return (
     <div className="app" data-device={lay.device}>
-      <div key={key} className="page" data-enter={last.current.enter} style={{ position: 'absolute', top: 0, bottom: 0, right: 0, left: contentLeft }}>{renderRoute(top)}</div>
+      {/* A screen that crashes shows its error, and the navigation still works around it. */}
+      <div key={key} className="page" data-enter={last.current.enter} style={{ position: 'absolute', top: 0, bottom: 0, right: 0, left: contentLeft }}>
+        <ErrorBoundary>{renderRoute(top)}</ErrorBoundary>
+      </div>
       {showNav && (lay.isPhone ? <BottomNav /> : lay.isTablet ? <NavRail /> : <Sidebar />)}
       {app.langDialogOpen && <LangDialog onClose={app.closeLangDialog} />}
       {app.toast && (
