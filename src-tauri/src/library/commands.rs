@@ -213,10 +213,8 @@ fn walk_tree<R: Runtime>(
         if entry.dir {
             walk_tree(picker, tree, &entry.id, &name, out)?;
         } else if folder::is_book_file(&entry.name) {
-            let uri = entry
-                .uri
-                .parse::<FilePath>()
-                .map_err(|e| BookError::Parse(e.to_string()))?;
+            // Parsing a path never fails (its error type is `Infallible`).
+            let Ok(uri) = entry.uri.parse::<FilePath>();
             out.push((name, uri));
         }
     }

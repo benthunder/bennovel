@@ -4,12 +4,12 @@ mod opened;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let mut builder = tauri::Builder::default();
+    let builder = tauri::Builder::default();
     // Registered first: a second launch hands its sign-in link (to the deep-link plugin)
     // or its book files to the running app, and ends.
     #[cfg(desktop)]
-    {
-        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+    let builder = {
+        builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             use tauri::Manager;
             let files = argv
                 .into_iter()
@@ -23,8 +23,8 @@ pub fn run() {
                 let _ = window.unminimize();
                 let _ = window.set_focus();
             }
-        }));
-    }
+        }))
+    };
     builder
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())

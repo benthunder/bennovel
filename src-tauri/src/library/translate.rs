@@ -2217,7 +2217,7 @@ pub(crate) mod tests {
         let (out, _, _) = run_chunks(
             &llm,
             &|_: &str| "t".to_string(),
-            &[long.clone()],
+            std::slice::from_ref(&long),
             None,
             None,
             None,
