@@ -18,9 +18,8 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { I18nProvider } from './i18n';
 import { AppStoreProvider } from './store/AppStore';
 
-// Desktop Linux runs in WebKitGTK, where backdrop-filter is drawn on the CPU and large
-// blurs (bars, sheets, the scrim behind dialogs) can stall the page for seconds at a
-// time. motion.css swaps the glass for solid colours there.
+// Desktop Linux runs in WebKitGTK, which often paints on the CPU (old GPUs get no
+// acceleration). motion.css and app.css keep that engine to flat colours and short shadows.
 if (/Linux/.test(navigator.userAgent) && !/Android|Chrome|Firefox/.test(navigator.userAgent)) {
   document.documentElement.dataset.engine = 'webkitgtk';
 }
