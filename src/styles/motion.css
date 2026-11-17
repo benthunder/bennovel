@@ -106,9 +106,6 @@ body { background: var(--color-neutral-200); }
    (a 2-3px blur is cheap; the wide soft drop is not), and only colours change on hover
    and press; a spinner turns in steps instead of every frame. */
 :root[data-engine='webkitgtk'] {
-  --glass-bg: color-mix(in srgb, #ffffff 86%, transparent);
-  --glass-bg-strong: #ffffff;
-  --glass-surface: color-mix(in srgb, #ffffff 80%, transparent);
   --frost: color-mix(in srgb, #ffffff 70%, var(--color-bg));
   --frost-hover: #ffffff;
   --frost-shadow: 0 1px 2px color-mix(in srgb, var(--shadow-tint) 14%, transparent);
