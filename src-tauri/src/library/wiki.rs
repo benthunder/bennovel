@@ -85,6 +85,8 @@ pub struct Entry {
     pub summaries: BTreeMap<String, String>,
     /// A level's place in its ladder, lowest first.
     pub rank: Option<i64>,
+    /// A level's ladder and stage, a character's current level (`Meta`).
+    pub meta: Meta,
     /// The chapter it was first met in, in reading order from 1.
     pub first_chapter: Option<i64>,
     /// That chapter's own number as the book shows it ("Chương 629"), when it has one.
@@ -109,6 +111,63 @@ pub struct Relation {
     pub first_chapter_shown: Option<f64>,
 }
 
+/// Where a level stands in its ladder and where a character stands on one. A level
+/// keeps its place in `Entry::rank`; `system` names the ladder (a story can have
+/// several: cultivation, alchemy, star ranks), so levels only compare within one. A
+/// character's `level` is the name of its current level, and `stage` the step inside a
+/// level (early 1, middle 2, late 3, peak 4) for either.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Meta {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub system: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub level: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<i64>,
+    #[serde(
+        default,
+        alias = "stage_name",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub stage_name: String,
+}
+
+impl Meta {
+    /// Only what fits `kind` (a ladder for a level, a current level for a character),
+    /// trimmed and short.
+    fn for_kind(self, kind: &str) -> Self {
+        let t = |s: String| head(s.trim(), 60);
+        let stage = self.stage.filter(|s| (1..=20).contains(s));
+        match kind {
+            "level" => Meta {
+                system: t(self.system),
+                stage,
+                stage_name: t(self.stage_name),
+                ..Default::default()
+            },
+            "character" => Meta {
+                level: t(self.level),
+                stage,
+                stage_name: t(self.stage_name),
+                ..Default::default()
+            },
+            _ => Meta::default(),
+        }
+    }
+
+    /// `new`'s fields where it has them, else these.
+    fn merged(self, new: Meta) -> Self {
+        let pick = |a: String, b: String| if b.is_empty() { a } else { b };
+        Meta {
+            system: pick(self.system, new.system),
+            level: pick(self.level, new.level),
+            stage: new.stage.or(self.stage),
+            stage_name: pick(self.stage_name, new.stage_name),
+        }
+    }
+}
+
 /// An entry as the app sends it: a new one without `uid`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -125,6 +184,8 @@ pub struct EntryInput {
     pub summaries: BTreeMap<String, String>,
     #[serde(default)]
     pub rank: Option<i64>,
+    #[serde(default)]
+    pub meta: Meta,
 }
 
 /// A book's wiki as the app shows it.
@@ -140,9 +201,10 @@ pub struct Wiki {
 
 const ENTRY_COLS: &str =
     "e.uid, e.kind, e.name, e.names, e.aliases, e.summaries, e.first_chapter, e.source, e.updated_at, e.rank,
-     (select c.display_number from chapters c where c.novel_id = e.novel_id and c.number = e.first_chapter)";
+     (select c.display_number from chapters c where c.novel_id = e.novel_id and c.number = e.first_chapter),
+     e.meta";
 /// Columns after `ENTRY_COLS` start here.
-const AFTER: usize = 11;
+const AFTER: usize = 12;
 
 fn entry_row(r: &Row) -> rusqlite::Result<Entry> {
     let names: String = r.get(3)?;
@@ -160,6 +222,7 @@ fn entry_row(r: &Row) -> rusqlite::Result<Entry> {
         updated_at: r.get(8)?,
         rank: r.get(9)?,
         first_chapter_shown: r.get(10)?,
+        meta: serde_json::from_str(&r.get::<_, String>(11)?).unwrap_or_default(),
     })
 }
 
@@ -434,6 +497,55 @@ fn kind_vi(kind: &str) -> &str {
     }
 }
 
+/// An entry in the names list of a prompt: "- 林动 → Lâm Động (nhân vật); tên gọi khác:
+/// 动少; cảnh giới: Kim Đan, hậu kỳ", "- 金丹 → Kim Đan (cảnh giới; Luyện khí sĩ, bậc 9)".
+fn entry_line(e: &Entry, shown: &str, vi: bool) -> String {
+    let m = &e.meta;
+    let stage = |vi: bool| -> String {
+        match (m.stage_name.is_empty(), m.stage) {
+            (false, _) => format!(", {}", m.stage_name),
+            (true, Some(n)) if vi => format!(", bậc nhỏ {n}"),
+            (true, Some(n)) => format!(", stage {n}"),
+            _ => String::new(),
+        }
+    };
+    let mut kind = if vi {
+        kind_vi(&e.kind).to_string()
+    } else {
+        e.kind.clone()
+    };
+    if e.kind == "level" {
+        let mut on = Vec::new();
+        if !m.system.is_empty() {
+            on.push(m.system.clone());
+        }
+        if let Some(r) = e.rank {
+            on.push(if vi {
+                format!("bậc {r}")
+            } else {
+                format!("rank {r}")
+            });
+        }
+        if !on.is_empty() {
+            kind = format!("{kind}; {}{}", on.join(", "), stage(vi));
+        }
+    }
+    let mut s = format!("- {shown} ({kind})");
+    if !e.aliases.is_empty() {
+        let w = if vi {
+            "tên gọi khác"
+        } else {
+            "also called"
+        };
+        s.push_str(&format!("; {w}: {}", e.aliases.join(", ")));
+    }
+    if e.kind == "character" && !m.level.is_empty() {
+        let w = if vi { "cảnh giới" } else { "level" };
+        s.push_str(&format!("; {w}: {}{}", m.level, stage(vi)));
+    }
+    s
+}
+
 /// What each kind code means, for the JSON and tool parts of a Vietnamese prompt.
 const KINDS_VI: &str = "character (nhân vật), place (địa danh), faction (thế lực, tông môn, gia tộc), item (vật phẩm), level (cảnh giới, cấp bậc), skill (công pháp, chiêu thức), term (thuật ngữ), other (khác)";
 
@@ -582,13 +694,14 @@ struct Fields<'a> {
     aliases: &'a [String],
     summaries: &'a BTreeMap<String, String>,
     rank: Option<i64>,
+    meta: &'a Meta,
     source: &'a str,
 }
 
 fn write_entry(conn: &Connection, id: i64, f: &Fields) -> rusqlite::Result<()> {
     conn.execute(
         "update wiki_entries set kind = ?2, name = ?3, names = ?4, aliases = ?5, summaries = ?6,
-           rank = ?7, source = ?8, deleted = 0, updated_at = ?9 where id = ?1",
+           rank = ?7, source = ?8, deleted = 0, updated_at = ?9, meta = ?10 where id = ?1",
         params![
             id,
             f.kind,
@@ -598,7 +711,8 @@ fn write_entry(conn: &Connection, id: i64, f: &Fields) -> rusqlite::Result<()> {
             to_json(f.summaries, "{}"),
             f.rank,
             f.source,
-            super::db::now_ms()
+            super::db::now_ms(),
+            to_json(f.meta, "{}")
         ],
     )?;
     Ok(())
@@ -613,8 +727,8 @@ fn insert_entry(
     let uid = new_uid(conn)?;
     conn.execute(
         "insert into wiki_entries (uid, novel_id, kind, name, names, aliases, summaries, rank,
-           first_chapter, source, updated_at)
-         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+           first_chapter, source, updated_at, meta)
+         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             uid,
             novel_id,
@@ -626,7 +740,8 @@ fn insert_entry(
             f.rank,
             first_chapter,
             f.source,
-            super::db::now_ms()
+            super::db::now_ms(),
+            to_json(f.meta, "{}")
         ],
     )?;
     Ok(uid)
@@ -647,6 +762,7 @@ pub fn save(conn: &Connection, novel_id: i64, input: EntryInput) -> Result<Entry
     let names = clean_names(input.names);
     let aliases = clean_list(input.aliases, &name);
     let summaries = clean_names(input.summaries);
+    let meta = input.meta.for_kind(kind);
     let fields = Fields {
         kind,
         name: &name,
@@ -654,6 +770,7 @@ pub fn save(conn: &Connection, novel_id: i64, input: EntryInput) -> Result<Entry
         aliases: &aliases,
         summaries: &summaries,
         rank: input.rank.filter(|_| kind == "level"),
+        meta: &meta,
         source: "user",
     };
     let id: Option<i64> = match input.uid.as_deref() {
@@ -859,6 +976,7 @@ pub fn merge(
             aliases: &aliases,
             summaries: &summaries,
             rank: into.rank.or(from.rank),
+            meta: &from.meta.clone().merged(into.meta.clone()),
             source,
         },
     )?;
@@ -967,6 +1085,8 @@ struct AiEntry {
     summary: String,
     #[serde(default)]
     rank: Option<i64>,
+    #[serde(default)]
+    meta: Meta,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1150,7 +1270,7 @@ fn upsert_ai_entry(
     novel_id: i64,
     lang: &str,
     chapter: Option<i64>,
-    item: AiEntry,
+    mut item: AiEntry,
 ) -> rusqlite::Result<Option<String>> {
     let name = item.name.trim().to_string();
     if name.is_empty() {
@@ -1164,6 +1284,7 @@ fn upsert_ai_entry(
     match known {
         Some((_, _, true)) => Ok(None),
         Some((id, e, false)) => {
+            let new_meta = std::mem::take(&mut item.meta);
             let mut names = e.names.clone();
             let mut aliases = e.aliases.clone();
             aliases.extend(item.aliases);
@@ -1195,11 +1316,19 @@ fn upsert_ai_entry(
             } else {
                 item.rank.or(e.rank)
             };
+            // The user's own values stay; the AI only fills what is missing.
+            let meta = if mine {
+                new_meta.merged(e.meta.clone())
+            } else {
+                e.meta.clone().merged(new_meta)
+            }
+            .for_kind(kind);
             if names != e.names
                 || aliases != e.aliases
                 || summaries != e.summaries
                 || kind != e.kind
                 || rank != e.rank
+                || meta != e.meta
             {
                 let f = Fields {
                     kind,
@@ -1208,6 +1337,7 @@ fn upsert_ai_entry(
                     aliases: &aliases,
                     summaries: &summaries,
                     rank,
+                    meta: &meta,
                     source: &e.source,
                 };
                 write_entry(conn, id, &f)?;
@@ -1234,6 +1364,7 @@ fn upsert_ai_entry(
                 aliases: &aliases,
                 summaries: &summaries,
                 rank: item.rank.filter(|_| kind == "level"),
+                meta: &item.meta.clone().for_kind(kind),
                 source: "ai",
             };
             Ok(Some(insert_entry(conn, novel_id, &f, chapter)?))
@@ -1363,35 +1494,39 @@ pub fn index_names(
     lang: &str,
 ) -> Result<usize, AiError> {
     let now = super::db::now_ms();
-    let mut keep: Vec<(String, String, String, String)> = Vec::new();
+    let mut keep: Vec<(String, String, String, String, String)> = Vec::new();
     for e in entries(conn, novel_id)? {
         let translated = e.names.get(lang).cloned().unwrap_or_default();
+        let meta = to_json(&e.meta, "{}");
         for raw in std::iter::once(&e.name).chain(e.aliases.iter()) {
             keep.push((
                 raw.clone(),
                 translated.clone(),
                 e.kind.clone(),
                 e.uid.clone(),
+                meta.clone(),
             ));
         }
     }
     let tx = conn.unchecked_transaction()?;
     {
         let mut up = tx.prepare(
-            "insert into wiki_names (novel_id, raw, lang, translated, kind, entry_uid, updated_at)
-             values (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "insert into wiki_names (novel_id, raw, lang, translated, kind, entry_uid, updated_at, meta)
+             values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              on conflict (novel_id, raw, lang) do update set
                translated = excluded.translated, kind = excluded.kind, entry_uid = excluded.entry_uid,
-               updated_at = excluded.updated_at,
+               updated_at = excluded.updated_at, meta = excluded.meta,
                embedding = case when wiki_names.translated = excluded.translated
                  and wiki_names.kind = excluded.kind then wiki_names.embedding end,
                model = case when wiki_names.translated = excluded.translated
                  and wiki_names.kind = excluded.kind then wiki_names.model end
              where wiki_names.translated <> excluded.translated or wiki_names.kind <> excluded.kind
-               or wiki_names.entry_uid <> excluded.entry_uid",
+               or wiki_names.entry_uid <> excluded.entry_uid or wiki_names.meta <> excluded.meta",
         )?;
-        for (raw, translated, kind, uid) in &keep {
-            up.execute(params![novel_id, raw, lang, translated, kind, uid, now])?;
+        for (raw, translated, kind, uid, meta) in &keep {
+            up.execute(params![
+                novel_id, raw, lang, translated, kind, uid, now, meta
+            ])?;
         }
     }
     let raws: Vec<&str> = keep.iter().map(|k| k.0.as_str()).collect();
@@ -1490,6 +1625,10 @@ pub fn merge_near(conn: &Connection, novel_id: i64, lang: &str) -> rusqlite::Res
          from wiki_names a join wiki_names b
            on b.novel_id = a.novel_id and b.lang = a.lang and b.kind = a.kind
               and b.entry_uid > a.entry_uid and b.model = a.model
+              -- Two levels of different ladders are never one.
+              and (coalesce(json_extract(a.meta, '$.system'), '') = ''
+                   or coalesce(json_extract(b.meta, '$.system'), '') = ''
+                   or json_extract(a.meta, '$.system') = json_extract(b.meta, '$.system'))
               and length(b.embedding) = length(a.embedding)
          where a.novel_id = ?1 and a.lang = ?2 and a.embedding is not null
            and vec_distance_cosine(a.embedding, b.embedding) < ?3
@@ -1717,23 +1856,7 @@ pub fn recall(
             format!("{} → {translated}", e.name)
         };
         let mut line = String::new();
-        if vi {
-            line.push_str(&format!("- {shown} ({})", kind_vi(&e.kind)));
-            if !e.aliases.is_empty() {
-                line.push_str(&format!("; tên gọi khác: {}", e.aliases.join(", ")));
-            }
-            if let Some(rank) = e.rank {
-                line.push_str(&format!("; bậc {rank}"));
-            }
-        } else {
-            line.push_str(&format!("- {shown} ({})", e.kind));
-            if !e.aliases.is_empty() {
-                line.push_str(&format!("; also called {}", e.aliases.join(", ")));
-            }
-            if let Some(rank) = e.rank {
-                line.push_str(&format!("; rank {rank}"));
-            }
-        }
+        line.push_str(&entry_line(&e, &shown, vi));
         line.push('\n');
         let mut terms: Vec<String> = std::iter::once(e.name.clone())
             .chain(e.aliases.iter().cloned())
@@ -1831,6 +1954,198 @@ impl Recall {
 
 /* ---------- Learning from a chapter ---------- */
 
+/// What `Meta` holds, for the JSON part of a prompt.
+const META_VI: &str = "{\"system\": tên thang cấp bậc (chỉ cho level, ví dụ hệ tu luyện), \"level\": cảnh giới hiện tại (chỉ cho character), \"stage\": bậc nhỏ trong cảnh giới (sơ kỳ 1, trung kỳ 2, hậu kỳ 3, đại viên mãn 4), \"stage_name\": tên bậc nhỏ}, bỏ trống khi không rõ";
+const META_EN: &str = "{\"system\": the ladder's name (level only, e.g. the cultivation system), \"level\": current level (character only), \"stage\": step inside the level (early 1, middle 2, late 3, peak 4), \"stage_name\": that step's name}, left out when unknown";
+
+fn meta_schema(vi: bool) -> Value {
+    let t = |v: &str, e: &str| if vi { v.to_string() } else { e.to_string() };
+    json!({
+        "type": "object",
+        "description": t("Chỉ cho level và character; bỏ trống khi không rõ.", "Only for a level or a character; left out when unknown."),
+        "properties": {
+            "system": { "type": "string", "description": t("Level: tên thang cấp bậc mà cảnh giới thuộc về (một truyện có thể có nhiều thang).", "Level: the ladder it belongs to (a story can have several).") },
+            "level": { "type": "string", "description": t("Character: tên cảnh giới hiện tại, đúng như văn bản gốc viết.", "Character: its current level, as the original writes it.") },
+            "stage": { "type": "integer", "description": t("Bậc nhỏ trong cảnh giới: sơ kỳ 1, trung kỳ 2, hậu kỳ 3, đại viên mãn 4.", "Step inside the level: early 1, middle 2, late 3, peak 4.") },
+            "stage_name": { "type": "string", "description": t("Tên bậc nhỏ như văn bản viết.", "That step's name as the text writes it.") }
+        }
+    })
+}
+
+/// The tools a translation or rewrite request offers: `nop_ban_viet` for the text,
+/// `ghi_wiki` for the facts of the part (the shape `extract_prompt` asks for as JSON,
+/// read the same way) and `tra_ten` to look up a name the prompt does not list.
+pub fn part_tools(lang: &str) -> Value {
+    let vi = lang == "vi";
+    let l = super::translate::lang_name(lang);
+    let t = |v: &str, e: String| if vi { v.to_string() } else { e };
+    let s = |d: String| json!({ "type": "string", "description": d });
+    let entry = json!({
+        "type": "object",
+        "properties": {
+            "name": s(t("Tên đúng như văn bản gốc viết.", "The name exactly as the original writes it.".into())),
+            "kind": { "type": "string", "enum": KINDS },
+            "translated": s(t("Tên dùng trong bản tiếng Việt.", format!("The name as the {l} text writes it."))),
+            "aliases": { "type": "array", "items": { "type": "string" }, "description": t("Biệt danh, danh hiệu, cách gọi khác của cùng người hay vật này trong văn bản gốc.", "Nicknames, titles and other ways the original refers to this same one.".into()) },
+            "summary": s(t("Tối đa ba câu tiếng Việt.", format!("At most three sentences in {l}."))),
+            "rank": { "type": "integer", "description": t("Chỉ cho level: thứ bậc trong thang, 1 là thấp nhất.", "Level only: its place in its ladder, 1 for the lowest.".into()) },
+            "meta": meta_schema(vi)
+        },
+        "required": ["name", "kind"]
+    });
+    let relation = json!({
+        "type": "object",
+        "properties": {
+            "from": s(t("Tên gốc.", "Original name.".into())),
+            "to": s(t("Tên gốc.", "Original name.".into())),
+            "relation": s(if vi { format!("Một trong {RELS_VI}; không loại nào hợp thì vài chữ tiếng Việt.") } else { format!("One of {}; else a few words in {l}.", REL_TYPES.join(", ")) }),
+            "note": s(t("Hoàn cảnh, một câu tiếng Việt.", format!("The circumstances, one sentence in {l}.")))
+        },
+        "required": ["from", "to", "relation"]
+    });
+    let person = json!({
+        "type": "object",
+        "properties": {
+            "name": s(t("Tên gốc của nhân vật.", "Original name of the character.".into())),
+            "gender": { "type": "string", "enum": ["male", "female", "unknown"] },
+            "age": { "type": "string", "enum": ["child", "teen", "young adult", "adult", "middle-aged", "elder"] }
+        },
+        "required": ["name"]
+    });
+    let address = json!({
+        "type": "object",
+        "properties": {
+            "from": s(t("Tên gốc người nói.", "Original name of the speaker.".into())),
+            "to": s(t("Tên gốc người nghe.", "Original name of the one spoken to.".into())),
+            "self_raw": s(t("Người nói tự xưng thế nào trong văn bản gốc.", "How the speaker calls themself in the original.".into())),
+            "calls_raw": s(t("Người nói gọi người nghe thế nào trong văn bản gốc.", "How the speaker calls the other in the original.".into())),
+            "self": s(t("Tự xưng trong bản tiếng Việt.", format!("The same in the {l} text."))),
+            "calls": s(t("Cách gọi trong bản tiếng Việt.", format!("The same in the {l} text."))),
+            "tone": { "type": "string", "enum": ["respectful", "familiar", "intimate", "cold", "hostile", "playful"] }
+        },
+        "required": ["from", "to"]
+    });
+    json!([
+        {
+            "type": "function",
+            "function": {
+                "name": PART_TEXT,
+                "description": t("Nộp văn bản đã viết: mỗi đoạn vào là đúng một phần tử của doan, cùng thứ tự.", "Hand in the written text: one item of doan per paragraph given, in the same order.".into()),
+                "parameters": {
+                    "type": "object",
+                    "properties": { "doan": { "type": "array", "items": { "type": "string" } } },
+                    "required": ["doan"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": PART_FACTS,
+                "description": t("Ghi các danh từ riêng, quan hệ, nhân vật và cách xưng hô của đoạn này. Không ghi danh từ chung.", "Record the proper nouns, relationships, characters and forms of address of this part. No common nouns.".into()),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "entries": { "type": "array", "items": entry },
+                        "relations": { "type": "array", "items": relation },
+                        "people": { "type": "array", "items": person },
+                        "address": { "type": "array", "items": address }
+                    }
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": PART_LOOKUP,
+                "description": t("Tra một tên, biệt danh hay cảnh giới trong wiki của truyện khi nó không có trong danh sách tên riêng.", "Look up a name, nickname or level in the book's wiki when the names list does not have it.".into()),
+                "parameters": {
+                    "type": "object",
+                    "properties": { "ten": { "type": "string" } },
+                    "required": ["ten"]
+                }
+            }
+        }
+    ])
+}
+
+pub const PART_TEXT: &str = "nop_ban_viet";
+pub const PART_FACTS: &str = "ghi_wiki";
+pub const PART_LOOKUP: &str = "tra_ten";
+
+/// What a translation or rewrite prompt adds when the request offers `part_tools`:
+/// the wiki's rules and how to answer through the tools.
+pub fn tool_prompt(lang: &str, genre: &str) -> String {
+    if lang == "vi" {
+        return format!(
+            "\n\nCÁCH TRẢ LỜI: chỉ trả lời bằng tool. Nộp văn bản đã viết qua {PART_TEXT}: mỗi đoạn vào là đúng một phần tử của doan, cùng thứ tự, không thêm gì khác. Cùng lúc đó ghi dữ kiện của đoạn qua {PART_FACTS} (không có gì đáng ghi thì bỏ qua). Nếu đoạn có một tên không nằm trong danh sách tên riêng mà bạn cần biết là ai để viết đúng, gọi {PART_LOOKUP} trước rồi mới nộp.\n\nGHI WIKI. {}",
+            learn_rules(lang, genre)
+        );
+    }
+    format!(
+        "\n\nHOW TO ANSWER: answer only through the tools. Hand in the text through {PART_TEXT}: one item of doan per paragraph given, in the same order, nothing else. At the same time record the part's facts through {PART_FACTS} (skip it when there is nothing worth keeping). When the part has a name the names list does not have and you need to know who it is to write it right, call {PART_LOOKUP} first, then hand in.\n\nKEEP THE WIKI. {}",
+        learn_rules(lang, genre)
+    )
+}
+
+/// The answer to `tra_ten`: the entries the wiki has under that name (by name, alias
+/// or translation; else the nearest name in the vector table), with their relations.
+pub fn lookup(
+    conn: &Connection,
+    llm: Option<&dyn Chat>,
+    novel_id: i64,
+    lang: &str,
+    query: &str,
+) -> rusqlite::Result<Value> {
+    let q = query.trim();
+    if q.is_empty() {
+        return Ok(json!([]));
+    }
+    let mut found: Vec<Entry> = search(conn, novel_id, q, 3).unwrap_or_default();
+    if found.is_empty() {
+        let near = near_names(conn, llm, novel_id, lang, q, &[])?;
+        for (_, n) in near {
+            if let Some(e) = by_uid(conn, &n.entry_uid)? {
+                if !found.iter().any(|f| f.uid == e.uid) {
+                    found.push(e);
+                }
+            }
+        }
+    }
+    let rels = relations(conn, novel_id)?;
+    let name_of = |uid: &str| -> rusqlite::Result<String> {
+        Ok(by_uid(conn, uid)?
+            .map(|e| e.names.get(lang).cloned().unwrap_or(e.name))
+            .unwrap_or_default())
+    };
+    let mut out = Vec::new();
+    for e in found {
+        let mut lines = Vec::new();
+        for r in rels
+            .iter()
+            .filter(|r| r.from_uid == e.uid || r.to_uid == e.uid)
+            .take(12)
+        {
+            let mut l = format!(
+                "{} {} {}",
+                name_of(&r.from_uid)?,
+                rel_words(r, lang),
+                name_of(&r.to_uid)?
+            );
+            if !r.note.trim().is_empty() {
+                l.push_str(&format!(" ({})", head(r.note.trim(), 160)));
+            }
+            lines.push(l);
+        }
+        out.push(json!({
+            "name": e.name, "translated": e.names.get(lang), "kind": e.kind,
+            "aliases": e.aliases, "summary": e.summary_in(lang), "rank": e.rank,
+            "meta": e.meta, "relations": lines,
+        }));
+    }
+    Ok(json!(out))
+}
+
 fn tools(lang: &str) -> Value {
     let vi = lang == "vi";
     let lang = super::translate::lang_name(lang);
@@ -1861,7 +2176,8 @@ fn tools(lang: &str) -> Value {
                         "translated": { "type": "string", "description": t("Tên dùng trong bản tiếng Việt.", format!("The name as used in the {lang} translation.")) },
                         "aliases": { "type": "array", "items": { "type": "string" }, "description": t("Mọi cách khác văn bản gốc dùng để chỉ cùng người hay vật này: biệt danh, danh hiệu, cách gọi, mô tả thay cho tên.", "Every other way the original text refers to this same one: nicknames, titles, epithets, descriptions that stand for it (\"the girl in green\").".to_string()) },
                         "summary": { "type": "string", "description": t("Bằng tiếng Việt, tối đa ba câu: người hay vật này là gì, theo những gì đã biết. Viết lại cả tóm tắt, gồm cả thông tin cũ.", format!("In {lang}, at most three sentences: who or what it is, as known so far. Write the whole summary, old facts included.")) },
-                        "rank": { "type": "integer", "description": t("Chỉ cho loại level: thứ bậc trong thang cảnh giới hay cấp bậc, 1 là thấp nhất.", "Only for kind level: its place in its ladder of ranks or cultivation realms, 1 for the lowest.".to_string()) }
+                        "rank": { "type": "integer", "description": t("Chỉ cho loại level: thứ bậc trong thang cảnh giới hay cấp bậc, 1 là thấp nhất.", "Only for kind level: its place in its ladder of ranks or cultivation realms, 1 for the lowest.".to_string()) },
+                        "meta": meta_schema(vi)
                     },
                     "required": ["name", "kind"]
                 }
@@ -1895,7 +2211,7 @@ fn learn_rules(lang: &str, genre: &str) -> String {
             ""
         };
         return format!(
-            "Bạn ghi wiki cho một truyện đang được chuyển sang tiếng Việt. Từ văn bản dưới đây, chỉ ghi các danh từ riêng có vai trò trong truyện: tên riêng của nhân vật, địa danh, thế lực hay tông môn, vật phẩm, cảnh giới hay cấp bậc (kèm số bậc) và công pháp hay chiêu thức có tên. Không ghi danh từ chung hay từ mô tả, dù quan trọng với cảnh truyện: một nơi hay một vật chỉ được ghi khi nó có tên riêng. Tên riêng thường viết hoa; cụm không viết hoa hoặc chỉ là mô tả (người, đồ vật, nơi chốn chung chung) thì không phải tên riêng. Ghi mỗi tên trọn vẹn, đúng như văn bản gốc viết, không cắt một phần của từ hay tên dài hơn. Biệt danh, danh hiệu, cách gọi hay mô tả dùng để chỉ một nhân vật hay nơi đã có tên thì không phải mục mới: ghi vào tên gọi khác (aliases) của mục đó. Ghi các quan hệ: giữa nhân vật với nhau, với thế lực, cảnh giới hiện tại, công pháp nhân vật biết, nơi nào nằm trong nơi nào; mỗi quan hệ kèm ghi chú bằng tiếng Việt về hoàn cảnh (vì sao có quan hệ đó, hai bên gọi nhau thế nào). Viết mọi tên dịch, tóm tắt, quan hệ tự do và ghi chú chỉ bằng tiếng Việt, không trộn ngôn ngữ. Ghi hết những gì văn bản cho biết về một mục, kể cả tình tiết về sau (không cần tránh tiết lộ nội dung), và liên kết nó với các mục liên quan; không đoán.{names}"
+            "Bạn ghi wiki cho một truyện đang được chuyển sang tiếng Việt. Từ văn bản dưới đây, chỉ ghi các danh từ riêng có vai trò trong truyện: tên riêng của nhân vật, địa danh, thế lực hay tông môn, vật phẩm, cảnh giới hay cấp bậc (kèm số bậc, tên thang cấp bậc và bậc nhỏ trong meta) và công pháp hay chiêu thức có tên. Không ghi danh từ chung hay từ mô tả, dù quan trọng với cảnh truyện: một nơi hay một vật chỉ được ghi khi nó có tên riêng. Tên riêng thường viết hoa; cụm không viết hoa hoặc chỉ là mô tả (người, đồ vật, nơi chốn chung chung) thì không phải tên riêng. Ghi mỗi tên trọn vẹn, đúng như văn bản gốc viết, không cắt một phần của từ hay tên dài hơn. Biệt danh, danh hiệu, cách gọi hay mô tả dùng để chỉ một nhân vật hay nơi đã có tên thì không phải mục mới: ghi vào tên gọi khác (aliases) của mục đó. Với nhân vật, ghi cảnh giới hiện tại vào meta (level, stage). Ghi các quan hệ: giữa nhân vật với nhau, với thế lực, cảnh giới hiện tại, công pháp nhân vật biết, nơi nào nằm trong nơi nào; mỗi quan hệ kèm ghi chú bằng tiếng Việt về hoàn cảnh (vì sao có quan hệ đó, hai bên gọi nhau thế nào). Viết mọi tên dịch, tóm tắt, quan hệ tự do và ghi chú chỉ bằng tiếng Việt, không trộn ngôn ngữ. Ghi hết những gì văn bản cho biết về một mục, kể cả tình tiết về sau (không cần tránh tiết lộ nội dung), và liên kết nó với các mục liên quan; không đoán.{names}"
         );
     }
     let l = super::translate::lang_name(lang);
@@ -1905,7 +2221,7 @@ fn learn_rules(lang: &str, genre: &str) -> String {
         String::new()
     };
     format!(
-        "You keep the wiki of a novel being translated into {l}. From the chapter below, record only proper nouns that matter to the story: the names of specific characters, places, factions or sects, items, levels (ranks, cultivation realms, each with its rank number) and skills (named techniques, martial arts, spells). Never record a common noun or a generic word, however important to the scene (mountain, river, sword, city, sect, spirit energy, núi, sông, kiếm, thành, linh khí, tông môn): a place or thing is kept only under its own name. Write each name whole and exactly as the original text writes it, never a piece of a longer word or name (not a surname cut out of another word). A nickname, title, epithet or description that stands for a character or place already named (\"the girl in green\", \"bé áo xanh\", \"the old man\", \"Sư phụ\" for one person) is not a new entry: put it in that entry's aliases. Record the relationships: between characters, with factions, a character's current level, the skills a character has, which place lies in which (the map), each with a note in {l} on the circumstances (how it came about, what one calls the other). Write every translated name, summary, free relation and note in {l} only, never mixing languages. Record all the chapter shows about an entry, later events included (spoilers are fine), and link it to the others it involves; do not guess.{names}"
+        "You keep the wiki of a novel being translated into {l}. From the chapter below, record only proper nouns that matter to the story: the names of specific characters, places, factions or sects, items, levels (ranks, cultivation realms, each with its rank number, its ladder and stage in meta) and skills (named techniques, martial arts, spells). Never record a common noun or a generic word, however important to the scene (mountain, river, sword, city, sect, spirit energy, núi, sông, kiếm, thành, linh khí, tông môn): a place or thing is kept only under its own name. Write each name whole and exactly as the original text writes it, never a piece of a longer word or name (not a surname cut out of another word). A nickname, title, epithet or description that stands for a character or place already named (\"the girl in green\", \"bé áo xanh\", \"the old man\", \"Sư phụ\" for one person) is not a new entry: put it in that entry's aliases. For a character, put its current level in meta (level, stage). Record the relationships: between characters, with factions, a character's current level, the skills a character has, which place lies in which (the map), each with a note in {l} on the circumstances (how it came about, what one calls the other). Write every translated name, summary, free relation and note in {l} only, never mixing languages. Record all the chapter shows about an entry, later events included (spoilers are fine), and link it to the others it involves; do not guess.{names}"
     )
 }
 
@@ -1926,11 +2242,11 @@ fn learn_prompt(lang: &str, genre: &str) -> String {
 fn json_shape(lang: &str) -> String {
     if lang == "vi" {
         return format!(
-            "{{\"entries\": [{{\"name\": tên gốc, \"kind\": một trong {KINDS_VI}, \"translated\": tên trong bản tiếng Việt, \"aliases\": [biệt danh, danh hiệu và các cách văn bản gốc gọi mục này], \"summary\": tối đa ba câu tiếng Việt, \"rank\": số bậc, chỉ cho level}}], \"relations\": [{{\"from\": tên gốc, \"to\": tên gốc, \"relation\": một trong {RELS_VI} (nếu không có loại nào hợp thì vài chữ tiếng Việt), \"note\": hoàn cảnh, bằng tiếng Việt}}]}}"
+            "{{\"entries\": [{{\"name\": tên gốc, \"kind\": một trong {KINDS_VI}, \"translated\": tên trong bản tiếng Việt, \"aliases\": [biệt danh, danh hiệu và các cách văn bản gốc gọi mục này], \"summary\": tối đa ba câu tiếng Việt, \"rank\": số bậc, chỉ cho level, \"meta\": {META_VI}}}], \"relations\": [{{\"from\": tên gốc, \"to\": tên gốc, \"relation\": một trong {RELS_VI} (nếu không có loại nào hợp thì vài chữ tiếng Việt), \"note\": hoàn cảnh, bằng tiếng Việt}}]}}"
         );
     }
     format!(
-        "{{\"entries\": [{{\"name\": original name, \"kind\": one of {}, \"translated\": name in the translation, \"aliases\": [nicknames, titles and other ways the original refers to it], \"summary\": at most three sentences in {l}, \"rank\": number for a level only}}], \"relations\": [{{\"from\": original name, \"to\": original name, \"relation\": one of {} (else a few words in {l}), \"note\": the circumstances in {l}}}]}}",
+        "{{\"entries\": [{{\"name\": original name, \"kind\": one of {}, \"translated\": name in the translation, \"aliases\": [nicknames, titles and other ways the original refers to it], \"summary\": at most three sentences in {l}, \"rank\": number for a level only, \"meta\": {META_EN}}}], \"relations\": [{{\"from\": original name, \"to\": original name, \"relation\": one of {} (else a few words in {l}), \"note\": the circumstances in {l}}}]}}",
         KINDS.join(", "),
         REL_TYPES.join(", "),
         l = super::translate::lang_name(lang),
@@ -2020,7 +2336,7 @@ fn learn_input(
 }
 
 /// Whether the API or model does not take tools, so the JSON way is used instead.
-fn tools_refused(e: &AiError) -> bool {
+pub(crate) fn tools_refused(e: &AiError) -> bool {
     match e {
         AiError::Http(400 | 404 | 405 | 422 | 501, _) => true,
         AiError::Other(m) => m == "tools-unsupported",
@@ -2910,6 +3226,7 @@ mod tests {
                 aliases: vec!["动少".into()],
                 summaries: BTreeMap::from([("vi".into(), "Nhân vật chính.".into())]),
                 rank: None,
+                meta: Default::default(),
             },
         )
         .unwrap();
@@ -2924,6 +3241,7 @@ mod tests {
                 aliases: vec![],
                 summaries: BTreeMap::new(),
                 rank: None,
+                meta: Default::default(),
             },
         )
         .unwrap();
@@ -2938,6 +3256,7 @@ mod tests {
                 aliases: vec![],
                 summaries: BTreeMap::new(),
                 rank: None,
+                meta: Default::default(),
             },
         )
         .unwrap();
@@ -2975,7 +3294,137 @@ mod tests {
             aliases: aliases.iter().map(|a| a.to_string()).collect(),
             summary: String::new(),
             rank: None,
+            meta: Default::default(),
         }
+    }
+
+    #[test]
+    fn levels_keep_their_ladder_and_characters_their_level() {
+        let (conn, novel) = book("meta");
+        let level = |name: &str, tr: &str, system: &str, rank: i64| AiEntry {
+            rank: Some(rank),
+            meta: serde_json::from_value(json!({ "system": system, "stage": 9, "level": "x" }))
+                .unwrap(),
+            ..ai(name, "level", tr, &[])
+        };
+        upsert_ai(
+            &conn,
+            novel,
+            "vi",
+            Some(1),
+            level("Kim Đan", "Kim Đan", "Luyện khí sĩ", 9),
+        )
+        .unwrap();
+        upsert_ai(
+            &conn,
+            novel,
+            "vi",
+            Some(1),
+            level("Long Môn", "Long Môn", "Luyện khí sĩ", 8),
+        )
+        .unwrap();
+        let ninh = AiEntry {
+            meta: serde_json::from_value(
+                json!({ "level": "Kim Đan", "stage_name": "trung kỳ", "system": "y" }),
+            )
+            .unwrap(),
+            ..ai("Ninh Diêu", "character", "Ninh Diêu", &[])
+        };
+        upsert_ai(&conn, novel, "vi", Some(1), ninh).unwrap();
+        let w = load(&conn, novel).unwrap();
+        let get = |n: &str| w.entries.iter().find(|e| e.name == n).unwrap().clone();
+        // Only what fits the kind: a ladder for a level, a current level for a character.
+        let kd = get("Kim Đan");
+        assert_eq!(
+            (
+                kd.meta.system.as_str(),
+                kd.meta.level.as_str(),
+                kd.meta.stage
+            ),
+            ("Luyện khí sĩ", "", Some(9))
+        );
+        let nd = get("Ninh Diêu");
+        assert_eq!(
+            (
+                nd.meta.level.as_str(),
+                nd.meta.system.as_str(),
+                nd.meta.stage_name.as_str()
+            ),
+            ("Kim Đan", "", "trung kỳ")
+        );
+        // A later chapter moves her up; what it does not say stays.
+        let later = AiEntry {
+            meta: serde_json::from_value(json!({ "level": "Nguyên Anh" })).unwrap(),
+            ..ai("Ninh Diêu", "character", "Ninh Diêu", &[])
+        };
+        upsert_ai(&conn, novel, "vi", Some(2), later).unwrap();
+        let nd = by_uid(&conn, &nd.uid).unwrap().unwrap();
+        assert_eq!(
+            (nd.meta.level.as_str(), nd.meta.stage_name.as_str()),
+            ("Nguyên Anh", "trung kỳ")
+        );
+        // The prompt says where each stands.
+        index_names(&conn, None, novel, "vi").unwrap();
+        let ctx = context(&conn, novel, "Ninh Diêu đã vượt Kim Đan.", "vi").unwrap();
+        assert!(ctx
+            .contains("- Kim Đan → Kim Đan (cảnh giới / cấp bậc; Luyện khí sĩ, bậc 9, bậc nhỏ 9)"));
+        assert!(ctx.contains("- Ninh Diêu → Ninh Diêu (nhân vật); cảnh giới: Nguyên Anh, trung kỳ"));
+        // The vector table holds it too, and tra_ten answers with it.
+        let meta: String = conn
+            .query_row(
+                "select meta from wiki_names where raw = 'Kim Đan'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(meta.contains("Luyện khí sĩ"));
+        let found = lookup(&conn, None, novel, "vi", "Ninh Diêu").unwrap();
+        assert_eq!(found[0]["meta"]["level"], "Nguyên Anh");
+        assert_eq!(lookup(&conn, None, novel, "vi", "  ").unwrap(), json!([]));
+    }
+
+    #[test]
+    fn levels_of_two_ladders_are_not_merged() {
+        let (conn, novel) = book("ladders");
+        let level = |name: &str, system: &str| AiEntry {
+            meta: serde_json::from_value(json!({ "system": system })).unwrap(),
+            ..ai(name, "level", name, &[])
+        };
+        upsert_ai(
+            &conn,
+            novel,
+            "vi",
+            Some(1),
+            level("Nhất Phẩm", "Luyện đan sư"),
+        )
+        .unwrap();
+        // Names that all land together (the test embedding only reads the first two
+        // letters): the ones of one ladder merge, the other ladder's stays apart.
+        upsert_ai(
+            &conn,
+            novel,
+            "vi",
+            Some(2),
+            level("Nhất Phẩm Võ Giả", "Võ giả"),
+        )
+        .unwrap();
+        upsert_ai(
+            &conn,
+            novel,
+            "vi",
+            Some(3),
+            level("Nhị Phẩm Võ Giả", "Võ giả"),
+        )
+        .unwrap();
+        let llm = Embedder(Mutex::new(0));
+        index_names(&conn, Some(&llm), novel, "vi").unwrap();
+        assert_eq!(merge_near(&conn, novel, "vi").unwrap(), 1);
+        let w = load(&conn, novel).unwrap();
+        assert_eq!(w.entries.len(), 2);
+        assert!(w
+            .entries
+            .iter()
+            .any(|e| e.name == "Nhất Phẩm" && e.meta.system == "Luyện đan sư"));
     }
 
     #[test]
@@ -3310,6 +3759,7 @@ mod tests {
                 aliases: vec![],
                 summaries: BTreeMap::from([("vi".into(), "Viết bởi tôi.".into())]),
                 rank: None,
+                meta: Default::default(),
             },
         )
         .unwrap();
@@ -3320,6 +3770,7 @@ mod tests {
             aliases: vec!["小动".into()],
             summary: "AI summary".into(),
             rank: None,
+            meta: Default::default(),
         };
         upsert_ai(&conn, novel, "vi", Some(2), ai("林动", "Lâm Đông")).unwrap();
         upsert_ai(&conn, novel, "en", Some(2), ai("林动", "Lin Dong")).unwrap();
@@ -3351,6 +3802,7 @@ mod tests {
                 aliases: vec![],
                 summaries: BTreeMap::new(),
                 rank: None,
+                meta: Default::default(),
             },
         )
         .unwrap();
@@ -3395,6 +3847,7 @@ mod tests {
                 aliases: vec![],
                 summaries: BTreeMap::from([("vi".into(), "Thành.".into())]),
                 rank: None,
+                meta: Default::default(),
             },
         )
         .unwrap();
@@ -3409,6 +3862,7 @@ mod tests {
                 aliases: vec![],
                 summaries: BTreeMap::new(),
                 rank: None,
+                meta: Default::default(),
             },
         )
         .unwrap();
@@ -3443,6 +3897,7 @@ mod tests {
                     aliases: vec![],
                     summaries: BTreeMap::new(),
                     rank: Some(3),
+                    meta: Default::default(),
                 },
             )
             .unwrap()
@@ -3513,6 +3968,7 @@ mod tests {
                 aliases: vec![],
                 summaries: BTreeMap::from([("vi".into(), "Nhân vật chính.".into())]),
                 rank: None,
+                meta: Default::default(),
             },
         )
         .unwrap();
@@ -3527,6 +3983,7 @@ mod tests {
                 aliases: vec![],
                 summaries: BTreeMap::new(),
                 rank: None,
+                meta: Default::default(),
             },
         )
         .unwrap();
@@ -3620,6 +4077,7 @@ mod tests {
                         aliases: vec![],
                         summaries: BTreeMap::from([("raw".into(), long.clone())]),
                         rank: None,
+                        meta: Default::default(),
                     },
                 )
                 .unwrap();
@@ -3673,6 +4131,7 @@ mod tests {
                 aliases: vec![],
                 summaries: BTreeMap::new(),
                 rank: None,
+                meta: Default::default(),
             },
         )
         .unwrap();
@@ -3688,6 +4147,7 @@ mod tests {
             aliases: vec![],
             summary: summary.into(),
             rank: None,
+            meta: Default::default(),
         };
         upsert_ai(
             &conn,
@@ -3734,6 +4194,7 @@ mod tests {
                 aliases: vec![],
                 summaries: BTreeMap::from([("vi".into(), "Thị trấn.".into())]),
                 rank: None,
+                meta: Default::default(),
             },
         )
         .unwrap();

@@ -29,7 +29,7 @@ Each chapter is a run through a small [LangGraph](https://github.com/langchain-a
 
 1. **detect** — names the book's language and picks translate vs. rewrite.
 2. **recall** — pulls the wiki entries, characters and forms of address this chapter names, found by name/alias as whole words in one pass ([`aho-corasick`](https://crates.io/crates/aho-corasick)); each part of the chapter gets only the ones it mentions. Proper nouns go in as `original → translation (kind)` from the book's vector table (`wiki_names`, embedded with [`sqlite-vec`](https://crates.io/crates/sqlite-vec) when an embedding model is set). With an embedding model, the phrases of a chapter that look like names are also looked up in that table before it is translated, so a name the convert wrote a little differently still finds its entry; names that land together are merged into one entry. The book's genre sets the forms of address, and the reader can add their own instructions.
-3. **translate / rewrite** — the chapter, with that context in the prompt.
+3. **translate / rewrite** — the chapter, with that context in the prompt. When the model takes tools, each part comes back through them in one request: the text through `nop_ban_viet`, the facts for the wiki through `ghi_wiki`, and a name the prompt does not list can be looked up first with `tra_ten` (a second request). A model without tools gets the text prompt with the facts as JSON after a marker.
 4. **save** — the result is stored; it's never used as input to a later translation.
 5. **learn** — the model reads the chapter it just produced back through tool calls (`wiki_search`, `wiki_upsert`, `wiki_relate`) and grows the book's **wiki**: characters, places, factions, items, terms and how they relate — in every language, kept in sync.
 
@@ -88,7 +88,7 @@ Mỗi chương đi qua một đồ thị [LangGraph](https://github.com/langchai
 
 1. **detect** — nhận diện ngôn ngữ gốc của truyện, chọn dịch hay viết lại.
 2. **recall** — lấy ra các mục wiki, nhân vật và cách xưng hô có tên trong chương, tìm theo nguyên từ của tên/biệt danh trong một lượt ([`aho-corasick`](https://crates.io/crates/aho-corasick)); mỗi phần của chương chỉ nhận những gì nó nhắc tới. Danh từ riêng được đưa vào dạng `tên gốc → tên dịch (loại)` từ bảng vector của truyện (`wiki_names`, embedding bằng [`sqlite-vec`](https://crates.io/crates/sqlite-vec) khi có model embedding). Khi có model embedding, các cụm trông như tên riêng trong chương cũng được tra trong bảng này trước khi dịch, nên tên mà bản convert viết hơi khác vẫn tìm đúng mục; các tên nằm sát nhau được gộp vào một mục. Thể loại truyện quyết định cách xưng hô, và người đọc có thể thêm yêu cầu riêng.
-3. **translate / rewrite** — dịch chương, với phần ngữ cảnh đó đưa vào prompt.
+3. **translate / rewrite** — dịch chương, với phần ngữ cảnh đó đưa vào prompt. Nếu model hỗ trợ tool, mỗi phần trả về qua tool trong một request: văn bản qua `nop_ban_viet`, dữ kiện cho wiki qua `ghi_wiki`. Tên chưa có trong prompt thì model tra trước bằng `tra_ten` (thêm một request). Model không hỗ trợ tool dùng prompt văn bản, dữ kiện là JSON sau một dòng mốc.
 4. **save** — lưu kết quả; kết quả này không bao giờ được dùng làm đầu vào cho lần dịch sau.
 5. **learn** — model đọc lại chính chương vừa dịch xong, qua các tool call (`wiki_search`, `wiki_upsert`, `wiki_relate`), rồi bồi đắp thêm cho **wiki** của truyện: nhân vật, địa danh, phe phái, vật phẩm, thuật ngữ và quan hệ giữa chúng — đồng bộ ở mọi ngôn ngữ.
 

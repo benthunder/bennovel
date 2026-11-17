@@ -577,6 +577,13 @@ create table ai_book_prefs (
   instructions text not null default ''
 );
 "#,
+    r#"
+-- What places a level in its ladder and a character on it (wiki.rs `Meta`), as JSON:
+-- a level's ladder (`system`, beside its `rank`) and stage, a character's current level
+-- and stage. Copied into the vector table so the prompt and the merge can use it.
+alter table wiki_entries add column meta text not null default '{}';
+alter table wiki_names add column meta text not null default '{}';
+"#,
 ];
 
 /// The migration (1-based) after which `content` holds blocks.
@@ -659,7 +666,8 @@ fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
             if i + 1 == SEGMENTS_VERSION {
                 super::segments::migrate_all(&tx)?;
             }
-            if i + 1 == TIDY_VERSION {
+            // Run on the latest schema, which the wiki's code reads.
+            if i + 1 == MIGRATIONS.len() && (done as usize) < TIDY_VERSION {
                 super::wiki::tidy_all(&tx)?;
             }
             tx.pragma_update(None, "user_version", i as i64 + 1)?;

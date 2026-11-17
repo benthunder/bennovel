@@ -37,12 +37,24 @@ export interface WikiEntry {
   summaries: Record<string, string>;
   /** A level's place in its ladder, lowest first. */
   rank: number | null;
+  /** A level's ladder and stage, a character's current level (wiki.rs `Meta`). */
+  meta?: WikiMeta;
   /** The chapter it was first met in, in reading order from 1. */
   firstChapter: number | null;
   /** That chapter's own number as the book shows it ("Chương 629"), when it has one. */
   firstChapterShown?: number | null;
   source: 'ai' | 'user';
   updatedAt: number;
+}
+
+/** Where a level stands in its ladder (`system`, beside `rank`) and a character on one
+ *  (`level`); `stage` is the step inside a level (early 1, middle 2, late 3, peak 4). */
+export interface WikiMeta { system?: string; level?: string; stage?: number; stageName?: string }
+
+/** "Kim Đan, trung kỳ": a level or a character's current level with its stage. */
+export function metaStage(m: WikiMeta | undefined, stageWord: (n: number) => string): string {
+  if (!m) return '';
+  return m.stageName || (m.stage != null ? stageWord(m.stage) : '');
 }
 
 export interface WikiRelation {
@@ -58,7 +70,7 @@ export interface Wiki { entries: WikiEntry[]; relations: WikiRelation[]; auto: b
 
 export interface WikiEntryInput {
   uid?: string; kind: WikiKind; name: string; names: Record<string, string>; aliases: string[];
-  summaries: Record<string, string>; rank: number | null;
+  summaries: Record<string, string>; rank: number | null; meta?: WikiMeta;
 }
 
 export const getWiki = (user: string, novelId: number) => invoke<Wiki>('wiki_get', { user, novelId });
