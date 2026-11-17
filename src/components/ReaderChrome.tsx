@@ -63,11 +63,11 @@ export function ReaderChrome({ hidden, theme, readPct, line, onHeight, children 
   }, []);
 
   return (
-    // Frosted over the text on every theme but e-ink, which stays still and solid.
+    // Translucent over the text on every theme but e-ink, which stays still and solid.
     <div ref={ref} data-testid="reader-chrome" data-hidden={hidden} className={theme.still ? undefined : 'reader-chrome--glass'}
       style={{
         position: 'absolute', top: 0, left: 0, right: 0, zIndex: 20,
-        background: theme.still ? theme.bg : `color-mix(in srgb, ${theme.bg} 66%, transparent)`,
+        background: theme.still ? theme.bg : `color-mix(in srgb, ${theme.bg} 90%, transparent)`,
         transform: hidden ? `translateY(calc(-100% + ${safeTop} + ${BAR_STRIP}px))` : 'none',
         transition: motion ?? 'transform .25s ease'
       }}>
