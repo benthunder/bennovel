@@ -208,24 +208,63 @@ pub fn progress(conn: &Connection, novel_id: i64) -> rusqlite::Result<Vec<Progre
     let mut stmt = conn.prepare(
         "select novel_id, lang, style, count(*), sum(status = 'done'), sum(status = 'failed'),
            sum(status = 'queued'), sum(status = 'running'), sum(status = 'paused'),
-           max(case when status = 'paused' then error end)
+           coalesce(max(case when status = 'paused' then error end),
+                    max(case when status = 'failed' then error end))
          from ai_jobs where novel_id = ?1 group by lang, style order by min(created_at) desc",
     )?;
-    let rows = stmt.query_map([novel_id], |r| {
-        Ok(Progress {
-            novel_id: r.get(0)?,
-            lang: r.get(1)?,
-            style: r.get(2)?,
-            total: r.get(3)?,
-            done: r.get(4)?,
-            failed: r.get(5)?,
-            queued: r.get(6)?,
-            running: r.get(7)?,
-            paused: r.get(8)?,
-            error: r.get(9)?,
-        })
-    })?;
+    let rows = stmt.query_map([novel_id], progress_row)?;
     rows.collect()
+}
+
+fn progress_row(r: &rusqlite::Row) -> rusqlite::Result<Progress> {
+    Ok(Progress {
+        novel_id: r.get(0)?,
+        lang: r.get(1)?,
+        style: r.get(2)?,
+        total: r.get(3)?,
+        done: r.get(4)?,
+        failed: r.get(5)?,
+        queued: r.get(6)?,
+        running: r.get(7)?,
+        paused: r.get(8)?,
+        error: r.get(9)?,
+    })
+}
+
+/// A request of any book that still has chapters to do, paused or failed, with the
+/// book's title: what the app's pipeline panel lists.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BookProgress {
+    #[serde(flatten)]
+    pub progress: Progress,
+    pub title: String,
+}
+
+pub fn progress_all(conn: &Connection) -> rusqlite::Result<Vec<BookProgress>> {
+    let mut stmt = conn.prepare(
+        "select novel_id, lang, style, count(*), sum(status = 'done'), sum(status = 'failed'),
+           sum(status = 'queued'), sum(status = 'running'), sum(status = 'paused'),
+           coalesce(max(case when status = 'paused' then error end),
+                    max(case when status = 'failed' then error end))
+         from ai_jobs group by novel_id, lang, style
+         having sum(status <> 'done') > 0 order by min(created_at)",
+    )?;
+    let rows = stmt
+        .query_map([], progress_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    rows.into_iter()
+        .map(|p| {
+            let title = book_title(conn, p.novel_id)?.unwrap_or_default();
+            Ok(BookProgress { progress: p, title })
+        })
+        .collect()
+}
+
+/// Takes a book's request out of the queue altogether: every row, done and failed ones
+/// too, so nothing of it shows any more. The chapters translated so far stay.
+pub fn clear(conn: &Connection, novel_id: i64) -> rusqlite::Result<usize> {
+    conn.execute("delete from ai_jobs where novel_id = ?1", [novel_id])
 }
 
 fn progress_of(conn: &Connection, job: &Job) -> rusqlite::Result<Option<Progress>> {
@@ -301,10 +340,40 @@ struct LiveEvent {
     live: Option<Live>,
 }
 
+/// A chapter translated now from the reader (not through the queue): where it is in
+/// the graph, and the error it ended with, kept until the user tries it again or
+/// clears it.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Manual {
+    #[serde(flatten)]
+    pub live: Live,
+    pub title: String,
+    pub glossary: bool,
+    pub error: Option<String>,
+}
+
+struct ManualRun {
+    info: Manual,
+    stop: Arc<AtomicBool>,
+}
+
+/// Sent whenever a chapter translated from the reader moves, so the pipeline panel
+/// reads `ai_status` again.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StatusEvent {
+    user: String,
+}
+
 /// Where the worker's state goes: kept in the queue and sent to the app.
 type Report = Arc<dyn Fn(Option<Live>) + Send + Sync>;
 /// Called with the book's title as a request starts its first chapter.
 type Started = Arc<dyn Fn(String, Progress) + Send + Sync>;
+
+fn same(l: &Live, novel_id: i64, index: i64) -> bool {
+    l.novel_id == novel_id && l.index == index
+}
 
 /// A chapter's place in reading order.
 fn index_of(conn: &Connection, chapter_id: i64) -> rusqlite::Result<i64> {
@@ -341,6 +410,8 @@ pub struct Queue {
     stops: Mutex<HashMap<PathBuf, Arc<AtomicBool>>>,
     /// Wakes the wiki queue.
     wiki_tx: mpsc::UnboundedSender<Wake>,
+    /// Chapters translated now from the reader, per library file.
+    manual: Mutex<HashMap<PathBuf, Vec<ManualRun>>>,
 }
 
 #[derive(Clone, Serialize)]
@@ -380,7 +451,94 @@ impl Queue {
             ui_lang: Mutex::new(HashMap::new()),
             live: Mutex::new(HashMap::new()),
             stops: Mutex::new(HashMap::new()),
+            manual: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// A chapter from the reader starts (again): listed with no error, and the flag
+    /// that stops it.
+    pub fn manual_begin(&self, db: &std::path::Path, info: Manual) -> Arc<AtomicBool> {
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut map = self.manual.lock().unwrap();
+        let list = map.entry(db.to_path_buf()).or_default();
+        list.retain(|m| !same(&m.info.live, info.live.novel_id, info.live.index));
+        list.push(ManualRun {
+            info,
+            stop: stop.clone(),
+        });
+        stop
+    }
+
+    /// Changes a chapter from the reader as it moves through the graph.
+    pub fn manual_update(
+        &self,
+        db: &PathBuf,
+        novel_id: i64,
+        index: i64,
+        f: impl FnOnce(&mut Live),
+    ) {
+        if let Some(m) = self
+            .manual
+            .lock()
+            .unwrap()
+            .get_mut(db)
+            .and_then(|l| l.iter_mut().find(|m| same(&m.info.live, novel_id, index)))
+        {
+            f(&mut m.info.live);
+        }
+    }
+
+    /// A chapter from the reader ended: gone when it was done or stopped, kept with its
+    /// error otherwise.
+    pub fn manual_end(&self, db: &PathBuf, novel_id: i64, index: i64, error: Option<String>) {
+        let mut map = self.manual.lock().unwrap();
+        let Some(list) = map.get_mut(db) else { return };
+        match error {
+            Some(e) => {
+                if let Some(m) = list
+                    .iter_mut()
+                    .find(|m| same(&m.info.live, novel_id, index))
+                {
+                    m.info.error = Some(e);
+                }
+            }
+            None => list.retain(|m| !same(&m.info.live, novel_id, index)),
+        }
+    }
+
+    /// Stops a chapter from the reader (it keeps the parts it has), or takes one that
+    /// ended with an error off the list. Returns whether there was one.
+    pub fn manual_stop(&self, db: &PathBuf, novel_id: i64, index: i64) -> bool {
+        let mut map = self.manual.lock().unwrap();
+        let Some(list) = map.get_mut(db) else {
+            return false;
+        };
+        let Some(at) = list
+            .iter()
+            .position(|m| same(&m.info.live, novel_id, index))
+        else {
+            return false;
+        };
+        list[at].stop.store(true, Ordering::SeqCst);
+        if list[at].info.error.is_some() {
+            list.remove(at);
+        }
+        true
+    }
+
+    /// The chapters from the reader of this library file: running, or ended with an error.
+    pub fn manual(&self, db: &PathBuf) -> Vec<Manual> {
+        self.manual
+            .lock()
+            .unwrap()
+            .get(db)
+            .map(|l| l.iter().map(|m| m.info.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Tells the app that a chapter from the reader moved.
+    pub fn manual_changed<R: Runtime>(app: &AppHandle<R>, user: &str) {
+        let _ = app.emit("ai-status", StatusEvent { user: user.into() });
     }
 
     /// Stops the chapter being translated in this library file if it is one of this
@@ -640,7 +798,7 @@ fn step(
 }
 
 /// The book's title in its own language, for the notifications.
-fn book_title(conn: &Connection, novel_id: i64) -> rusqlite::Result<Option<String>> {
+pub fn book_title(conn: &Connection, novel_id: i64) -> rusqlite::Result<Option<String>> {
     conn.query_row(
         "select t.title from novels n join novel_translations t
            on t.novel_id = n.id and t.lang = n.original_lang where n.id = ?1",
@@ -711,6 +869,86 @@ fn notify<R: Runtime>(app: &AppHandle<R>, db: &PathBuf, note: Note, title: &str,
 mod tests {
     use super::*;
     use crate::library::translate::tests::{book, Fake};
+
+    #[test]
+    fn a_chapter_from_the_reader_is_listed_until_done_and_its_error_until_cleared() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (wiki_tx, _wrx) = mpsc::unbounded_channel();
+        let q = Queue {
+            tx,
+            wiki_tx,
+            ui_lang: Mutex::new(HashMap::new()),
+            live: Mutex::new(HashMap::new()),
+            stops: Mutex::new(HashMap::new()),
+            manual: Mutex::new(HashMap::new()),
+        };
+        let db = PathBuf::from("lib.db");
+        let info = |index| Manual {
+            live: Live {
+                novel_id: 1,
+                lang: "vi".into(),
+                style: "natural".into(),
+                index,
+                stage: translate::Stage::Detect,
+                parts_done: 0,
+                parts_total: 0,
+            },
+            title: "Book".into(),
+            glossary: true,
+            error: None,
+        };
+        let stop = q.manual_begin(&db, info(3));
+        q.manual_update(&db, 1, 3, |l| {
+            (l.stage, l.parts_done, l.parts_total) = (translate::Stage::Translate, 1, 4)
+        });
+        let listed = q.manual(&db);
+        assert_eq!(
+            (
+                listed.len(),
+                listed[0].live.stage,
+                listed[0].live.parts_done
+            ),
+            (1, translate::Stage::Translate, 1)
+        );
+        // Stopping sets the flag the run checks.
+        assert!(q.manual_stop(&db, 1, 3));
+        assert!(stop.load(Ordering::SeqCst));
+        q.manual_end(&db, 1, 3, None);
+        assert!(q.manual(&db).is_empty());
+        // A failed one stays with its error until it is cleared.
+        q.manual_begin(&db, info(4));
+        q.manual_end(&db, 1, 4, Some("llm-auth".into()));
+        assert_eq!(q.manual(&db)[0].error.as_deref(), Some("llm-auth"));
+        assert!(q.manual_stop(&db, 1, 4));
+        assert!(q.manual(&db).is_empty());
+    }
+
+    #[test]
+    fn the_panel_lists_unfinished_requests_with_their_error_and_clear_takes_them_out() {
+        let (conn, novel) = book("panel");
+        assert_eq!(enqueue(&conn, novel, 0, "vi", "natural", true).unwrap(), 2);
+        let all = progress_all(&conn).unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!((all[0].progress.total, all[0].progress.queued), (2, 2));
+        assert!(!all[0].title.is_empty());
+        // One fails, the other is done: the failure's reason shows.
+        let a = claim(&conn).unwrap().unwrap();
+        finish(&conn, a.id, Some("llm-http 400: bad")).unwrap();
+        let b = claim(&conn).unwrap().unwrap();
+        finish(&conn, b.id, None).unwrap();
+        let all = progress_all(&conn).unwrap();
+        assert_eq!((all[0].progress.failed, all[0].progress.done), (1, 1));
+        assert_eq!(all[0].progress.error.as_deref(), Some("llm-http 400: bad"));
+        // Clearing takes every row out, so nothing is listed.
+        assert_eq!(clear(&conn, novel).unwrap(), 2);
+        assert!(progress_all(&conn).unwrap().is_empty());
+        // A request with every chapter done is not listed either.
+        enqueue(&conn, novel, 0, "vi", "casual", true).unwrap();
+        while let Some(j) = claim(&conn).unwrap() {
+            finish(&conn, j.id, None).unwrap();
+        }
+        assert!(progress_all(&conn).unwrap().is_empty());
+    }
 
     #[test]
     fn queues_works_through_and_skips_done_chapters() {
