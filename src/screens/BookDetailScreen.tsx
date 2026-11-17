@@ -95,7 +95,8 @@ export function BookDetailScreen({ novelId }: { novelId: number }) {
   );
 
   const shown = sections.slice(0, lay.chPreview);
-  const meta = [b.format?.toUpperCase(), b.lang.toUpperCase()].filter(Boolean) as string[];
+  // The app does not guess a book's language any more (the AI finds it as it translates): an imported book is the raw text.
+  const meta = [b.format?.toUpperCase(), 'RAW'].filter(Boolean) as string[];
 
   return (
     <div className="screen" style={{ paddingBottom: 'calc(var(--nav-h) + 32px)' }}>

@@ -2078,12 +2078,12 @@ pub const PART_LOOKUP: &str = "tra_ten";
 pub fn tool_prompt(lang: &str, genre: &str) -> String {
     if lang == "vi" {
         return format!(
-            "\n\nCÁCH TRẢ LỜI: chỉ trả lời bằng tool. Nộp văn bản đã viết qua {PART_TEXT}: mỗi đoạn vào là đúng một phần tử của doan, cùng thứ tự, không thêm gì khác. Cùng lúc đó ghi dữ kiện của đoạn qua {PART_FACTS} (không có gì đáng ghi thì bỏ qua). Nếu đoạn có một tên không nằm trong danh sách tên riêng mà bạn cần biết là ai để viết đúng, gọi {PART_LOOKUP} trước rồi mới nộp.\n\nGHI WIKI. {}",
+            "\n\nCÁCH TRẢ LỜI: chỉ trả lời bằng tool. Nộp văn bản đã viết qua {PART_TEXT}: mỗi đoạn vào là đúng một phần tử của doan, cùng thứ tự, không thêm gì khác. Cùng lúc đó ghi dữ kiện của đoạn qua {PART_FACTS} (không có gì đáng ghi thì bỏ qua). Nếu đoạn có một tên không nằm trong danh sách tên riêng mà bạn cần biết là ai để viết đúng, gọi {PART_LOOKUP} trước rồi mới nộp. Không bao giờ trả lời bằng lời, không hỏi lại, không xin văn bản khác: luôn nộp kết quả qua {PART_TEXT}.\n\nGHI WIKI. {}",
             learn_rules(lang, genre)
         );
     }
     format!(
-        "\n\nHOW TO ANSWER: answer only through the tools. Hand in the text through {PART_TEXT}: one item of doan per paragraph given, in the same order, nothing else. At the same time record the part's facts through {PART_FACTS} (skip it when there is nothing worth keeping). When the part has a name the names list does not have and you need to know who it is to write it right, call {PART_LOOKUP} first, then hand in.\n\nKEEP THE WIKI. {}",
+        "\n\nHOW TO ANSWER: answer only through the tools. Hand in the text through {PART_TEXT}: one item of doan per paragraph given, in the same order, nothing else. At the same time record the part's facts through {PART_FACTS} (skip it when there is nothing worth keeping). When the part has a name the names list does not have and you need to know who it is to write it right, call {PART_LOOKUP} first, then hand in. Never answer in words, never ask anything back, never ask for another text: always hand in the result through {PART_TEXT}.\n\nKEEP THE WIKI. {}",
         learn_rules(lang, genre)
     )
 }
