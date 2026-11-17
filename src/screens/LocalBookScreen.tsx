@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { ChapterSheet, useSectionName } from '../components/ChapterSheet';
 import { BookOpenIcon, ChevronLeftIcon, DownloadIcon, ListIcon, SlidersIcon, SparklesIcon } from '../components/Icons';
 import { ReaderChrome, ReaderStatusBar, useImmersive } from '../components/ReaderChrome';
@@ -219,9 +219,18 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
   // Where to land once part `target` has rendered: `progress` through it (library books
   // resume where they were left; a jump starts at the top).
   const landing = useRef<{ target: number; progress: number } | null>({ target: start, progress: place?.progress ?? 0 });
-  // The part at the top of the view and how far into it (share of its height), kept
-  // while parts load, pictures size themselves or parts are added and dropped above.
-  const anchor = useRef<{ i: number; frac: number } | null>(null);
+
+  // What the reader is looking at: the element (paragraph, picture, heading) at the top of
+  // the view in part `i`, and where it was. Whatever changes size above it (a part added,
+  // a part loading its text, a picture, a new font size), the page is moved by the same
+  // amount so that element stays put; only the reader's own scrolling moves the text.
+  // `frac` (how far into the part) is the fallback when the part's text was replaced.
+  const anchor = useRef<{ i: number; node: HTMLElement; top: number; frac: number } | null>(null);
+  // The scroll position the reader set itself, so its own scroll events aren't taken for the reader's.
+  const selfTop = useRef(-1);
+  // Heights of the parts dropped above the view: a spacer of that height takes their place,
+  // so dropping them never moves the page (and the browser never has to clamp it).
+  const dropped = useRef(new Map<number, number>());
   const partEl = (i: number) => scrollRef.current?.querySelector<HTMLElement>(`[data-part="${i}"]`) ?? null;
 
   /** The part under the header and how far through it, as the bar shows it. */
@@ -237,7 +246,50 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
     if (!part) return null;
     const top = part.offsetTop, h = part.offsetHeight;
     const progress = Math.min(1, Math.max(0, (el.scrollTop - top) / Math.max(1, h - el.clientHeight)));
-    return { i: Number(part.dataset.part), top, h, progress };
+    return { i: Number(part.dataset.part), el: part, top, h, progress };
+  };
+
+  /** Remembers the element at the top of the view as the one to keep in place. */
+  const reAnchor = () => {
+    const el = scrollRef.current, m = measure();
+    if (!el || !m) return;
+    const y = el.scrollTop + chromeH;
+    // The part's children are in order; the first one not yet scrolled past.
+    const kids = m.el.children;
+    let lo = 0, hi = kids.length - 1, node: HTMLElement | null = null;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1, k = kids[mid] as HTMLElement;
+      if (k.offsetTop + k.offsetHeight > y) { node = k; hi = mid - 1; } else lo = mid + 1;
+    }
+    // Past its last line (its bottom margin): the part itself.
+    node ??= m.el;
+    anchor.current = { i: m.i, node, top: node.offsetTop, frac: (el.scrollTop - m.top) / Math.max(1, m.h) };
+  };
+
+  const scrollTo = (el: HTMLElement, top: number) => {
+    el.scrollTop = top;
+    selfTop.current = el.scrollTop;
+  };
+
+  /**
+   * Moves the page by however much the anchored element moved since it was remembered.
+   * `scrolled`: the reader scrolled meanwhile, which a replaced text must not undo.
+   */
+  const keep = (scrolled = false) => {
+    const el = scrollRef.current, a = anchor.current;
+    const part = a && partEl(a.i);
+    if (!el || !a || !part) return;
+    if (a.node.isConnected && (a.node === part || a.node.parentElement === part)) {
+      const moved = a.node.offsetTop - a.top;
+      if (moved !== 0) scrollTo(el, el.scrollTop + moved);
+      a.top = a.node.offsetTop;
+      return;
+    }
+    if (scrolled) return;
+    // The part's text was replaced (loading, another version): the same share of it.
+    const top = part.offsetTop + a.frac * part.offsetHeight;
+    if (Math.abs(el.scrollTop - top) > 1) scrollTo(el, top);
+    if (part.dataset.ready) reAnchor();
   };
 
   /** Adds the next part when the end is near, the previous one near the top. */
@@ -246,9 +298,15 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
     if (!el || landing.current) return;
     const [a, b] = spanRef.current;
     let next: [number, number] | null = null;
+    const first = partEl(a);
     if (b < total - 1 && partEl(b)?.dataset.ready && el.scrollHeight - el.scrollTop - el.clientHeight < el.clientHeight * 1.5) {
       next = [Math.max(a, b + 2 - MAX_PARTS), b + 1];
-    } else if (a > 0 && partEl(a)?.dataset.ready && el.scrollTop < el.clientHeight) {
+      // The parts dropped above leave their height behind.
+      for (let i = a; i < next[0]; i++) {
+        const cur = partEl(i), after = partEl(i + 1);
+        if (cur && after) dropped.current.set(i, after.offsetTop - cur.offsetTop);
+      }
+    } else if (a > 0 && first?.dataset.ready && el.scrollTop < first.offsetTop + el.clientHeight) {
       next = [a - 1, Math.min(b, a - 2 + MAX_PARTS)];
     }
     if (next) {
@@ -257,21 +315,12 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
     }
   };
 
-  /** Puts the anchored part back where it was after the content above it changed size. */
-  const keep = () => {
-    const el = scrollRef.current, a = anchor.current;
-    const part = a && partEl(a.i);
-    if (!el || !part) return;
-    const top = part.offsetTop + a.frac * part.offsetHeight;
-    if (Math.abs(el.scrollTop - top) > 1) el.scrollTop = top;
-  };
-
   const onPartReady = (i: number) => {
     const el = scrollRef.current, l = landing.current, part = partEl(i);
     if (el && l && l.target === i && part) {
       landing.current = null;
-      el.scrollTop = part.offsetTop + l.progress * Math.max(0, part.offsetHeight - el.clientHeight);
-      anchor.current = { i, frac: (el.scrollTop - part.offsetTop) / Math.max(1, part.offsetHeight) };
+      scrollTo(el, part.offsetTop + l.progress * Math.max(0, part.offsetHeight - el.clientHeight));
+      reAnchor();
       setReadPct(l.progress);
       save(i, l.progress);
     }
@@ -282,16 +331,23 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
   const jump = (i: number) => {
     landing.current = { target: i, progress: 0 };
     anchor.current = null;
+    dropped.current.clear();
     spanRef.current = [i, i];
     setSpan([i, i]);
     setIndex(i);
     setGen(g => g + 1);
   };
 
+  // Every change to the parts on screen is made up for before it is painted.
+  const onLayout = useRef(() => {});
+  onLayout.current = () => { if (!landing.current) keep(); };
+  const partLayout = useCallback(() => onLayout.current(), []);
+  useLayoutEffect(() => onLayout.current());
+
   // Watches the content's height once; the callback reads the latest render's helpers.
   const contentRef = useRef<HTMLDivElement>(null);
   const onResize = useRef(() => {});
-  onResize.current = () => { keep(); grow(); };
+  onResize.current = () => { if (!landing.current) keep(); grow(); };
   useEffect(() => {
     const content = contentRef.current;
     if (!content) return;
@@ -331,9 +387,13 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
   onScrollFrame.current = () => {
     scrollFrame.current = 0;
     const el = scrollRef.current;
+    if (!el || landing.current) return;
+    // Whether the reader scrolled, or only the reader's own corrections moved the page.
+    const scrolled = el.scrollTop !== selfTop.current;
+    keep(scrolled);
+    if (scrolled || !anchor.current) reAnchor();
     const m = measure();
-    if (!el || !m || landing.current) return;
-    anchor.current = { i: m.i, frac: (el.scrollTop - m.top) / Math.max(1, m.h) };
+    if (!m) return;
     if (m.i !== index) setIndex(m.i);
     // A tenth of a percent is finer than the bar can show.
     setReadPct(r => (Math.abs(r - m.progress) < 0.001 ? r : m.progress));
@@ -415,9 +475,11 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
       <div ref={scrollRef} className="nx-scroll" onScroll={onScroll} onClick={immersive.onTap}
         style={{ position: 'relative', flex: 1, overflowY: 'auto', overflowAnchor: 'none', padding: `${chromeH + lay.readerPadTop}px ${MARGIN_PX[p.margin]}px 40px`, fontFamily: theme.font }}>
         <div ref={contentRef} style={{ maxWidth: lay.readerMax, margin: '0 auto' }}>
+          {/* Stands in for the parts dropped above, at their height. */}
+          <div aria-hidden style={{ height: [...dropped.current].reduce((sum, [i, h]) => (i < span[0] ? sum + h : sum), 0) }} />
           {Array.from({ length: span[1] - span[0] + 1 }, (_, k) => span[0] + k).map(i => (
             <BookPart key={`${gen}-${i}`} bookId={book.id} index={i} meta={book.sections[i]} name={sectionName(book.sections[i], i, total)}
-              fix={fix} st={partStyle} color={theme.fg} onReady={onPartReady}
+              fix={fix} st={partStyle} color={theme.fg} onReady={onPartReady} onLayout={partLayout} lastH={dropped.current.get(i)}
               marksReady={!!marks} lang={lang} rev={aiRev[i] ?? 0} viewLang={viewLang}
               ai={(() => {
                 const v = versionOf(i);
@@ -484,12 +546,14 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
   );
 }
 
-/** Whether `line` is just "Chương 12", "Chapter 12: Title"… for chapter `n` titled `label`. */
-function isHeadingLine(line: string, n: number, label: string | null) {
-  const m = /^\s*(?:chương|chuong|chapter|chap|ch|hồi|hoi|第)\s*[.:#_-]?\s*(\d+(?:\.\d+)?)\s*[章回话話节節集]?(.*)$/i.exec(line);
-  if (!m || Number(m[1]) !== n) return false;
-  const rest = m[2].replace(/^[\s:：\-–—.、,)\]]+/, '').replace(/[\s.]+$/, '').trim();
-  return !rest || rest === label?.trim();
+/**
+ * Whether a chapter's first line only repeats the heading shown above it (its title or
+ * name, as is). Nothing is guessed from the words: no "Chương 12" patterns.
+ */
+function repeatsHeading(line: string, names: (string | null | undefined)[]) {
+  const norm = (x: string) => x.normalize('NFC').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+  const l = norm(line);
+  return !!l && names.some(n => !!n && norm(n) === l);
 }
 
 type PartStyle = {
@@ -501,10 +565,14 @@ type PartStyle = {
  * One part of the book in the long scroll: its heading, then its text. Marked `data-ready` once its content is in, so the reader knows the
  * height is real before adding the next part.
  */
-function BookPart({ bookId, index, meta, name, fix, st, color, onReady, marksReady, lang, rev, viewLang, ai, original, onShowOriginal, onTranslate, wiki, onWiki }: {
+function BookPart({ bookId, index, meta, name, fix, st, color, onReady, onLayout, lastH, marksReady, lang, rev, viewLang, ai, original, onShowOriginal, onTranslate, wiki, onWiki }: {
   bookId: number; index: number; meta: LocalSectionMeta | undefined; name: string;
   fix: (s: string) => string; st: PartStyle; color: string;
   onReady: (index: number) => void;
+  /** Called after each change to the part is laid out, before it is painted. */
+  onLayout: () => void;
+  /** Its height when it was last on screen: kept while its text loads again. */
+  lastH: number | undefined;
   /** Whether the AI marks are in: until then the part waits, so it doesn't show the original first. */
   marksReady: boolean;
   /** The book's language: a version in it is a rewrite. */
@@ -539,6 +607,7 @@ function BookPart({ bookId, index, meta, name, fix, st, color, onReady, marksRea
   const heading = (q.status === 'ready' && q.data.title) || (meta?.label ?? name);
   const ready = q.status !== 'loading';
   useEffect(() => { if (ready) onReady(index); }, [ready]);
+  useLayoutEffect(() => onLayout());
   // The text loaded can still be the last version's while a switch to another one loads.
   const isAi = q.status === 'ready' && q.data.isAi && !!ai;
   // The wiki as of this chapter (reading order from 1), so later chapters give nothing away.
@@ -557,8 +626,8 @@ function BookPart({ bookId, index, meta, name, fix, st, color, onReady, marksRea
   onWikiRef.current = onWiki;
   const data = q.status === 'ready' ? q.data : null;
   const body = useMemo<ReactNode>(() => data?.paragraphs.map((para, i) => {
-    // The chapter's own "Chương 629." line repeats the heading shown above.
-    if (i === 0 && meta?.number != null && isHeadingLine(para, meta.number, meta.label)) return null;
+    // The chapter's own first line repeating the heading shown above.
+    if (i === 0 && repeatsHeading(para, [heading, name])) return null;
     const key = imageKey(para);
     return key !== null ? (
       // A picture the book can't provide just disappears.
@@ -570,11 +639,11 @@ function BookPart({ bookId, index, meta, name, fix, st, color, onReady, marksRea
         {wikiAt ? markWikiTerms(fix(para), terms, e => onWikiRef.current(wikiAt, e, cardLang)) : fix(para)}
       </p>
     );
-  }), [data, meta?.number, meta?.label, bookId, st.gap, st.fontSize, st.lineH, st.align, wikiAt, terms, cardLang, fix]);
+  }), [data, heading, name, bookId, st.gap, st.fontSize, st.lineH, st.align, wikiAt, terms, cardLang, fix]);
   const link: CSSProperties = { border: 'none', background: 'none', font: 'inherit', fontSize: 12, fontWeight: 700, textDecoration: 'underline', cursor: 'pointer', color: 'inherit', padding: 0 };
 
   return (
-    <section data-part={index} data-ready={ready ? 'true' : undefined} style={{ paddingBottom: 28 }}>
+    <section data-part={index} data-ready={ready ? 'true' : undefined} style={{ paddingBottom: 28, minHeight: ready ? undefined : lastH }}>
       {heading !== name && (
         <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: st.accent }}>{name}</div>
       )}
