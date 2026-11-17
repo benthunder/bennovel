@@ -54,7 +54,12 @@ pub const REL_TYPES: &[&str] = &[
     "has_level",
     "has_skill",
 ];
-/// The key of the descriptions written in the book's own language.
+/// The one language the wiki is written in: names, descriptions, relations and notes
+/// are Vietnamese, whatever language a chapter is translated into. The original name
+/// (`name`, `aliases`) stays as the text writes it, for finding it in the raw text.
+pub const WIKI_LANG: &str = "vi";
+
+/// The key of the descriptions written in the book's own language (older wikis).
 pub const RAW: &str = "raw";
 /// Text of the entries or relations put in one request of `translate_missing`, in
 /// characters (about 1,500 tokens): the reply is about as long, so both stay well inside
@@ -1296,7 +1301,10 @@ fn upsert_ai_entry(
             // Found by another of its names (a nickname): that name's translation is
             // not the entry's.
             let own_name = name == e.name;
-            if !translated.is_empty() && ((!mine && own_name) || !names.contains_key(lang)) {
+            // A name keeps its first translation: the parts and chapters after it write
+            // it the same way (the user can still change it on the wiki screen).
+            let _ = own_name;
+            if !translated.is_empty() && !names.contains_key(lang) {
                 names.insert(lang.to_string(), translated);
             }
             let mut summaries = e.summaries.clone();
@@ -1900,6 +1908,23 @@ pub fn recall(
 }
 
 impl Recall {
+    /// This recall with what `base` found that it did not: a part's own recall, made
+    /// just before it is sent so it has the names earlier parts put in the wiki, with
+    /// the near names the chapter's recall found by embedding.
+    pub fn with(mut self, base: &Recall) -> Recall {
+        for i in &base.items {
+            if !self.items.iter().any(|m| m.uid == i.uid) {
+                self.items.push(i.clone());
+            }
+        }
+        for r in &base.rels {
+            if !self.rels.iter().any(|m| m.0 == r.0 && m.1 == r.1) {
+                self.rels.push(r.clone());
+            }
+        }
+        self
+    }
+
     /// The names part of the prompt for one part of the chapter: only the entries the
     /// part names, the most mentioned first, and the relationships between them.
     pub fn prompt(&self, text: &str) -> String {
@@ -2078,12 +2103,12 @@ pub const PART_LOOKUP: &str = "tra_ten";
 pub fn tool_prompt(lang: &str, genre: &str) -> String {
     if lang == "vi" {
         return format!(
-            "\n\nCÁCH TRẢ LỜI: chỉ trả lời bằng tool. Nộp văn bản đã viết qua {PART_TEXT}: mỗi đoạn vào là đúng một phần tử của doan, cùng thứ tự, không thêm gì khác. Cùng lúc đó ghi dữ kiện của đoạn qua {PART_FACTS} (không có gì đáng ghi thì bỏ qua). Nếu đoạn có một tên không nằm trong danh sách tên riêng mà bạn cần biết là ai để viết đúng, gọi {PART_LOOKUP} trước rồi mới nộp.\n\nGHI WIKI. {}",
+            "\n\nCÁCH TRẢ LỜI: chỉ trả lời bằng tool. Nộp văn bản đã viết qua {PART_TEXT}: mỗi đoạn vào là đúng một phần tử của doan, cùng thứ tự, không thêm gì khác. Cùng lúc đó ghi dữ kiện của đoạn qua {PART_FACTS} (không có gì đáng ghi thì bỏ qua). Nếu đoạn có một tên không nằm trong danh sách tên riêng mà bạn cần biết là ai để viết đúng, gọi {PART_LOOKUP} trước rồi mới nộp. Không bao giờ trả lời bằng lời, không hỏi lại, không xin văn bản khác: luôn nộp kết quả qua {PART_TEXT}.\n\nGHI WIKI. {}",
             learn_rules(lang, genre)
         );
     }
     format!(
-        "\n\nHOW TO ANSWER: answer only through the tools. Hand in the text through {PART_TEXT}: one item of doan per paragraph given, in the same order, nothing else. At the same time record the part's facts through {PART_FACTS} (skip it when there is nothing worth keeping). When the part has a name the names list does not have and you need to know who it is to write it right, call {PART_LOOKUP} first, then hand in.\n\nKEEP THE WIKI. {}",
+        "\n\nHOW TO ANSWER: answer only through the tools. Hand in the text through {PART_TEXT}: one item of doan per paragraph given, in the same order, nothing else. At the same time record the part's facts through {PART_FACTS} (skip it when there is nothing worth keeping). When the part has a name the names list does not have and you need to know who it is to write it right, call {PART_LOOKUP} first, then hand in. Never answer in words, never ask anything back, never ask for another text: always hand in the result through {PART_TEXT}.\n\nKEEP THE WIKI. {}",
         learn_rules(lang, genre)
     )
 }
@@ -2544,6 +2569,114 @@ pub fn learn_pending(conn: &Connection) -> rusqlite::Result<Vec<(i64, usize)>> {
     Ok(done)
 }
 
+/// Puts what one part of a chapter found (its `ghi_wiki` call, or the facts after its
+/// text) in the wiki right away, so the parts and chapters after it find those names
+/// and write them the same way. A name already in the wiki keeps its translation.
+/// `read_lang` is the language the chapter is translated into, whose names the parts
+/// are looked up by. Nothing when the book's wiki does not learn.
+pub fn learn_part(
+    conn: &Connection,
+    novel_id: i64,
+    chapter_id: i64,
+    read_lang: &str,
+    facts: &str,
+) -> Result<usize, AiError> {
+    if !auto(conn, novel_id)? {
+        return Ok(0);
+    }
+    let Some(answer) = parse_object::<AiAnswer>(facts) else {
+        return Ok(0);
+    };
+    let chapter: Option<i64> = conn
+        .query_row(
+            "select number from chapters where id = ?1",
+            [chapter_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let mut changes = 0;
+    for item in answer.entries {
+        if upsert_ai(conn, novel_id, WIKI_LANG, chapter, item)?.is_some() {
+            changes += 1;
+        }
+    }
+    for item in &answer.relations {
+        if relate_ai(conn, novel_id, WIKI_LANG, chapter, item)?.is_ok() {
+            changes += 1;
+        }
+    }
+    if changes > 0 {
+        index_names(conn, None, novel_id, WIKI_LANG)?;
+        if read_lang != WIKI_LANG {
+            index_names(conn, None, novel_id, read_lang)?;
+        }
+    }
+    Ok(changes)
+}
+
+/// The names a chapter's parts wrote differently from the wiki: (as written, as the
+/// wiki keeps it), for the entries the parts named by their own name. Two parts that
+/// ran at the same time may each have translated a new name their own way; the first
+/// one kept wins and the chapter is made to agree with it. A pair where one name holds
+/// the other ("Lâm" and "Lâm Động") is left alone.
+pub fn settled_names(
+    conn: &Connection,
+    novel_id: i64,
+    found: &[String],
+) -> rusqlite::Result<Vec<(String, String)>> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for answer in found.iter().filter_map(|f| parse_object::<AiAnswer>(f)) {
+        for item in answer.entries {
+            let (name, written) = (item.name.trim(), item.translated.trim());
+            if name.is_empty() || written.chars().count() < 2 {
+                continue;
+            }
+            let Some((_, e, false)) = find(conn, novel_id, name)? else {
+                continue;
+            };
+            if e.name != name {
+                continue;
+            }
+            let Some(kept) = e.names.get(WIKI_LANG).map(|k| k.trim()) else {
+                continue;
+            };
+            if kept.is_empty() || kept.contains(written) || written.contains(kept) {
+                continue;
+            }
+            if !out.iter().any(|(w, _)| w == written) {
+                out.push((written.to_string(), kept.to_string()));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// `text` with every `from` that stands as whole words replaced by `to`.
+pub fn replace_name(text: &str, from: &str, to: &str) -> String {
+    if from.is_empty() || !text.contains(from) {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(from) {
+        let before = rest[..at]
+            .chars()
+            .next_back()
+            .or_else(|| out.chars().next_back());
+        let after = rest[at + from.len()..].chars().next();
+        let word = |c: Option<char>| c.is_some_and(char::is_alphanumeric);
+        out.push_str(&rest[..at]);
+        if word(before) || word(after) {
+            out.push_str(from);
+        } else {
+            out.push_str(to);
+        }
+        rest = &rest[at + from.len()..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Keeps what the translation requests found in a chapter, for when the wiki learns.
 pub fn keep_found(
     conn: &Connection,
@@ -2715,6 +2848,27 @@ pub fn at_chapter(conn: &Connection, novel_id: i64, number: i64) -> rusqlite::Re
         auto,
         last_error,
     })
+}
+
+/// Drops every language but Vietnamese from a book's wiki where the Vietnamese words are
+/// there (see migration 22); returns how many rows changed.
+pub fn only_vi(conn: &Connection, novel_id: i64) -> rusqlite::Result<usize> {
+    let mut n = 0;
+    for (table, col) in [
+        ("wiki_entries", "summaries"),
+        ("wiki_entries", "names"),
+        ("wiki_relations", "labels"),
+    ] {
+        n += conn.execute(
+            &format!(
+                "update {table} set {col} = json_object('vi', json_extract({col}, '$.vi'))
+                 where novel_id = ?1 and json_valid({col}) and json_extract({col}, '$.vi') is not null
+                   and (select count(*) from json_each({table}.{col})) > 1"
+            ),
+            [novel_id],
+        )?;
+    }
+    Ok(n)
 }
 
 /* ---------- Translating the wiki ---------- */
@@ -4211,5 +4365,83 @@ mod tests {
         let lin = later.entries.iter().find(|e| e.name == "林动").unwrap();
         assert_eq!(lin.summaries["vi"], "Đệ tử Đạo Tông.");
         assert_eq!(later.relations.len(), 1);
+    }
+
+    #[test]
+    fn a_name_keeps_its_first_translation_and_the_chapter_follows_it() {
+        let (conn, novel) = book("keepfirstname");
+        set_auto(&conn, novel, true).unwrap();
+        let chapter: i64 = conn
+            .query_row(
+                "select id from chapters where novel_id = ?1 limit 1",
+                [novel],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let first =
+            r#"{"entries": [{"name": "地魔", "kind": "character", "translated": "Địa Ma"}]}"#;
+        let other =
+            r#"{"entries": [{"name": "地魔", "kind": "character", "translated": "Quỷ Đất"}]}"#;
+        assert_eq!(learn_part(&conn, novel, chapter, "vi", first).unwrap(), 1);
+        // The next part finds it in the wiki before it is sent.
+        let prompt = recall(&conn, None, novel, "地魔 gầm lên.", "vi")
+            .unwrap()
+            .prompt("地魔 gầm lên.");
+        assert!(prompt.contains("Địa Ma"), "{prompt}");
+        // A part that ran at the same time wrote it its own way: the wiki keeps the first.
+        learn_part(&conn, novel, chapter, "vi", other).unwrap();
+        let e = &entries(&conn, novel).unwrap()[0];
+        assert_eq!(e.names["vi"], "Địa Ma");
+        let pairs = settled_names(&conn, novel, &[other.to_string()]).unwrap();
+        assert_eq!(pairs, vec![("Quỷ Đất".to_string(), "Địa Ma".to_string())]);
+        assert_eq!(
+            replace_name(
+                "Quỷ đất gầm lên. Quỷ đấtx chưa! (Quỷ đất)",
+                "Quỷ đất",
+                "Địa ma"
+            ),
+            "Địa ma gầm lên. Quỷ đấtx chưa! (Địa ma)"
+        );
+        // With the wiki off nothing goes in.
+        set_auto(&conn, novel, false).unwrap();
+        let more =
+            r#"{"entries": [{"name": "天魔", "kind": "character", "translated": "Thiên ma"}]}"#;
+        assert_eq!(learn_part(&conn, novel, chapter, "vi", more).unwrap(), 0);
+    }
+
+    #[test]
+    fn the_wiki_keeps_only_its_vietnamese_words() {
+        let (conn, novel) = book("wikionlyvi");
+        upsert_ai(
+            &conn,
+            novel,
+            "en",
+            None,
+            ai("林动", "character", "Lin Dong", &[]),
+        )
+        .unwrap();
+        upsert_ai(
+            &conn,
+            novel,
+            "vi",
+            None,
+            ai("林动", "character", "Lâm Động", &[]),
+        )
+        .unwrap();
+        upsert_ai(
+            &conn,
+            novel,
+            "en",
+            None,
+            ai("青檀", "character", "Qing Tan", &[]),
+        )
+        .unwrap();
+        only_vi(&conn, novel).unwrap();
+        let all = entries(&conn, novel).unwrap();
+        let lin = all.iter().find(|e| e.name == "林动").unwrap();
+        assert_eq!(lin.names.keys().collect::<Vec<_>>(), vec!["vi"]);
+        // Not in Vietnamese yet: kept until it is translated.
+        let qing = all.iter().find(|e| e.name == "青檀").unwrap();
+        assert_eq!(qing.names["en"], "Qing Tan");
     }
 }

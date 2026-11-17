@@ -24,6 +24,8 @@ export const isRelType = (k: string): k is RelType => (REL_TYPES as readonly str
 
 /** The wiki's words in the book's own language ("Raw"). */
 export const RAW = 'raw';
+/** The one language the wiki is written in, whatever a chapter is translated into. */
+export const WIKI_LANG: string = 'vi';
 
 export interface WikiEntry {
   uid: string;

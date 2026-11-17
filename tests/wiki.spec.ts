@@ -59,12 +59,14 @@ async function nativeApp(page: Page) {
             return { index: args.index, paragraphs: ['林动 看着 道宗 的 人。', '动少 笑了。'] };
           case 'wiki_search': return wiki.entries.filter(e => e.kind === 'faction');
           case 'wiki_set_auto': wiki.auto = Boolean(args.auto); return null;
-          case 'wiki_missing': return args.lang === 'en' ? 7 : 0;
+          case 'wiki_missing': return Number(w.__missing ?? 0);
           case 'wiki_translate': {
+            // An older wiki written in English: the AI writes it in Vietnamese.
             for (const e of wiki.entries) {
-              e.names = { ...e.names, en: `${e.name} (en)` };
-              if (Object.keys(e.summaries).length) e.summaries = { ...e.summaries, en: `About ${e.name}.` };
+              e.names = { vi: `${e.name} (vi)` };
+              if (Object.keys(e.summaries).length) e.summaries = { vi: `Về ${e.name}.` };
             }
+            w.__missing = 0;
             return wiki.entries.length;
           }
           case 'wiki_save': {
@@ -92,11 +94,10 @@ test('the book wiki lists, searches and edits entries', async ({ page }, info) =
   await page.goto('/');
   await page.getByText('Võ Động Càn Khôn').filter({ visible: true }).first().click();
   await page.getByRole('button', { name: /Wiki truyện/ }).filter({ visible: true }).first().click();
-  // Never read yet: the wiki opens in Raw, the names as in the original.
-  await expect(page.getByRole('radio', { name: 'Raw' })).toHaveAttribute('aria-checked', 'true');
-  await expect(page.getByText('林动', { exact: true })).toBeVisible();
-  await page.getByRole('radio', { name: 'Tiếng Việt' }).click();
+  // The wiki is in Vietnamese only, with the original name beside it; nothing to pick.
+  await expect(page.getByRole('radio')).toHaveCount(0);
   await expect(page.getByText('Lâm Động', { exact: true })).toBeVisible();
+  await expect(page.locator('[data-entry="林动"]').getByText('林动', { exact: true })).toBeVisible();
   await expect(page.locator('[data-entry="林动"]').getByText('3 quan hệ')).toBeVisible();
   // A character shows the level it reached last.
   await expect(page.locator('[data-entry="林动"]').getByText('Địa Nguyên cảnh')).toBeVisible();
@@ -124,48 +125,44 @@ test('the book wiki lists, searches and edits entries', async ({ page }, info) =
   await sheet.getByRole('button', { name: 'Thêm quan hệ' }).click();
   await expect(sheet.locator('[data-relation="member_of"]')).toContainText('thành viên của Đạo Tông');
   expect((await calls(page)).find(c => c.cmd === 'wiki_relate')?.args).toMatchObject({ fromUid: 'a', toUid: 'c', kind: 'member_of', lang: 'vi' });
-  // Words per language: the English description is written on its own tab.
+  // Only Vietnamese words: no tab per language.
   await sheet.getByLabel('Tên khác (cách nhau bằng dấu phẩy)').fill('动少, 林动哥');
-  await sheet.getByRole('tab', { name: /English/ }).click();
-  await sheet.getByLabel('Tên trong bản dịch English').fill('Lin Dong');
-  await sheet.getByLabel('Mô tả · English').fill('A boy of the Lin clan.');
+  await expect(sheet.getByRole('tab')).toHaveCount(0);
   await page.screenshot({ path: `test-results/wiki-${info.project.name}-entry.png` });
   await sheet.getByRole('button', { name: 'Lưu' }).click();
   expect((await calls(page)).find(c => c.cmd === 'wiki_save')?.args.entry).toMatchObject({
     uid: 'a', name: '林动', aliases: ['动少', '林动哥'],
-    names: { vi: 'Lâm Động', en: 'Lin Dong' },
-    summaries: { vi: 'Thiếu niên Lâm gia ở Thanh Dương trấn, tu luyện nhờ thạch phù bí ẩn.', en: 'A boy of the Lin clan.' }
+    names: { vi: 'Lâm Động' },
+    summaries: { vi: 'Thiếu niên Lâm gia ở Thanh Dương trấn, tu luyện nhờ thạch phù bí ẩn.' }
   });
   await expect(page.getByText('Đã lưu vào wiki.')).toBeVisible();
 });
 
-test('the wiki follows the reading language, with levels in order and places as a map', async ({ page }, info) => {
+test('the wiki stays Vietnamese whatever the reading language, with levels in order and places as a map', async ({ page }, info) => {
   await nativeApp(page);
-  // The book is read in English (no one signed in: the library key is empty).
+  // The book is read in English (no one signed in: the library key is empty), and its
+  // wiki was written before the wiki was Vietnamese only.
   await page.addInitScript(() => {
     localStorage.setItem('bennovel.aiView.:1', JSON.stringify({ lang: 'en', style: 'Natural', dict: true, view: 'en' }));
+    (window as unknown as Record<string, unknown>).__missing = 7;
   });
   await page.goto('/');
   await page.getByText('Võ Động Càn Khôn').filter({ visible: true }).first().click();
   await page.getByRole('button', { name: /Wiki truyện/ }).filter({ visible: true }).first().click();
-  await expect(page.getByRole('radio', { name: 'English' })).toHaveAttribute('aria-checked', 'true');
-  // Nothing in English yet: raw words, and the AI can fill the language in.
-  await expect(page.getByText('林动', { exact: true })).toBeVisible();
-  await expect(page.getByText('7 mục chưa có chữ English, đang hiện chữ Raw.')).toBeVisible();
-  await page.getByRole('button', { name: 'Dịch wiki sang English bằng AI' }).click();
-  await expect(page.getByText('Đã dịch wiki sang English: 7 mục.')).toBeVisible();
-  expect((await calls(page)).find(c => c.cmd === 'wiki_translate')?.args).toMatchObject({ novelId: 1, lang: 'en' });
-  await expect(page.getByText('林动 (en)', { exact: true })).toBeVisible();
-  await expect(page.getByText('About 林动.')).toBeVisible();
+  // What is missing in Vietnamese is translated on opening, with no button to press.
+  await expect(page.getByText('林动 (vi)', { exact: true })).toBeVisible();
+  await expect(page.getByText('Về 林动.')).toBeVisible();
+  expect((await calls(page)).filter(c => c.cmd === 'wiki_translate').map(c => c.args)).toMatchObject([{ novelId: 1, lang: 'vi' }]);
+  await expect(page.getByRole('radio')).toHaveCount(0);
 
   // Levels in their order, lowest first, with who is at each.
   await page.getByRole('tab', { name: 'Cảnh giới' }).click();
   const ladder = page.locator('[data-wiki-ladder] > li');
   await expect(ladder).toHaveCount(2);
-  await expect(ladder.nth(0)).toContainText('淬体 (en)');
-  await expect(ladder.nth(1)).toContainText('地元境 (en)');
-  await expect(ladder.nth(1)).toContainText('林动 (en)');
-  await expect(ladder.nth(0)).not.toContainText('林动 (en)');
+  await expect(ladder.nth(0)).toContainText('淬体 (vi)');
+  await expect(ladder.nth(1)).toContainText('地元境 (vi)');
+  await expect(ladder.nth(1)).toContainText('林动 (vi)');
+  await expect(ladder.nth(0)).not.toContainText('林动 (vi)');
 
   // Places nest by "located in".
   await page.getByRole('tab', { name: 'Bản đồ' }).click();
@@ -200,7 +197,7 @@ test('names in a chapter open the whole wiki with its links', async ({ page }, i
   await page.waitForTimeout(500);
   await page.screenshot({ path: `test-results/wiki-${info.project.name}-reader-card.png` });
   await card.getByRole('button', { name: 'Wiki truyện' }).click();
-  await expect(page.getByRole('radio', { name: 'Tiếng Việt' })).toHaveAttribute('aria-checked', 'true');
+  await expect(page.locator('[data-entry="林动"]').getByText('Lâm Động', { exact: true })).toBeVisible();
 });
 
 test('a chapter that fails to load says so in words and loads again', async ({ page }) => {
@@ -228,7 +225,6 @@ test('a long wiki description folds to two lines and expands in place', async ({
   await page.goto('/');
   await page.getByText('Võ Động Càn Khôn').filter({ visible: true }).first().click();
   await page.getByRole('button', { name: /Wiki truyện/ }).filter({ visible: true }).first().click();
-  await page.getByRole('radio', { name: 'Tiếng Việt' }).click();
 
   const card = page.locator('[data-entry="道宗"]');
   const summary = card.locator('[data-wiki-summary]');
