@@ -1,39 +1,29 @@
-# Two runners so the Linux and Android jobs of one release build at the same time.
+# One runner: jobs build one after another (Linux, then Android), never at the
+# same time, so a small server (8 GB RAM + swap) is enough.
 # Start:  docker compose up -d --build      Logs:  docker compose logs -f
-x-runner: &runner
-  build: .
-  image: bennovel-runner:latest
-  restart: unless-stopped
-  env_file: .env              # ACCESS_TOKEN, REPO_URL, ... (see .env.example)
-  # Leave a little for the host. Android (Gradle + 3 Rust targets) is the heavy one.
-  mem_limit: ${RUNNER_MEM_LIMIT:-7g}
-
 services:
-  runner-1:
-    <<: *runner
-    hostname: bennovel-runner-1
+  runner:
+    build: .
+    image: bennovel-runner:latest
+    hostname: bennovel-runner
+    restart: unless-stopped
+    env_file: .env              # ACCESS_TOKEN, REPO_URL, ... (see .env.example)
     environment:
-      RUNNER_NAME: bennovel-runner-1
+      RUNNER_NAME: bennovel-runner
+      # Fewer parallel rustc processes = less RAM (each can take 1-2 GB).
+      CARGO_BUILD_JOBS: ${CARGO_BUILD_JOBS:-2}
+    # RAM cap for the container, and RAM + swap it may use in total.
+    mem_limit: ${RUNNER_MEM_LIMIT:-6g}
+    memswap_limit: ${RUNNER_MEMSWAP_LIMIT:-12g}
     volumes:
-      - work-1:/_work                     # checkout + Rust target/ dir stay between builds
+      - work:/_work                       # checkout + Rust target/ dir stay between builds
       - cargo-registry:/usr/local/cargo/registry
       - gradle:/root/.gradle
-      - npm:/root/.npm
-
-  runner-2:
-    <<: *runner
-    hostname: bennovel-runner-2
-    environment:
-      RUNNER_NAME: bennovel-runner-2
-    volumes:
-      - work-2:/_work
-      - cargo-registry:/usr/local/cargo/registry
-      - gradle:/root/.gradle
+      - ./gradle.properties:/root/.gradle/gradle.properties:ro   # small Gradle heap, no daemon
       - npm:/root/.npm
 
 volumes:
-  work-1:
-  work-2:
+  work:
   cargo-registry:
   gradle:
   npm:

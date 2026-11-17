@@ -1,6 +1,6 @@
 # Self-hosted build runner
 
-Docker image + compose for GitHub Actions self-hosted runners that build the
+Docker image + compose for a GitHub Actions self-hosted runner that builds the
 Linux (AppImage, deb) and Android (APK, AAB) releases of BenNovel.
 
 ```bash
@@ -12,5 +12,8 @@ Then set the repository variable `SELF_HOSTED_RUNNER=true`
 (Settings → Secrets and variables → Actions → Variables) so
 `.github/workflows/release.yml` sends its Linux and Android jobs here.
 Pull requests from forks always build on GitHub's runners.
+
+One runner, so jobs build one at a time; `gradle.properties` and
+`CARGO_BUILD_JOBS` keep a build within 8 GB RAM + swap.
 
 Keep `NDK_VERSION` here in step with the one in the workflow.
