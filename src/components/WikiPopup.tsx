@@ -41,7 +41,7 @@ export interface WikiTerms { re: RegExp | null; byTerm: Map<string, WikiEntry> }
 export function wikiTerms(wiki: Wiki | null, lang: string): WikiTerms {
   const byTerm = new Map<string, WikiEntry>();
   for (const e of wiki?.entries ?? []) {
-    const terms = lang === RAW ? [e.name, ...e.aliases] : [e.names[lang], e.name];
+    const terms = lang === RAW ? [e.name, ...e.aliases] : [e.names[lang], e.name, ...e.aliases];
     for (const term of terms) if (term && [...term.trim()].length >= 2 && !byTerm.has(term.trim())) byTerm.set(term.trim(), e);
   }
   if (!byTerm.size) return { re: null, byTerm };

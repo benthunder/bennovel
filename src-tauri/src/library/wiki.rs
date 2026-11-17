@@ -387,6 +387,7 @@ pub fn rel_type(kind: &str) -> Option<&'static str> {
 /// How a relation reads in prompts to the model (English words for the types).
 fn rel_words(r: &Relation, lang: &str) -> String {
     match rel_type(&r.kind) {
+        Some(t) if lang == "vi" => rel_vi(t).to_string(),
         Some(t) => t.replace('_', " "),
         None => r
             .labels
@@ -395,6 +396,49 @@ fn rel_words(r: &Relation, lang: &str) -> String {
             .unwrap_or_else(|| r.kind.clone()),
     }
 }
+
+/// A relation type in the words of a Vietnamese prompt ("A là sư phụ của B").
+fn rel_vi(code: &str) -> &'static str {
+    match code {
+        "master_of" => "là sư phụ của",
+        "disciple_of" => "là đệ tử của",
+        "parent_of" => "là cha mẹ của",
+        "child_of" => "là con của",
+        "sibling_of" => "là anh chị em của",
+        "spouse_of" => "là vợ / chồng của",
+        "lover_of" => "là người yêu của",
+        "friend_of" => "là bạn của",
+        "enemy_of" => "là kẻ thù của",
+        "member_of" => "là thành viên của",
+        "leader_of" => "là người đứng đầu",
+        "located_in" => "nằm trong",
+        "owns" => "sở hữu",
+        "has_level" => "đang ở cảnh giới / cấp bậc",
+        "has_skill" => "biết",
+        _ => "liên quan đến",
+    }
+}
+
+/// A kind in the words of a Vietnamese prompt.
+fn kind_vi(kind: &str) -> &str {
+    match kind {
+        "character" => "nhân vật",
+        "place" => "địa danh",
+        "faction" => "thế lực",
+        "item" => "vật phẩm",
+        "level" => "cảnh giới / cấp bậc",
+        "skill" => "công pháp / chiêu thức",
+        "term" => "thuật ngữ",
+        "other" => "khác",
+        k => k,
+    }
+}
+
+/// What each kind code means, for the JSON and tool parts of a Vietnamese prompt.
+const KINDS_VI: &str = "character (nhân vật), place (địa danh), faction (thế lực, tông môn, gia tộc), item (vật phẩm), level (cảnh giới, cấp bậc), skill (công pháp, chiêu thức), term (thuật ngữ), other (khác)";
+
+/// What each relation code means, for a Vietnamese prompt.
+const RELS_VI: &str = "master_of (là sư phụ của), disciple_of (là đệ tử của), parent_of (là cha mẹ của), child_of (là con của), sibling_of (là anh chị em của), spouse_of (là vợ / chồng của), lover_of (là người yêu của), friend_of (là bạn của), enemy_of (là kẻ thù của), member_of (là thành viên của), leader_of (đứng đầu), located_in (nằm trong, cho địa danh hay thế lực nằm trong nơi lớn hơn), owns (sở hữu), has_level (cảnh giới / cấp bậc hiện tại của nhân vật), has_skill (công pháp, chiêu thức nhân vật biết)";
 
 fn to_json<T: Serialize>(v: &T, empty: &str) -> String {
     serde_json::to_string(v).unwrap_or_else(|_| empty.into())
@@ -862,9 +906,14 @@ pub fn tidy(conn: &Connection, novel_id: i64) -> rusqlite::Result<usize> {
     let all = entries(conn, novel_id)?;
     let mut changes = 0;
     for e in all.iter().filter(|e| e.source == "ai") {
-        let translated = e.names.values().next().map(String::as_str).unwrap_or("");
-        let common =
-            !proper_noun(&e.name, translated) || e.names.values().any(|n| !proper_noun(n, ""));
+        // Judged by the Vietnamese name when there is one (the raw one may be Chinese).
+        let translated = e
+            .names
+            .get("vi")
+            .or_else(|| e.names.values().next())
+            .map(String::as_str)
+            .unwrap_or("");
+        let common = !proper_noun(&e.name, translated);
         if common {
             remove(conn, &e.uid)?;
             changes += 1;
@@ -929,21 +978,111 @@ struct AiRelation {
     note: String,
 }
 
-/// Whether the AI's `name` (as the original writes it) with its `translated` form reads
-/// as a proper noun: two letters at least, and capitalised wherever its script has
-/// capitals ("núi", "sword" or "linh khí" are common words, not names). A Chinese name
-/// has no capitals, so its translation tells.
-fn proper_noun(name: &str, translated: &str) -> bool {
-    fn capitalised(s: &str) -> Option<bool> {
-        let c = s.trim().chars().find(|c| c.is_alphabetic())?;
+/// Words that follow a name to make a family, sect, place or building of it ("Mặc
+/// gia", "Lâm tộc", "Lin family"): the one lower-case word a proper noun may end with.
+const NAME_SUFFIXES: &[&str] = &[
+    "gia",
+    "thị",
+    "tộc",
+    "phái",
+    "môn",
+    "tông",
+    "giáo",
+    "bang",
+    "hội",
+    "quốc",
+    "triều",
+    "thành",
+    "trấn",
+    "thôn",
+    "sơn",
+    "phong",
+    "cốc",
+    "động",
+    "hồ",
+    "giang",
+    "hà",
+    "hải",
+    "châu",
+    "đảo",
+    "lâu",
+    "các",
+    "điện",
+    "cung",
+    "phủ",
+    "viện",
+    "tự",
+    "quán",
+    "trang",
+    "đường",
+    "đài",
+    "uyển",
+    "family",
+    "clan",
+    "sect",
+    "city",
+    "town",
+    "village",
+    "mountain",
+    "peak",
+    "valley",
+    "lake",
+    "river",
+    "sea",
+    "island",
+    "palace",
+    "hall",
+    "temple",
+    "manor",
+    "kingdom",
+    "empire",
+    "dynasty",
+    "academy",
+    "pavilion",
+    "tower",
+    "house",
+    "realm",
+];
+
+/// Whether `name`, in a script with capitals, is written as a proper noun: its first
+/// word capitalised and, past one word, another capitalised word too ("Trần Bình An",
+/// "núi Lạc Phách" fails the first, "Bé gái váy hồng" or "Tổ trạch" at the start of a
+/// sentence fail the second), or a name with one of `NAME_SUFFIXES` ("Mặc gia"). None
+/// for a script without capitals (Chinese…).
+fn capitalised_name(name: &str) -> Option<bool> {
+    let words: Vec<&str> = name.split_whitespace().collect();
+    let cap = |w: &str| -> Option<bool> {
+        let c = w.chars().find(|c| c.is_alphabetic())?;
         (c.is_uppercase() || c.is_lowercase()).then(|| c.is_uppercase())
+    };
+    let first = words.iter().find_map(|w| cap(w))?;
+    if !first {
+        return Some(false);
     }
+    let rest: Vec<&str> = words
+        .iter()
+        .skip(1)
+        .copied()
+        .filter(|w| cap(w).is_some())
+        .collect();
+    Some(
+        rest.is_empty()
+            || rest.iter().any(|w| cap(w) == Some(true))
+            || (rest.len() == 1 && NAME_SUFFIXES.contains(&rest[0].to_lowercase().as_str())),
+    )
+}
+
+/// Whether the AI's `name` (as the original writes it) with its `translated` form reads
+/// as a proper noun: two letters at least, and capitalised as a name wherever its script
+/// has capitals (`capitalised_name`: "núi", "linh khí", "Bé gái váy hồng" are not). A
+/// Chinese name has no capitals, so its translation tells.
+fn proper_noun(name: &str, translated: &str) -> bool {
     if name.trim().chars().count() < 2 {
         return false;
     }
-    match capitalised(name) {
-        Some(cap) => cap,
-        None => capitalised(translated).unwrap_or(true),
+    match capitalised_name(name) {
+        Some(ok) => ok,
+        None => capitalised_name(translated).unwrap_or(true),
     }
 }
 
@@ -1420,9 +1559,12 @@ pub fn context(
         by_entry.entry(&n.entry_uid).or_default().push(n);
     }
     order.truncate(CONTEXT_ENTRIES);
-    let mut s = String::from(
-        "\nProper nouns in this text (original → as this translation writes it, kind); always write them this way, and an alias the same as its entry's name unless the text uses it as a nickname:\n",
-    );
+    let vi = lang == "vi";
+    let mut s = String::from(if vi {
+        "\nDANH SÁCH TÊN RIÊNG trong đoạn này (tên gốc → tên viết trong bản tiếng Việt, loại). Luôn viết đúng như vậy; tên gọi khác của một mục chỉ người hay vật đó, giữ tên gọi khác khi văn bản dùng nó như biệt danh:\n"
+    } else {
+        "\nProper nouns in this text (original → as this translation writes it, kind); always write them this way, and an alias the same as its entry's name unless the text uses it as a nickname:\n"
+    });
     let mut picked: BTreeMap<String, Entry> = BTreeMap::new();
     for uid in &order {
         let Some(e) = by_uid(conn, uid)? else {
@@ -1434,12 +1576,22 @@ pub fn context(
         } else {
             format!("{} → {translated}", e.name)
         };
-        s.push_str(&format!("- {shown} ({})", e.kind));
-        if !e.aliases.is_empty() {
-            s.push_str(&format!("; also called {}", e.aliases.join(", ")));
-        }
-        if let Some(rank) = e.rank {
-            s.push_str(&format!("; rank {rank}"));
+        if vi {
+            s.push_str(&format!("- {shown} ({})", kind_vi(&e.kind)));
+            if !e.aliases.is_empty() {
+                s.push_str(&format!("; tên gọi khác: {}", e.aliases.join(", ")));
+            }
+            if let Some(rank) = e.rank {
+                s.push_str(&format!("; bậc {rank}"));
+            }
+        } else {
+            s.push_str(&format!("- {shown} ({})", e.kind));
+            if !e.aliases.is_empty() {
+                s.push_str(&format!("; also called {}", e.aliases.join(", ")));
+            }
+            if let Some(rank) = e.rank {
+                s.push_str(&format!("; rank {rank}"));
+            }
         }
         s.push('\n');
         picked.insert(e.uid.clone(), e);
@@ -1449,7 +1601,18 @@ pub fn context(
         .filter_map(|r| {
             let a = picked.get(&r.from_uid)?;
             let b = picked.get(&r.to_uid)?;
-            let mut line = format!("- {} — {} — {}", a.name, rel_words(&r, lang), b.name);
+            let name = |e: &Entry| {
+                e.names
+                    .get(lang)
+                    .filter(|n| vi && !n.is_empty())
+                    .cloned()
+                    .unwrap_or_else(|| e.name.clone())
+            };
+            let mut line = if vi {
+                format!("- {} {} {}", name(a), rel_words(&r, lang), name(b))
+            } else {
+                format!("- {} — {} — {}", a.name, rel_words(&r, lang), b.name)
+            };
             if !r.note.trim().is_empty() {
                 line.push_str(&format!(" ({})", head(r.note.trim(), 160)));
             }
@@ -1459,7 +1622,11 @@ pub fn context(
         .take(CONTEXT_ENTRIES)
         .collect();
     if !rels.is_empty() {
-        s.push_str("Relationships:\n");
+        s.push_str(if vi {
+            "Quan hệ:\n"
+        } else {
+            "Relationships:\n"
+        });
         s.extend(rels);
     }
     Ok(s)
@@ -1468,13 +1635,15 @@ pub fn context(
 /* ---------- Learning from a chapter ---------- */
 
 fn tools(lang: &str) -> Value {
+    let vi = lang == "vi";
     let lang = super::translate::lang_name(lang);
+    let t = |v: &str, e: String| if vi { v.to_string() } else { e };
     json!([
         {
             "type": "function",
             "function": {
                 "name": "wiki_search",
-                "description": "Find entries of this novel's wiki by name, alias or description.",
+                "description": t("Tìm mục trong wiki của truyện theo tên, tên gọi khác hoặc mô tả.", "Find entries of this novel's wiki by name, alias or description.".to_string()),
                 "parameters": {
                     "type": "object",
                     "properties": { "query": { "type": "string" } },
@@ -1486,16 +1655,16 @@ fn tools(lang: &str) -> Value {
             "type": "function",
             "function": {
                 "name": "wiki_upsert",
-                "description": "Add an entry, or add new facts to an existing one (matched by its original name or an alias).",
+                "description": t("Thêm một mục, hoặc bổ sung thông tin cho mục đã có (khớp theo tên gốc hoặc tên gọi khác).", "Add an entry, or add new facts to an existing one (matched by its original name or an alias).".to_string()),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "name": { "type": "string", "description": "The name exactly as written in the original text." },
+                        "name": { "type": "string", "description": t("Tên đúng như văn bản gốc viết.", "The name exactly as written in the original text.".to_string()) },
                         "kind": { "type": "string", "enum": KINDS },
-                        "translated": { "type": "string", "description": format!("The name as used in the {lang} translation.") },
-                        "aliases": { "type": "array", "items": { "type": "string" }, "description": "Every other way the original text refers to this same one: nicknames, titles, epithets, descriptions that stand for it (\"the girl in green\")." },
-                        "summary": { "type": "string", "description": format!("In {lang}, at most three sentences: who or what it is, as known so far. Write the whole summary, old facts included.") },
-                        "rank": { "type": "integer", "description": "Only for kind level: its place in its ladder of ranks or cultivation realms, 1 for the lowest." }
+                        "translated": { "type": "string", "description": t("Tên dùng trong bản tiếng Việt.", format!("The name as used in the {lang} translation.")) },
+                        "aliases": { "type": "array", "items": { "type": "string" }, "description": t("Mọi cách khác văn bản gốc dùng để chỉ cùng người hay vật này: biệt danh, danh hiệu, cách gọi, mô tả thay cho tên.", "Every other way the original text refers to this same one: nicknames, titles, epithets, descriptions that stand for it (\"the girl in green\").".to_string()) },
+                        "summary": { "type": "string", "description": t("Bằng tiếng Việt, tối đa ba câu: người hay vật này là gì, theo những gì đã biết. Viết lại cả tóm tắt, gồm cả thông tin cũ.", format!("In {lang}, at most three sentences: who or what it is, as known so far. Write the whole summary, old facts included.")) },
+                        "rank": { "type": "integer", "description": t("Chỉ cho loại level: thứ bậc trong thang cảnh giới hay cấp bậc, 1 là thấp nhất.", "Only for kind level: its place in its ladder of ranks or cultivation realms, 1 for the lowest.".to_string()) }
                     },
                     "required": ["name", "kind"]
                 }
@@ -1505,14 +1674,14 @@ fn tools(lang: &str) -> Value {
             "type": "function",
             "function": {
                 "name": "wiki_relate",
-                "description": "Record a relationship between two entries, by their original names.",
+                "description": t("Ghi quan hệ giữa hai mục, theo tên gốc.", "Record a relationship between two entries, by their original names.".to_string()),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "from": { "type": "string" },
                         "to": { "type": "string" },
-                        "relation": { "type": "string", "description": format!("What `from` is to `to`: one of {} (located_in for a place or faction inside a bigger place, has_level for a character's current rank or realm, has_skill for a technique or ability a character knows). Only when none fits, a few words in {lang}.", REL_TYPES.join(", ")) },
-                        "note": { "type": "string", "description": format!("In {lang}: the circumstances (how it came about, what one calls the other), one sentence.") }
+                        "relation": { "type": "string", "description": if vi { format!("`from` là gì của `to`: một trong {RELS_VI}. Chỉ khi không loại nào hợp, viết vài chữ tiếng Việt.") } else { format!("What `from` is to `to`: one of {} (located_in for a place or faction inside a bigger place, has_level for a character's current rank or realm, has_skill for a technique or ability a character knows). Only when none fits, a few words in {lang}.", REL_TYPES.join(", ")) } },
+                        "note": { "type": "string", "description": t("Bằng tiếng Việt, một câu: hoàn cảnh (vì sao có quan hệ này, hai bên gọi nhau thế nào).", format!("In {lang}: the circumstances (how it came about, what one calls the other), one sentence.")) }
                     },
                     "required": ["from", "to", "relation"]
                 }
@@ -1522,6 +1691,16 @@ fn tools(lang: &str) -> Value {
 }
 
 fn learn_rules(lang: &str, genre: &str) -> String {
+    if lang == "vi" {
+        let names = if genre == "nonfiction" {
+            " Đây là sách tài liệu thực tế: tên dịch luôn là tên gốc tiếng Anh, không dịch."
+        } else {
+            ""
+        };
+        return format!(
+            "Bạn ghi wiki cho một truyện đang được chuyển sang tiếng Việt. Từ văn bản dưới đây, chỉ ghi các danh từ riêng có vai trò trong truyện: tên riêng của nhân vật, địa danh, thế lực hay tông môn, vật phẩm, cảnh giới hay cấp bậc (kèm số bậc) và công pháp hay chiêu thức có tên. Không ghi danh từ chung hay từ mô tả, dù quan trọng với cảnh truyện: một nơi hay một vật chỉ được ghi khi nó có tên riêng. Tên riêng thường viết hoa; cụm không viết hoa hoặc chỉ là mô tả (người, đồ vật, nơi chốn chung chung) thì không phải tên riêng. Ghi mỗi tên trọn vẹn, đúng như văn bản gốc viết, không cắt một phần của từ hay tên dài hơn. Biệt danh, danh hiệu, cách gọi hay mô tả dùng để chỉ một nhân vật hay nơi đã có tên thì không phải mục mới: ghi vào tên gọi khác (aliases) của mục đó. Ghi các quan hệ: giữa nhân vật với nhau, với thế lực, cảnh giới hiện tại, công pháp nhân vật biết, nơi nào nằm trong nơi nào; mỗi quan hệ kèm ghi chú bằng tiếng Việt về hoàn cảnh (vì sao có quan hệ đó, hai bên gọi nhau thế nào). Viết mọi tên dịch, tóm tắt, quan hệ tự do và ghi chú chỉ bằng tiếng Việt, không trộn ngôn ngữ. Ghi hết những gì văn bản cho biết về một mục, kể cả tình tiết về sau (không cần tránh tiết lộ nội dung), và liên kết nó với các mục liên quan; không đoán.{names}"
+        );
+    }
     let l = super::translate::lang_name(lang);
     let names = if genre == "nonfiction" {
         " This book is non-fiction: the translated name is always the original English name, never translated.".to_string()
@@ -1534,6 +1713,12 @@ fn learn_rules(lang: &str, genre: &str) -> String {
 }
 
 fn learn_prompt(lang: &str, genre: &str) -> String {
+    if lang == "vi" {
+        return format!(
+            "{} Dùng các công cụ: wiki_search để xem wiki đã biết gì (tìm cả biệt danh trước khi thêm mục mới), wiki_upsert để thêm hoặc cập nhật một mục, wiki_relate để ghi quan hệ (thêm cả hai mục trước). Khi wiki đã cập nhật xong, trả lời DONE.",
+            learn_rules(lang, genre)
+        );
+    }
     format!(
         "{} Use the tools: wiki_search to check what is known (search a nickname too before adding it as new), wiki_upsert to add or update an entry, wiki_relate for relationships (add both entries first). When the wiki is up to date, reply with DONE.",
         learn_rules(lang, genre)
@@ -1542,6 +1727,11 @@ fn learn_prompt(lang: &str, genre: &str) -> String {
 
 /// The JSON object the AI answers with when it does not use the tools.
 fn json_shape(lang: &str) -> String {
+    if lang == "vi" {
+        return format!(
+            "{{\"entries\": [{{\"name\": tên gốc, \"kind\": một trong {KINDS_VI}, \"translated\": tên trong bản tiếng Việt, \"aliases\": [biệt danh, danh hiệu và các cách văn bản gốc gọi mục này], \"summary\": tối đa ba câu tiếng Việt, \"rank\": số bậc, chỉ cho level}}], \"relations\": [{{\"from\": tên gốc, \"to\": tên gốc, \"relation\": một trong {RELS_VI} (nếu không có loại nào hợp thì vài chữ tiếng Việt), \"note\": hoàn cảnh, bằng tiếng Việt}}]}}"
+        );
+    }
     format!(
         "{{\"entries\": [{{\"name\": original name, \"kind\": one of {}, \"translated\": name in the translation, \"aliases\": [nicknames, titles and other ways the original refers to it], \"summary\": at most three sentences in {l}, \"rank\": number for a level only}}], \"relations\": [{{\"from\": original name, \"to\": original name, \"relation\": one of {} (else a few words in {l}), \"note\": the circumstances in {l}}}]}}",
         KINDS.join(", "),
@@ -1551,6 +1741,13 @@ fn json_shape(lang: &str) -> String {
 }
 
 fn json_prompt(lang: &str, genre: &str) -> String {
+    if lang == "vi" {
+        return format!(
+            "{} Chỉ trả về đúng một đối tượng JSON, không gì khác (giữ nguyên tên khóa và mã tiếng Anh): {}",
+            learn_rules(lang, genre),
+            json_shape(lang)
+        );
+    }
     format!(
         "{} Reply with only one JSON object and nothing else: {}",
         learn_rules(lang, genre),
@@ -1561,6 +1758,14 @@ fn json_prompt(lang: &str, genre: &str) -> String {
 /// What a translation prompt adds so the same request also feeds the wiki: after the
 /// translated text, `mark` on its own line and the facts of that part as JSON.
 pub fn extract_prompt(lang: &str, mark: &str, genre: &str) -> String {
+    if lang == "vi" {
+        return format!(
+            "\n\nGHI WIKI. {} Sau phần văn bản đã viết, viết một dòng chỉ có {mark}, rồi đúng một đối tượng JSON, không gì khác (giữ nguyên tên khóa và mã tiếng Anh): {}, thêm hai danh sách: {}. Nếu văn bản không có gì đáng ghi, viết {{\"entries\": [], \"relations\": []}}.",
+            learn_rules(lang, genre),
+            json_shape(lang),
+            super::cast::shape(lang)
+        );
+    }
     format!(
         "\n\nAlso keep the novel's wiki. {} After the translated text, write a line with only {mark}, then one JSON object and nothing else: {}, with two more lists in it: {}. When the text shows nothing worth keeping, write {{\"entries\": [], \"relations\": []}}.",
         learn_rules(lang, genre),
@@ -1580,7 +1785,11 @@ fn learn_input(
     let known = mentioned(conn, novel_id, original)?;
     let mut s = String::new();
     if !known.is_empty() {
-        s.push_str("Already in the wiki:\n");
+        s.push_str(if lang == "vi" {
+            "Wiki đã có:\n"
+        } else {
+            "Already in the wiki:\n"
+        });
         for e in known.iter().take(CONTEXT_ENTRIES) {
             s.push_str(&format!(
                 "- {} ({}){}: {}\n",
@@ -1595,10 +1804,19 @@ fn learn_input(
         }
         s.push('\n');
     }
-    s.push_str("Original chapter:\n");
+    let vi = lang == "vi";
+    s.push_str(if vi {
+        "Chương gốc:\n"
+    } else {
+        "Original chapter:\n"
+    });
     s.push_str(&head(original, ORIGINAL_CHARS));
     if !translated.is_empty() {
-        s.push_str("\n\nIts translation:\n");
+        s.push_str(if vi {
+            "\n\nBản tiếng Việt:\n"
+        } else {
+            "\n\nIts translation:\n"
+        });
         s.push_str(&head(translated, TRANSLATED_CHARS));
     }
     Ok(s)
@@ -2539,9 +2757,9 @@ mod tests {
         index_names(&conn, None, novel, "vi").unwrap();
         let ctx = context(&conn, novel, "动少 看着 林琅天。", "vi").unwrap();
         // Names only, no descriptions: raw → translated (kind).
-        assert!(ctx.contains("- 林动 → Lâm Động (character); also called 动少\n"));
+        assert!(ctx.contains("- 林动 → Lâm Động (nhân vật); tên gọi khác: 动少\n"));
         assert!(!ctx.contains("Nhân vật chính"));
-        assert!(ctx.contains("林琅天 — enemy of — 林动 (Tranh ngôi gia chủ.)"));
+        assert!(ctx.contains("林琅天 là kẻ thù của Lâm Động (Tranh ngôi gia chủ.)"));
         assert!(!ctx.contains("炎城"));
         assert_eq!(context(&conn, novel, "nothing here", "vi").unwrap(), "");
         // The vector table holds every name and alias with the translation and kind.
@@ -2571,6 +2789,10 @@ mod tests {
             ai("núi", "place", "núi", &[]),
             ai("sông", "place", "", &[]),
             ai("灵气", "term", "linh khí", &[]),
+            ai("Bé gái váy hồng", "character", "Bé gái váy hồng", &[]),
+            ai("Tổ trạch", "place", "Tổ trạch", &[]),
+            ai("lầu trúc", "place", "lầu trúc", &[]),
+            ai("núi Lạc Phách", "place", "", &[]),
             ai("X", "character", "X", &[]),
         ] {
             assert_eq!(upsert_ai(&conn, novel, "vi", Some(1), item).unwrap(), None);
@@ -2580,12 +2802,15 @@ mod tests {
             ai("Thanh Dương trấn", "place", "Thanh Dương trấn", &[]),
             ai("林动", "character", "Lâm Động", &[]),
             ai("道宗", "faction", "", &[]),
+            ai("Mặc gia", "faction", "Mặc gia", &[]),
+            ai("Ngõ Nê Bình", "place", "Ngõ Nê Bình", &[]),
+            ai("林家", "faction", "Lin family", &[]),
         ] {
             assert!(upsert_ai(&conn, novel, "vi", Some(1), item)
                 .unwrap()
                 .is_some());
         }
-        assert_eq!(load(&conn, novel).unwrap().entries.len(), 3);
+        assert_eq!(load(&conn, novel).unwrap().entries.len(), 6);
     }
 
     #[test]
