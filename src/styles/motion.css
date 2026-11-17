@@ -113,6 +113,16 @@ body { background: var(--color-neutral-200); }
   .scrim, .dialog-backdrop { background: color-mix(in srgb, var(--color-accent-900) 45%, transparent); }
 }
 
+/* WebKitGTK (desktop Linux): no live blur at all, see main.tsx. Same solid fallback. */
+:root[data-engine='webkitgtk'] :is(.bottom-nav, .rail, .side, .sheet, .dialog, .toast, .glass, .reader-chrome--glass, .scrim, .dialog-backdrop) {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+:root[data-engine='webkitgtk'] :is(.bottom-nav, .sheet, .dialog) { background: var(--color-bg); }
+:root[data-engine='webkitgtk'] :is(.rail, .side) { background: var(--color-surface); }
+:root[data-engine='webkitgtk'] .toast { background: var(--color-accent-900); }
+:root[data-engine='webkitgtk'] :is(.scrim, .dialog-backdrop) { background: color-mix(in srgb, var(--color-accent-900) 45%, transparent); }
+
 /* — controls: smooth hover, a little give on press — */
 button, .chip, .btn, .seg-opt, .input, a { touch-action: manipulation; }
 .btn, .icon-btn, .chip, .text-link, .menu-row, .novel-row, .top-row, .shelf-item, .seg-opt,
