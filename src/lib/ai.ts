@@ -29,9 +29,17 @@ export const LLM_PROVIDERS = [
 export type LlmProvider = (typeof LLM_PROVIDERS)[number]['id'];
 
 /** The saved LLM, as shown: no key. */
-export interface LlmSettings { provider: string; baseUrl: string; model: string; hasKey: boolean }
-/** LLM settings to save; an empty key keeps the saved one. */
-export interface LlmConfig { provider: string; baseUrl: string; model: string; apiKey: string }
+export interface LlmSettings { provider: string; baseUrl: string; model: string; embedModel: string; hasKey: boolean }
+/** LLM settings to save; an empty key keeps the saved one. `embedModel` (optional) fills the vector table of proper nouns. */
+export interface LlmConfig { provider: string; baseUrl: string; model: string; embedModel: string; apiKey: string }
+
+/** Genres a book can be set to; forms of address in its translation follow them. */
+export const AI_GENRES = ['wuxia', 'xianxia', 'supernatural', 'romance', 'politics', 'nonfiction'] as const;
+export type AiGenre = (typeof AI_GENRES)[number];
+/** How a book is translated besides language and style: its genre ('' for none) and the user's own instructions. */
+export interface AiPrefs { genre: AiGenre | ''; instructions: string }
+export const getAiPrefs = (user: string, novelId: number) => invoke<AiPrefs>('ai_prefs_get', { user, novelId });
+export const setAiPrefs = (user: string, novelId: number, prefs: AiPrefs) => invoke<void>('ai_prefs_set', { user, novelId, prefs });
 
 export interface AiChapter { title: string; paragraphs: string[]; mode: 'translate' | 'rewrite'; model: string | null }
 export interface AiVersion { lang: AiLang; style: string; chapters: number }

@@ -28,7 +28,7 @@ The more of a book the AI translates, the better it gets at the book's own names
 Each chapter is a run through a small [LangGraph](https://github.com/langchain-ai/langgraph) graph (the Rust port, [`rust-langgraph`](https://crates.io/crates/rust-langgraph), in [`translate.rs`](src-tauri/src/library/translate.rs)):
 
 1. **detect** — names the book's language and picks translate vs. rewrite.
-2. **recall** — pulls the wiki entries, characters and forms of address this chapter names, found by name/alias in one pass ([`aho-corasick`](https://crates.io/crates/aho-corasick)); each part of the chapter gets only the ones it mentions. No embeddings: everything lives in SQLite.
+2. **recall** — pulls the wiki entries, characters and forms of address this chapter names, found by name/alias as whole words in one pass ([`aho-corasick`](https://crates.io/crates/aho-corasick)); each part of the chapter gets only the ones it mentions. Proper nouns go in as `original → translation (kind)` from the book's vector table (`wiki_names`, embedded with [`sqlite-vec`](https://crates.io/crates/sqlite-vec) when an embedding model is set). With an embedding model, the phrases of a chapter that look like names are also looked up in that table before it is translated, so a name the convert wrote a little differently still finds its entry; names that land together are merged into one entry. The book's genre sets the forms of address, and the reader can add their own instructions.
 3. **translate / rewrite** — the chapter, with that context in the prompt.
 4. **save** — the result is stored; it's never used as input to a later translation.
 5. **learn** — the model reads the chapter it just produced back through tool calls (`wiki_search`, `wiki_upsert`, `wiki_relate`) and grows the book's **wiki**: characters, places, factions, items, terms and how they relate — in every language, kept in sync.
@@ -42,7 +42,7 @@ That wiki is what **recall** reads next chapter — a small retrieval-augmented 
 | UI | React 19, TypeScript, Vite, hand-rolled stack-based router (no react-router) |
 | Shell | Tauri v2 — one codebase to desktop (Linux/macOS/Windows) and mobile (Android/iOS) |
 | Storage | `rusqlite` (bundled SQLite), one file per device under the user's app data — no server |
-| Retrieval / AI memory | Plain SQLite tables (wiki, per-chapter facts, cast and forms of address), matched by name with `aho-corasick` |
+| Retrieval / AI memory | SQLite tables (wiki, per-chapter facts, cast and forms of address) matched by whole-word name with `aho-corasick`, plus a vector table of proper nouns (`sqlite-vec`) |
 | AI pipeline | `rust-langgraph` (LangGraph for Rust), talking to any OpenAI-compatible chat API over `ureq` |
 | Book formats | `epub`, `pdfium-render` (PDF), `djvu-rs`, `libchm`, `zip` + `quick-xml` (DOCX/ODT/FB2/EPUB), `encoding_rs` (legacy encodings) |
 | OCR | Tesseract.js (`tesseract.js`), bundled and run entirely on-device |
@@ -87,7 +87,7 @@ Truyện càng được dịch nhiều, AI càng dịch tên riêng của truy�
 Mỗi chương đi qua một đồ thị [LangGraph](https://github.com/langchain-ai/langgraph) nhỏ (bản port sang Rust, [`rust-langgraph`](https://crates.io/crates/rust-langgraph), trong [`translate.rs`](src-tauri/src/library/translate.rs)):
 
 1. **detect** — nhận diện ngôn ngữ gốc của truyện, chọn dịch hay viết lại.
-2. **recall** — lấy ra các mục wiki, nhân vật và cách xưng hô có tên trong chương, tìm theo tên/biệt danh trong một lượt ([`aho-corasick`](https://crates.io/crates/aho-corasick)); mỗi phần của chương chỉ nhận những gì nó nhắc tới. Không dùng embedding: mọi thứ nằm trong SQLite.
+2. **recall** — lấy ra các mục wiki, nhân vật và cách xưng hô có tên trong chương, tìm theo nguyên từ của tên/biệt danh trong một lượt ([`aho-corasick`](https://crates.io/crates/aho-corasick)); mỗi phần của chương chỉ nhận những gì nó nhắc tới. Danh từ riêng được đưa vào dạng `tên gốc → tên dịch (loại)` từ bảng vector của truyện (`wiki_names`, embedding bằng [`sqlite-vec`](https://crates.io/crates/sqlite-vec) khi có model embedding). Khi có model embedding, các cụm trông như tên riêng trong chương cũng được tra trong bảng này trước khi dịch, nên tên mà bản convert viết hơi khác vẫn tìm đúng mục; các tên nằm sát nhau được gộp vào một mục. Thể loại truyện quyết định cách xưng hô, và người đọc có thể thêm yêu cầu riêng.
 3. **translate / rewrite** — dịch chương, với phần ngữ cảnh đó đưa vào prompt.
 4. **save** — lưu kết quả; kết quả này không bao giờ được dùng làm đầu vào cho lần dịch sau.
 5. **learn** — model đọc lại chính chương vừa dịch xong, qua các tool call (`wiki_search`, `wiki_upsert`, `wiki_relate`), rồi bồi đắp thêm cho **wiki** của truyện: nhân vật, địa danh, phe phái, vật phẩm, thuật ngữ và quan hệ giữa chúng — đồng bộ ở mọi ngôn ngữ.
@@ -101,7 +101,7 @@ Wiki đó chính là thứ **recall** sẽ đọc lại ở chương kế tiếp
 | Giao diện | React 19, TypeScript, Vite, router tự viết dạng stack (không dùng react-router) |
 | Vỏ ứng dụng | Tauri v2 — một codebase cho desktop (Linux/macOS/Windows) và mobile (Android/iOS) |
 | Lưu trữ | `rusqlite` (SQLite đóng gói sẵn), mỗi máy một file trong thư mục dữ liệu app — không có server |
-| Truy xuất / bộ nhớ AI | Các bảng SQLite thường (wiki, metadata theo chương, nhân vật và xưng hô), tìm theo tên bằng `aho-corasick` |
+| Truy xuất / bộ nhớ AI | Các bảng SQLite (wiki, metadata theo chương, nhân vật và xưng hô) tìm theo nguyên từ bằng `aho-corasick`, cùng bảng vector tên riêng (`sqlite-vec`) |
 | Pipeline AI | `rust-langgraph` (LangGraph viết lại bằng Rust), gọi bất kỳ API chat tương thích OpenAI nào qua `ureq` |
 | Định dạng sách | `epub`, `pdfium-render` (PDF), `djvu-rs`, `libchm`, `zip` + `quick-xml` (DOCX/ODT/FB2/EPUB), `encoding_rs` (bảng mã cũ) |
 | OCR | Tesseract.js (`tesseract.js`), đóng gói sẵn và chạy hoàn toàn trên máy |

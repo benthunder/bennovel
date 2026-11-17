@@ -35,14 +35,14 @@ jobs:
     name: Linux (AppImage + deb)
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -66,7 +66,7 @@ jobs:
           npx tauri build --bundles appimage,deb
           --config '{"bundle":{"resources":{"pdfium/libpdfium.so":"pdfium/libpdfium.so"}}}'
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: linux
           path: |
@@ -80,14 +80,14 @@ jobs:
     env:
       NDK_VERSION: 27.0.12077973
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
@@ -181,14 +181,14 @@ jobs:
           fi
           rm -f release.keystore
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: android
           path: out/*.apk
           if-no-files-found: error
 
       # Upload this file to Play Console (it is not attached to the GitHub Release).
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: android-aab
           path: out-aab/*.aab
@@ -200,7 +200,7 @@ jobs:
     needs: [linux, android]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with:
           path: dist
           merge-multiple: true

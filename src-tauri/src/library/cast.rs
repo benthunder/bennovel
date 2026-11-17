@@ -20,6 +20,9 @@ const MAX_ADDRESS: usize = 40;
 
 /// The two lists the translation requests add to their facts.
 pub fn shape(lang: &str) -> String {
+    if lang == "vi" {
+        return "\"people\": [{\"name\": tên gốc của nhân vật, \"gender\": male (nam), female (nữ) hoặc unknown (chưa rõ), \"age\": child (trẻ con), teen (thiếu niên), young adult (thanh niên), adult (trưởng thành), middle-aged (trung niên) hoặc elder (già)}] cho các nhân vật trong văn bản, và \"address\": [{\"from\": tên gốc người nói, \"to\": tên gốc người nghe, \"self_raw\": người nói tự xưng thế nào trong văn bản gốc, \"calls_raw\": người nói gọi người nghe thế nào trong văn bản gốc, \"self\": tự xưng trong bản tiếng Việt, \"calls\": cách gọi trong bản tiếng Việt, \"tone\": respectful (kính trọng), familiar (thân quen), intimate (thân mật), cold (lạnh nhạt), hostile (thù địch) hoặc playful (đùa cợt)}] cho từng cặp nói chuyện với nhau".into();
+    }
     format!(
         "\"people\": [{{\"name\": original name of a character, \"gender\": male, female or unknown, \"age\": child, teen, young adult, adult, middle-aged or elder}}] for the characters in the text, and \"address\": [{{\"from\": original name of the speaker, \"to\": original name of the one spoken to, \"self_raw\": how the speaker refers to themself as written in the original text, \"calls_raw\": how the speaker calls the other as written in the original text, \"self\": the same in the {lang} translation, \"calls\": the same in the {lang} translation, \"tone\": respectful, familiar, intimate, cold, hostile or playful}}] for each pair who speak to each other",
         lang = super::translate::lang_name(lang)
@@ -190,6 +193,30 @@ pub struct Cast {
     /// Name, gender, age.
     people: Vec<(String, String, String)>,
     pairs: Vec<Pair>,
+    /// The prompt is written in Vietnamese.
+    vi: bool,
+}
+
+/// A gender, age or tone word in a Vietnamese prompt.
+fn word_vi(w: &str) -> &str {
+    match w {
+        "male" => "nam",
+        "female" => "nữ",
+        "unknown" => "chưa rõ",
+        "child" => "trẻ con",
+        "teen" => "thiếu niên",
+        "young adult" => "thanh niên",
+        "adult" => "trưởng thành",
+        "middle-aged" => "trung niên",
+        "elder" => "già",
+        "respectful" => "kính trọng",
+        "familiar" => "thân quen",
+        "intimate" => "thân mật",
+        "cold" => "lạnh nhạt",
+        "hostile" => "thù địch",
+        "playful" => "đùa cợt",
+        w => w,
+    }
 }
 
 /// Which of `names` the text has, in one pass (names.rs).
@@ -234,7 +261,10 @@ pub fn load(conn: &Connection, novel_id: i64, text: &str, lang: &str) -> rusqlit
             })
         })?
         .collect::<rusqlite::Result<_>>()?;
-    Ok(Cast::from(people, pairs, text))
+    Ok(Cast {
+        vi: lang == "vi",
+        ..Cast::from(people, pairs, text)
+    })
 }
 
 impl Cast {
@@ -251,6 +281,7 @@ impl Cast {
                 .into_iter()
                 .filter(|p| here.contains(&p.from) && here.contains(&p.to))
                 .collect(),
+            vi: false,
         }
     }
 
@@ -259,19 +290,36 @@ impl Cast {
     /// the words this translation used for them. Empty when nothing is known of them.
     pub fn prompt(&self, text: &str) -> String {
         let mine = Cast::from(self.people.clone(), self.pairs.clone(), text);
+        let vi = self.vi;
+        let w = |x: &'_ str| -> String {
+            if vi {
+                word_vi(x).to_string()
+            } else {
+                x.to_string()
+            }
+        };
         let mut s = String::new();
         if !mine.people.is_empty() {
-            s.push_str("\nCharacters in this text (keep their gender and age in pronouns and forms of address):\n");
+            s.push_str(if vi {
+                "\nNHÂN VẬT trong đoạn này (giữ đúng giới tính và tuổi khi chọn đại từ, xưng hô):\n"
+            } else {
+                "\nCharacters in this text (keep their gender and age in pronouns and forms of address):\n"
+            });
             for (name, gender, age) in mine.people.iter().take(MAX_PEOPLE) {
-                let about: Vec<&str> = [gender.as_str(), age.as_str()]
+                let about: Vec<String> = [gender.as_str(), age.as_str()]
                     .into_iter()
                     .filter(|x| !x.is_empty())
+                    .map(w)
                     .collect();
                 s.push_str(&format!("- {name}: {}\n", about.join(", ")));
             }
         }
         if !mine.pairs.is_empty() {
-            s.push_str("\nHow they address each other (speaker → listener: how the speaker calls themself; how they call the listener; tone), as the original writes it → as this translation wrote it before; keep it unless the story changes their relationship:\n");
+            s.push_str(if vi {
+                "\nCÁCH XƯNG HÔ (người nói → người nghe: người nói tự xưng; gọi người nghe; giọng), theo văn bản gốc → theo bản tiếng Việt trước đó; giữ nguyên trừ khi quan hệ trong truyện thay đổi:\n"
+            } else {
+                "\nHow they address each other (speaker → listener: how the speaker calls themself; how they call the listener; tone), as the original writes it → as this translation wrote it before; keep it unless the story changes their relationship:\n"
+            });
             for p in mine.pairs.iter().take(MAX_ADDRESS) {
                 let word = |raw: &str, done: &Option<String>| match done.as_deref() {
                     Some(t) if !t.is_empty() && !raw.is_empty() => format!("{raw} → {t}"),
@@ -287,7 +335,7 @@ impl Cast {
                     word(&p.calls_raw, &p.calls)
                 );
                 if !p.tone.is_empty() {
-                    line.push_str(&format!("; {}", p.tone));
+                    line.push_str(&format!("; {}", w(&p.tone)));
                 }
                 s.push_str(&line);
                 s.push('\n');
@@ -329,13 +377,13 @@ mod tests {
         assert_eq!(keep(&conn, novel, 10, "vi", &earlier).unwrap(), 0);
 
         let s = context(&conn, novel, "林动看着青竹。", "vi").unwrap();
-        assert!(s.contains("- 林动: male, young adult"));
-        assert!(s.contains("- 青竹: female"));
-        assert!(s.contains("- 林动 → 青竹: 我 → ta; 你 → nàng; intimate"));
+        assert!(s.contains("- 林动: nam, thanh niên"));
+        assert!(s.contains("- 青竹: nữ"));
+        assert!(s.contains("- 林动 → 青竹: 我 → ta; 你 → nàng; thân mật"));
         // Each part only gets who it names.
         let cast = load(&conn, novel, "林动看着青竹。", "vi").unwrap();
         let part = cast.prompt("林动走了。");
-        assert!(part.contains("- 林动: male") && !part.contains("青竹"));
+        assert!(part.contains("- 林动: nam") && !part.contains("青竹"));
         // Picked by the raw names the chapter has.
         assert!(context(&conn, novel, "Nobody here.", "vi")
             .unwrap()
