@@ -550,7 +550,8 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
       {tools && (
         <ReaderTools key={tools} initialTab={tools} glossary={NO_GLOSSARY} lang={lang} rules={rules} onRulesChange={changeRules}
           onClose={() => setTools(null)} onTranslate={tr => void translateChapter(tr)}
-          onTranslateFrom={place ? translateFrom : undefined} aiLangs={[...AI_LANGS]} aiHint={t('ai.hint')} />
+          onTranslateFrom={place ? translateFrom : undefined} aiLangs={[...AI_LANGS]} aiHint={t('ai.hint')}
+          aiBook={place ? { user: place.user, novelId: place.novelId } : undefined} />
       )}
     </div>
   );

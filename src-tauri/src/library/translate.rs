@@ -62,7 +62,6 @@ const IMAGE_MARK: char = '\u{FFFC}';
 /// Text sent to the LLM in one go, in characters.
 const CHUNK_CHARS: usize = 3500;
 /// Words of the first chapter the language is told from.
-const DETECT_WORDS: usize = 50;
 /// Supersteps allowed: the six nodes, run once each.
 const MAX_STEPS: usize = 8;
 /// Parts of a chapter sent to the LLM at the same time.
@@ -139,11 +138,7 @@ pub struct Translated {
 struct Flow {
     db: String,
     req: Request,
-    /// The book's language when it was asked before.
-    known_lang: Option<String>,
-    /// The first 50 words, to ask it from; the book's guess when there is no text.
-    sample: Option<String>,
-    guess_lang: String,
+    /// `AUTO`: the model finds the language itself.
     source_lang: Option<String>,
     mode: Option<Mode>,
     terms: Vec<(String, String)>,
@@ -189,7 +184,6 @@ pub fn run_with(
 ) -> Result<Translated, AiError> {
     check_request(&req)?;
     let (title, content) = source_text(conn, req.chapter_id)?;
-    let (known_lang, sample, guess_lang) = detect_input(conn, req.novel_id)?;
     let cast = super::cast::load(conn, req.novel_id, &content, &req.lang)?;
     let terms = if req.glossary {
         glossary(conn, req.novel_id, &req.lang)?
@@ -203,9 +197,6 @@ pub fn run_with(
     let flow = Flow {
         db: conn.path().unwrap_or_default().to_string(),
         req,
-        known_lang,
-        sample,
-        guess_lang,
         source_lang: None,
         mode: None,
         terms,
@@ -279,28 +270,18 @@ fn graph(
 
     let mut g = StateGraph::new();
     {
-        let (llm, failed, enter) = (llm.clone(), failed.clone(), enter.clone());
+        let (failed, enter) = (failed.clone(), enter.clone());
         g.add_node("detect", move |mut f: Flow, _: &Config| {
-            let (llm, failed) = (llm.clone(), failed.clone());
+            let failed = failed.clone();
             enter(Stage::Detect);
             async move {
-                let r = (|| {
-                    let lang = match (&f.known_lang, &f.sample) {
-                        (Some(l), _) => l.clone(),
-                        (None, Some(sample)) => {
-                            ask_lang(llm.as_ref(), sample)?.unwrap_or_else(|| f.guess_lang.clone())
-                        }
-                        (None, None) => f.guess_lang.clone(),
-                    };
-                    f.mode = Some(if lang == f.req.lang {
-                        Mode::Rewrite
-                    } else {
-                        Mode::Translate
-                    });
-                    f.source_lang = Some(lang);
-                    Ok(f)
-                })();
-                step(&failed, r)
+                // The app does not tell the book's language any more: the model finds
+                // it from the text itself (titles or names in another script must not
+                // decide it), and translates, or rewrites a text already in the target
+                // language, in the same request.
+                f.mode = Some(Mode::Translate);
+                f.source_lang = Some(AUTO.to_string());
+                step(&failed, Ok(f))
             }
         });
     }
@@ -347,12 +328,14 @@ fn graph(
                         &f.terms,
                         "",
                     ) + &book_rules(&f.genre, &f.req.lang, &f.instructions);
-                    let extract = super::wiki::extract_prompt(&f.req.lang, WIKI_MARK, &f.genre);
+                    let extract =
+                        super::wiki::extract_prompt(super::wiki::WIKI_LANG, WIKI_MARK, &f.genre);
                     let system = |part: &str| {
-                        format!("{system}{}{}", f.recall.prompt(part), f.cast.prompt(part))
+                        format!("{system}{}{}", part_recall(&f, part), f.cast.prompt(part))
                     };
                     let lookup = |q: &str| lookup_name(&f, llm.as_ref(), q);
-                    let tools = part_tools(&f, &lookup);
+                    let keep = |facts: &str| keep_part(&f, facts);
+                    let tools = part_tools(&f, &lookup, &keep);
                     let title = (!f.title.trim().is_empty())
                         .then(|| (title_prompt(&f.req.lang), f.title.clone()));
                     let cache = PartCache::open(&f.db, &f.req)?
@@ -373,6 +356,7 @@ fn graph(
                     f.out_title = title
                         .map(|t| clean(&t).lines().next().unwrap_or_default().to_string())
                         .unwrap_or_default();
+                    settle_names(&mut f);
                     Ok(f)
                 })();
                 step(&failed, r)
@@ -395,12 +379,14 @@ fn graph(
                 let r = (|| {
                     let system = rewrite_prompt(&f.req.lang, &f.req.style, "")
                         + &book_rules(&f.genre, &f.req.lang, &f.instructions);
-                    let extract = super::wiki::extract_prompt(&f.req.lang, WIKI_MARK, &f.genre);
+                    let extract =
+                        super::wiki::extract_prompt(super::wiki::WIKI_LANG, WIKI_MARK, &f.genre);
                     let system = |part: &str| {
-                        format!("{system}{}{}", f.recall.prompt(part), f.cast.prompt(part))
+                        format!("{system}{}{}", part_recall(&f, part), f.cast.prompt(part))
                     };
                     let lookup = |q: &str| lookup_name(&f, llm.as_ref(), q);
-                    let tools = part_tools(&f, &lookup);
+                    let keep = |facts: &str| keep_part(&f, facts);
+                    let tools = part_tools(&f, &lookup, &keep);
                     let cache = PartCache::open(&f.db, &f.req)?
                         .map(|c| c.with_draft(&f.title, &f.paragraphs));
                     let (out, _, found) = run_chunks_with(
@@ -417,6 +403,7 @@ fn graph(
                     (f.out, f.found) = (out, found);
                     // Same language: the chapter keeps its title.
                     f.out_title = f.title.clone();
+                    settle_names(&mut f);
                     Ok(f)
                 })();
                 step(&failed, r)
@@ -431,14 +418,14 @@ fn graph(
             async move {
                 let r = (|| {
                     let conn = super::db::open(std::path::Path::new(&f.db))?;
-                    if f.known_lang.is_none() {
-                        if let Some(lang) = &f.source_lang {
-                            remember_lang(&conn, f.req.novel_id, lang)?;
-                        }
-                    }
                     save(&conn, &f.req, &f.out_title, &f.out, llm.model())?;
                     PartCache::clear(&conn, &f.req)?;
-                    super::wiki::keep_found(&conn, f.req.chapter_id, &f.req.lang, &f.found)?;
+                    super::wiki::keep_found(
+                        &conn,
+                        f.req.chapter_id,
+                        super::wiki::WIKI_LANG,
+                        &f.found,
+                    )?;
                     super::cast::keep(
                         &conn,
                         f.req.novel_id,
@@ -497,7 +484,7 @@ fn learn(f: &Flow, llm: &dyn Chat) -> Result<(), AiError> {
         llm,
         f.req.novel_id,
         f.req.chapter_id,
-        &f.req.lang,
+        super::wiki::WIKI_LANG,
         &f.paragraphs.join("\n\n"),
         &f.out.join("\n\n"),
         &f.found,
@@ -542,97 +529,11 @@ fn split_paragraphs(content: &str) -> Vec<String> {
         .collect()
 }
 
-/// What `detect` needs: the language found before, else the first 50 words of the
-/// first chapter with text (None when there is none) and the import's guess.
-fn detect_input(
-    conn: &Connection,
-    novel_id: i64,
-) -> Result<(Option<String>, Option<String>, String), AiError> {
-    let guess: String = conn.query_row(
-        "select original_lang from novels where id = ?1",
-        [novel_id],
-        |r| r.get(0),
-    )?;
-    let known = conn
-        .query_row(
-            "select source_lang from ai_books where novel_id = ?1",
-            [novel_id],
-            |r| r.get::<_, String>(0),
-        )
-        .optional()?;
-    if known.is_some() {
-        return Ok((known, None, guess));
-    }
-    let first: Option<i64> = conn
-        .query_row(
-            &format!(
-                "select c.id from chapters c where c.novel_id = ?1 and exists (
-                   select 1 from chapter_translations t where t.chapter_id = c.id and t.source <> 'ai'
-                     and {})
-                 order by c.number limit 1",
-                super::segments::HAS_TEXT
-            ),
-            [novel_id],
-            |r| r.get(0),
-        )
-        .optional()?;
-    let sample = match first {
-        Some(id) => Some(first_words(&source_text(conn, id)?.1, DETECT_WORDS)),
-        None => None,
-    };
-    Ok((None, sample, guess))
-}
-
-/// The language the LLM names for `sample`, if it gives a code.
-fn ask_lang(llm: &dyn Chat, sample: &str) -> Result<Option<String>, AiError> {
-    Ok(parse_lang(&AiError::keep_cut(
-        llm.chat(DETECT_PROMPT, sample),
-    )?))
-}
-
-fn remember_lang(conn: &Connection, novel_id: i64, lang: &str) -> rusqlite::Result<()> {
-    conn.execute(
-        "insert into ai_books (novel_id, source_lang) values (?1, ?2)
-         on conflict (novel_id) do update set source_lang = excluded.source_lang",
-        params![novel_id, lang],
-    )?;
-    Ok(())
-}
-
-/// The book's language as the LLM tells it from the first 50 words of its first
-/// chapter (the detect node, on its own); asked once per book.
-pub fn detect(conn: &Connection, llm: &dyn Chat, novel_id: i64) -> Result<String, AiError> {
-    let (known, sample, guess) = detect_input(conn, novel_id)?;
-    if let Some(lang) = known {
-        return Ok(lang);
-    }
-    let Some(sample) = sample else {
-        return Ok(guess);
-    };
-    let lang = ask_lang(llm, &sample)?.unwrap_or(guess);
-    remember_lang(conn, novel_id, &lang)?;
-    Ok(lang)
-}
-
-/// The first `n` words of the text (pictures left out); for scripts without spaces,
-/// at most 4 characters a word.
-fn first_words(content: &str, n: usize) -> String {
-    let words: Vec<&str> = content
-        .split_whitespace()
-        .filter(|w| !w.starts_with(IMAGE_MARK))
-        .take(n)
-        .collect();
-    words.join(" ").chars().take(n * 4).collect()
-}
-
-const DETECT_PROMPT: &str = "You identify the language of a text. Reply with only its ISO 639-1 code in lower case (for example: en, vi, zh, ko, ja), nothing else.";
-
-/// `vi` from "vi", "Vi.", "Language: vi"…
-fn parse_lang(reply: &str) -> Option<String> {
-    reply
-        .split(|c: char| !c.is_ascii_alphabetic())
-        .map(str::to_ascii_lowercase)
-        .find(|w| w.len() == 2 && w != "is")
+/// The book's source language as the app passes it on: always `AUTO`. The app does
+/// not guess it (a title or author name in another script misled it); the model finds
+/// it from the text in the same request that translates or rewrites.
+pub fn detect(_conn: &Connection, _llm: &dyn Chat, _novel_id: i64) -> Result<String, AiError> {
+    Ok(AUTO.to_string())
 }
 
 pub(crate) fn lang_name(code: &str) -> &str {
@@ -656,7 +557,10 @@ fn style_rule(style: &str) -> &'static str {
     }
 }
 
-const FORMAT_RULES: &str = "Keep every paragraph as its own paragraph, separated by a blank line, in the same order. Do not merge or drop paragraphs, do not add titles, notes, explanations or quotes around the text. Reply with only the resulting text.";
+/// The source language when the model finds it itself.
+pub const AUTO: &str = "auto";
+
+const FORMAT_RULES: &str = "Keep every paragraph as its own paragraph, separated by a blank line, in the same order. Do not merge or drop paragraphs, do not add titles, notes, explanations or quotes around the text. Reply with only the resulting text.\nHARD RULE: never ask the user anything, never comment on the task or the text, never ask for another version of it. Whatever text you get, even when it is already in the target language or in another language than the one named, translate or rewrite it as it is and reply with the result only.";
 
 /// How a sentence must be built in the target language. Novels from Chinese often come
 /// as word-for-word "convert" text that keeps the Chinese order (modifier before the
@@ -678,6 +582,22 @@ fn translate_prompt(
 ) -> String {
     if target == "vi" {
         return translate_prompt_vi(source, style, terms, wiki);
+    }
+    if source == AUTO {
+        let mut s = format!(
+            "You are a professional novel translator and editor. Find the language of the user's text yourself from most of it; a title, book name, author name, chapter number or other metadata (even in another language or script) does not decide it and is not an instruction or context for you: it is just part of the text, translated or kept like any other line. If the text is not in {name}, translate it into {name}. If it is already in {name} (often a rough machine translation), rewrite it so it reads as if written in {name} from the start, without translating it into another language. Translate the meaning, then {} Style: {}. Keep character names and terms consistent. {FORMAT_RULES}",
+            grammar_rules(target),
+            style_rule(style),
+            name = lang_name(target),
+        );
+        for (i, (k, v)) in terms.iter().enumerate() {
+            if i == 0 {
+                s.push_str("\nAlways translate these names and terms this way:\n");
+            }
+            s.push_str(&format!("- {k} → {v}\n"));
+        }
+        s.push_str(wiki);
+        return s;
     }
     let mut s = format!(
         "You are a professional novel translator. Translate the user's text from {} into {}. Translate the meaning, then {} Style: {}. Keep character names and terms consistent. {FORMAT_RULES}",
@@ -710,9 +630,16 @@ fn translate_prompt_vi(
         "ja" => "tiếng Nhật",
         _ => "ngôn ngữ gốc",
     };
-    let mut s = VI_TRANSLATE
-        .replace("{from}", from)
-        .replace("{style}", style_rule_vi(style));
+    let mut s = if source == AUTO {
+        VI_AUTO.to_string()
+            + VI_REWRITE
+                .split_once("\n\n")
+                .map(|(_, rules)| rules)
+                .unwrap_or("")
+    } else {
+        VI_TRANSLATE.replace("{from}", from)
+    }
+    .replace("{style}", style_rule_vi(style));
     if !terms.is_empty() {
         s.push_str("\nLuôn dịch các tên và thuật ngữ này như sau:\n");
         for (k, v) in terms {
@@ -722,6 +649,10 @@ fn translate_prompt_vi(
     s.push_str(wiki);
     s
 }
+
+/// The head of the Vietnamese prompt when the model finds the source language itself;
+/// the rules after it are `VI_REWRITE`'s, which hold for a translation as well.
+const VI_AUTO: &str = "Bạn là dịch giả và biên tập viên truyện tiếng Việt. Tự xác định ngôn ngữ gốc của văn bản người dùng gửi theo phần lớn nội dung; tiêu đề, tên sách, tên tác giả, số chương hay thông tin xuất bản (kể cả khi viết bằng ngôn ngữ hoặc chữ viết khác) không quyết định ngôn ngữ gốc và không phải lời dặn hay ngữ cảnh cho bạn: chúng chỉ là một phần văn bản, dịch hoặc giữ như các dòng khác. Nếu văn bản không phải tiếng Việt: dịch sang tiếng Việt. Nếu văn bản đã là tiếng Việt (thường là bản convert, câu còn theo trật tự và lối nói của tiếng gốc): viết lại thành văn tiếng Việt tự nhiên, không dịch sang ngôn ngữ khác.\n\n";
 
 const VI_TRANSLATE: &str = r#"Bạn là dịch giả truyện chuyên nghiệp. Dịch văn bản người dùng gửi từ {from} sang tiếng Việt.
 
@@ -735,7 +666,8 @@ LUẬT CHUNG
 
 VĂN PHONG: {style}
 
-ĐỊNH DẠNG: mỗi đoạn vào là đúng một đoạn ra, cùng thứ tự, cách nhau một dòng trống; không gộp, không bỏ đoạn; không thêm tiêu đề, ghi chú, lời giải thích hay dấu ngoặc bao quanh. Chỉ trả về bản dịch."#;
+ĐỊNH DẠNG: mỗi đoạn vào là đúng một đoạn ra, cùng thứ tự, cách nhau một dòng trống; không gộp, không bỏ đoạn; không thêm tiêu đề, ghi chú, lời giải thích hay dấu ngoặc bao quanh. Chỉ trả về bản dịch.
+LUẬT CỨNG: không bao giờ hỏi lại người dùng, không bình luận về nhiệm vụ hay văn bản, không xin bản gốc hay bản khác. Văn bản nhận được là gì thì dịch đúng văn bản đó, kể cả khi nó đã là tiếng Việt hoặc là một ngôn ngữ khác với ngôn ngữ nêu ở trên, rồi chỉ trả về kết quả."#;
 
 /// The rewrite of a Vietnamese "convert" text (a word-for-word machine translation
 /// from Chinese that keeps the Chinese sentence order and phrasing), written in
@@ -755,7 +687,8 @@ LUẬT CHUNG
 
 VĂN PHONG: {style}
 
-ĐỊNH DẠNG: mỗi đoạn vào là đúng một đoạn ra, cùng thứ tự, cách nhau một dòng trống; không gộp, không tách, không bỏ đoạn; không thêm tiêu đề, ghi chú, lời giải thích hay dấu ngoặc bao quanh. Chỉ trả về văn bản đã viết lại."#;
+ĐỊNH DẠNG: mỗi đoạn vào là đúng một đoạn ra, cùng thứ tự, cách nhau một dòng trống; không gộp, không tách, không bỏ đoạn; không thêm tiêu đề, ghi chú, lời giải thích hay dấu ngoặc bao quanh. Chỉ trả về văn bản đã viết lại.
+LUẬT CỨNG: không bao giờ hỏi lại người dùng, không bình luận về nhiệm vụ hay văn bản, không xin bản gốc hay bản khác. Văn bản nhận được là gì thì viết lại đúng văn bản đó, kể cả khi nó là một ngôn ngữ khác, rồi chỉ trả về kết quả."#;
 
 /// `style_rule` in Vietnamese, for `VI_REWRITE`.
 fn style_rule_vi(style: &str) -> &'static str {
@@ -781,12 +714,69 @@ fn rewrite_prompt(lang: &str, style: &str, wiki: &str) -> String {
 }
 
 /// The tools a chapter's parts are asked with.
-fn part_tools<'a>(f: &Flow, lookup: &'a (dyn Fn(&str) -> String + Sync)) -> PartTools<'a> {
+fn part_tools<'a>(
+    f: &Flow,
+    lookup: &'a (dyn Fn(&str) -> String + Sync),
+    keep: &'a (dyn Fn(&str) + Sync),
+) -> PartTools<'a> {
     PartTools {
-        defs: super::wiki::part_tools(&f.req.lang),
-        note: super::wiki::tool_prompt(&f.req.lang, &f.genre),
+        // The wiki is kept in Vietnamese whatever the translation's language.
+        defs: super::wiki::part_tools(super::wiki::WIKI_LANG),
+        note: super::wiki::tool_prompt(super::wiki::WIKI_LANG, &f.genre),
         lookup,
+        keep,
         off: AtomicBool::new(false),
+    }
+}
+
+/// The names part of a part's prompt: the wiki looked up again just before the part is
+/// sent, so it has the names the parts before it put in, with what the chapter's recall
+/// found.
+fn part_recall(f: &Flow, part: &str) -> String {
+    let fresh = super::db::open(std::path::Path::new(&f.db))
+        .and_then(|conn| super::wiki::recall(&conn, None, f.req.novel_id, part, &f.req.lang));
+    match fresh {
+        Ok(r) => r.with(&f.recall).prompt(part),
+        Err(e) => {
+            eprintln!("ai part recall: {e}");
+            f.recall.prompt(part)
+        }
+    }
+}
+
+/// Puts a part's wiki facts in the book's wiki right away (`wiki::learn_part`).
+fn keep_part(f: &Flow, facts: &str) {
+    let r = super::db::open(std::path::Path::new(&f.db))
+        .map_err(AiError::from)
+        .and_then(|conn| {
+            super::wiki::learn_part(&conn, f.req.novel_id, f.req.chapter_id, &f.req.lang, facts)
+        });
+    if let Err(e) = r {
+        eprintln!("ai wiki part: {e}");
+    }
+}
+
+/// The chapter with the names its parts wrote differently from the wiki written the
+/// wiki's way (`wiki::settled_names`). Only for a Vietnamese translation, the wiki's
+/// language.
+fn settle_names(f: &mut Flow) {
+    if f.req.lang != super::wiki::WIKI_LANG || f.found.is_empty() {
+        return;
+    }
+    let pairs = super::db::open(std::path::Path::new(&f.db))
+        .and_then(|conn| super::wiki::settled_names(&conn, f.req.novel_id, &f.found));
+    let pairs = match pairs {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("ai settle names: {e}");
+            return;
+        }
+    };
+    for (from, to) in &pairs {
+        for p in f.out.iter_mut() {
+            *p = super::wiki::replace_name(p, from, to);
+        }
+        f.out_title = super::wiki::replace_name(&f.out_title, from, to);
     }
 }
 
@@ -1055,15 +1045,42 @@ fn run_chunks_with(
                             }
                             _ => Ok(None),
                         };
-                        match by_tools {
-                            Ok(Some(reply)) => Ok(reply),
-                            Ok(None) => {
-                                let with_extract =
-                                    |text: &str| format!("{}{extract}", prompt(text));
-                                ask_part(llm, &with_extract, paras)
+                        let with_extract = |text: &str| format!("{}{extract}", prompt(text));
+                        // Facts that came through `ghi_wiki` are in the wiki already.
+                        let mut kept = false;
+                        let reply = match by_tools {
+                            Ok(Some(reply)) => {
+                                kept = true;
+                                Ok(reply)
                             }
+                            Ok(None) => ask_part(llm, &with_extract, paras),
                             Err(e) => Err(e),
+                        };
+                        // A reply that talks to the user (asks back, comments, asks
+                        // for another text) instead of giving the text is never kept:
+                        // asked once more as text with the rule in front, then failed.
+                        match reply {
+                            Ok(r) if chatter(split_reply(&r).0, paras) => {
+                                kept = false;
+                                let firm =
+                                    |text: &str| format!("{}{NO_CHATTER}", with_extract(text));
+                                match ask_part(llm, &firm, paras) {
+                                    Ok(r) if chatter(split_reply(&r).0, paras) => {
+                                        Err(AiError::Other(CHATTER_ERROR.into()))
+                                    }
+                                    other => other,
+                                }
+                            }
+                            other => other,
                         }
+                        .inspect(|r| {
+                            // A text answer's facts go in the wiki as soon as it is in.
+                            if let (false, Some(t), (_, Some(facts))) =
+                                (kept, tools, split_reply(r))
+                            {
+                                (t.keep)(facts);
+                            }
+                        })
                     }
                     Ask::Title(prompt, text) => AiError::keep_cut(llm.chat(prompt, text)),
                 };
@@ -1211,6 +1228,8 @@ pub(crate) struct PartTools<'a> {
     note: String,
     /// The answer to `tra_ten` for a name.
     lookup: &'a (dyn Fn(&str) -> String + Sync),
+    /// Puts a part's wiki facts in the wiki as soon as they come (`ghi_wiki`).
+    keep: &'a (dyn Fn(&str) + Sync),
     /// The API or model refused tools: the remaining parts are asked as text.
     off: AtomicBool,
 }
@@ -1290,6 +1309,8 @@ fn ask_part_tools(
                 }
                 n if n == super::wiki::PART_FACTS => {
                     if let Some(a) = args.filter(Value::is_object) {
+                        // Into the wiki now: the parts sent after this one find it.
+                        (tools.keep)(&a.to_string());
                         facts.push(a.to_string());
                     }
                     "ok".to_string()
@@ -1557,6 +1578,50 @@ impl PartCache {
     }
 }
 
+/// Put in front again when a part came back as words to the user.
+const NO_CHATTER: &str = "\n\nLAST TIME YOU ANSWERED WITH A QUESTION OR A COMMENT. DO NOT. Translate or rewrite the text exactly as given, whatever its language, and reply with the result only. / LẦN TRƯỚC BẠN ĐÃ HỎI LẠI HOẶC BÌNH LUẬN. KHÔNG ĐƯỢC LÀM VẬY. Hãy dịch hoặc viết lại đúng văn bản nhận được, bất kể ngôn ngữ nào, và chỉ trả về kết quả.";
+const CHATTER_ERROR: &str =
+    "the model answered with a question or a comment instead of the text, twice";
+
+/// Phrases of a model talking to the user about the task instead of giving the text.
+const CHATTER: &[&str] = &[
+    "bạn có thể cung cấp",
+    "vui lòng cung cấp",
+    "văn bản bạn cung cấp",
+    "văn bản bạn gửi",
+    "bạn đã cung cấp",
+    "tôi hiểu nhiệm vụ",
+    "tôi cần văn bản",
+    "tôi cần bản gốc",
+    "bản gốc tiếng",
+    "could you provide",
+    "can you provide",
+    "please provide",
+    "the text you provided",
+    "the text you've provided",
+    "you have provided",
+    "i understand the task",
+    "i need the original",
+    "as an ai",
+];
+
+/// Whether a part's text is the model talking to the user rather than the text: one
+/// of the `CHATTER` phrases (that the original does not have) in a reply much
+/// shorter than the part, or one that only asks.
+fn chatter(text: &str, paras: &[&str]) -> bool {
+    let reply = text.to_lowercase();
+    let source = paras.join("\n").to_lowercase();
+    let said = CHATTER
+        .iter()
+        .any(|p| reply.contains(p) && !source.contains(p));
+    if !said {
+        return false;
+    }
+    let short = reply.chars().count() * 2 < source.chars().count();
+    let asks = reply.trim_end().ends_with('?') && !source.trim_end().ends_with('?');
+    short || asks
+}
+
 /// A reply without the ``` fence some models put around it.
 fn clean(reply: &str) -> String {
     let t = reply.trim();
@@ -1771,9 +1836,20 @@ pub(crate) mod tests {
                 .lock()
                 .unwrap()
                 .push((system.into(), user.into()));
-            Ok(if system == DETECT_PROMPT {
-                self.detect.to_string()
-            } else if system.contains("editor") || system.contains("biên tập viên") {
+            // The model finds the language itself: a text already in the target
+            // language is rewritten, any other is translated.
+            let target = if system.contains("Tự xác định ngôn ngữ gốc") {
+                Some("vi")
+            } else if system.contains("Find the language of the user's text yourself") {
+                Some("en")
+            } else {
+                None
+            };
+            let rewrite = match target {
+                Some(t) => t == self.detect,
+                None => system.contains("editor") || system.contains("biên tập viên"),
+            };
+            Ok(if rewrite {
                 split_paragraphs(user)
                     .iter()
                     .map(|p| format!("[re] {p}"))
@@ -1827,6 +1903,30 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_reply_that_asks_back_is_not_taken_as_the_text() {
+        let src = ["Heavenly Demon Cultivation Simulation", "- 천마육성 시뮬레이션 -", "Chapter 101", "\u{201c}How did you get here?\u{201d}", "As the servants removed the body from the room, Geum Man-jang quickly handed a chair to Seol-Hwi."];
+        let asked = "Tôi hiểu nhiệm vụ. Đang dịch chương 152 từ tiếng Hàn.\n\nTuy nhiên, văn bản bạn cung cấp đã là tiếng Anh.\n\nBạn có thể cung cấp bản tiếng Hàn gốc để tôi dịch không?";
+        assert!(chatter(asked, &src));
+        let real = "Mô phỏng tu luyện Thiên Ma\n\n- 천마육성 시뮬레이션 -\n\nChương 101\n\n“Sao ngươi tới được đây?”\n\nKhi đám người hầu khiêng thi thể ra khỏi phòng, Kim Vạn Trượng vội đưa ghế cho Tuyết Huy.";
+        assert!(!chatter(real, &src));
+        // A line of the story that says "you provided" is not chatter when the original says it too.
+        assert!(!chatter(
+            "the text you provided was a lie, he said.",
+            &["the text you provided was a lie, he said."]
+        ));
+        // Both prompts tell the model to find the language and never ask back.
+        let vi = translate_prompt(AUTO, "vi", "natural", &[], "");
+        assert!(
+            vi.contains("Tự xác định ngôn ngữ gốc")
+                && vi.contains("LUẬT CỨNG")
+                && vi.contains("Câu hoàn chỉnh")
+        );
+        assert!(!vi.contains("{from}") && !vi.contains("{style}"));
+        let en = translate_prompt(AUTO, "en", "natural", &[], "");
+        assert!(en.contains("Find the language") && en.contains("HARD RULE"));
+    }
+
+    #[test]
     fn translates_when_the_language_differs() {
         let (conn, _) = book("tr");
         let llm = std::sync::Arc::new(Fake::new("en"));
@@ -1837,14 +1937,13 @@ pub(crate) mod tests {
             vec!["[tr] Once upon a time.", "\u{FFFC}pic1", "[tr] The end."]
         );
         assert_eq!(out.title, "[tr] Chapter 1");
-        // detect + two chunks around the picture + title
-        assert_eq!(llm.count(), 4);
+        // Two chunks around the picture + title: the language is not asked apart.
+        assert_eq!(llm.count(), 3);
         let saved = get(&conn, 10, "vi", "natural").unwrap().unwrap();
         assert_eq!(saved.paragraphs, out.paragraphs);
         assert_eq!(saved.model.as_deref(), Some("fake-1"));
-        // The language is asked once per book.
         run(&conn, llm.clone(), req(11, "vi")).unwrap();
-        assert_eq!(llm.count(), 6);
+        assert_eq!(llm.count(), 5);
         // Each chapter carries its own mark.
         assert_eq!(
             marks(&conn, 1)
@@ -1868,17 +1967,13 @@ pub(crate) mod tests {
     fn rewrites_the_original_when_the_language_matches() {
         let (conn, _) = book("re");
         let llm = std::sync::Arc::new(Fake::new("en"));
+        // The model finds the text is already in English and rewrites it, in the
+        // same request that would translate it.
         let out = run(&conn, llm.clone(), req(11, "en")).unwrap();
-        assert_eq!(out.mode, Mode::Rewrite);
         assert_eq!(out.paragraphs, vec!["[re] Second chapter."]);
-        assert_eq!(out.title, "Chapter 2");
         // Again: the input is still the original, not the rewrite.
         let again = run(&conn, llm.clone(), req(11, "en")).unwrap();
         assert_eq!(again.paragraphs, vec!["[re] Second chapter."]);
-        assert_eq!(
-            get(&conn, 11, "en", "natural").unwrap().unwrap().mode,
-            Mode::Rewrite
-        );
         // The reader's original text is untouched.
         let original: String = conn
             .query_row("select content from chapter_translations where chapter_id = 11 and source = 'original'", [], |r| r.get(0))
@@ -2024,10 +2119,7 @@ pub(crate) mod tests {
         let llm = std::sync::Arc::new(Fake::new("en"));
         run(&conn, llm.clone(), req(11, "vi")).unwrap();
         let calls = llm.calls.lock().unwrap();
-        let translate = calls
-            .iter()
-            .find(|(s, _)| s.contains("dịch giả truyện"))
-            .unwrap();
+        let translate = calls.iter().find(|(s, _)| s.contains("dịch giả")).unwrap();
         assert!(translate.0.contains("- Second → Thứ Hai (thuật ngữ)"));
         // Fake has no tools, so the wiki was asked for as JSON after the translation.
         assert!(calls.last().unwrap().0.contains("JSON"));
@@ -2068,10 +2160,12 @@ pub(crate) mod tests {
             ..Default::default()
         };
         run_with(&conn, llm.clone(), req(11, "vi"), hooks).unwrap();
-        // The translation went on without learning.
-        assert!(super::super::wiki::entries(&conn, novel)
-            .unwrap()
-            .is_empty());
+        // The names went in as soon as the part brought them; the chapter is read in
+        // by the wiki queue.
+        assert_eq!(
+            super::super::wiki::entries(&conn, novel).unwrap()[0].name,
+            "Lina"
+        );
         let before = llm.0.count();
         assert_eq!(
             super::super::wiki::learn_pending(&conn).unwrap(),
@@ -2285,13 +2379,12 @@ pub(crate) mod tests {
             segments.iter().map(|s| s.0).collect::<Vec<_>>(),
             vec![0, 1, 2, 3, 4, 5]
         );
-        // Only the failed part went to the LLM again (and the language question).
+        // Only the failed part went to the LLM again.
         let asked: Vec<String> = llm
             .calls
             .lock()
             .unwrap()
             .iter()
-            .filter(|(system, _)| system != DETECT_PROMPT)
             .map(|(_, user)| user.clone())
             .collect();
         assert_eq!(asked.len(), 1);
@@ -2316,12 +2409,7 @@ pub(crate) mod tests {
             run_with(&conn, llm.clone(), req(chapter, "vi"), hooks),
             Err(AiError::Stopped)
         ));
-        assert!(llm
-            .calls
-            .lock()
-            .unwrap()
-            .iter()
-            .all(|(system, _)| system == DETECT_PROMPT));
+        assert!(llm.calls.lock().unwrap().is_empty());
         assert!(get(&conn, chapter, "vi", "natural").unwrap().is_none());
     }
 
@@ -2460,15 +2548,6 @@ pub(crate) mod tests {
         assert_eq!(fit(p(&["a"]), 3), p(&["a", "", ""]));
     }
 
-    #[test]
-    fn parses_language_replies() {
-        assert_eq!(parse_lang("vi").as_deref(), Some("vi"));
-        assert_eq!(parse_lang("Language: EN.").as_deref(), Some("en"));
-        assert_eq!(parse_lang("The text is zh").as_deref(), Some("zh"));
-        assert_eq!(parse_lang("???"), None);
-        assert_eq!(first_words("a b c d", 2), "a b");
-    }
-
     /// Answers tool requests from a script, one reply per request, and text requests
     /// as "[txt] …".
     struct Tooly {
@@ -2528,6 +2607,7 @@ pub(crate) mod tests {
             defs: super::super::wiki::part_tools("vi"),
             note: super::super::wiki::tool_prompt("vi", ""),
             lookup,
+            keep: &|_| {},
             off: AtomicBool::new(false),
         }
     }

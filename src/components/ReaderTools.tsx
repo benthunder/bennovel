@@ -1,9 +1,11 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { DICTIONARY, DICT_SUGGEST, TRANSLATE_STYLES } from '../data/mock';
 import { CONTENT_LANG_INFO, CONTENT_LANGS, type ContentLang, type ContentLangInfo, type DictEntry, type GlossaryTerm, type ReplaceRule, type TranslateStyle } from '../data/types';
 import { useI18n } from '../i18n';
 import { DEFAULT_READER_PREFS, READER_THEMES, useApp, type ReaderPrefs } from '../store/AppStore';
+import { AiPrefsFields } from './AiPrefsFields';
 import { BookIcon, SparklesIcon, XIcon } from './Icons';
+import { getAiPrefs, setAiPrefs, type AiPrefs } from '../lib/ai';
 import { Checkbox, Segmented, Spinner } from './ui';
 import { useLayout } from '../lib/useLayout';
 
@@ -16,7 +18,7 @@ const FONT_MIN = 14, FONT_MAX = 26;
  * Reading settings and the (simulated) AI dictionary / translator.
  * Phone: bottom sheet over the chapter. Tablet and desktop: a side panel the chapter makes room for.
  */
-export function ReaderTools({ glossary, lang, rules, onRulesChange, onClose, onTranslate, onTranslateFrom, aiLangs, aiHint, initialTab = 'reading' }: {
+export function ReaderTools({ glossary, lang, rules, onRulesChange, onClose, onTranslate, onTranslateFrom, aiLangs, aiHint, aiBook, initialTab = 'reading' }: {
   glossary: Record<string, GlossaryTerm>;
   /** Language of the text on screen; replace rules are kept per language. */
   lang: ContentLang;
@@ -30,6 +32,8 @@ export function ReaderTools({ glossary, lang, rules, onRulesChange, onClose, onT
   aiLangs?: ContentLangInfo[];
   /** A line under the translator's title. */
   aiHint?: string;
+  /** The library book: its genre and instructions for the AI are shown and kept with it. */
+  aiBook?: { user: string; novelId: number };
   initialTab?: ToolsTab;
 }) {
   const { t } = useI18n();
@@ -54,7 +58,7 @@ export function ReaderTools({ glossary, lang, rules, onRulesChange, onClose, onT
         <div className="nx-scroll" style={{ overflowY: 'auto', padding: '0 20px calc(env(safe-area-inset-bottom) + 30px)', display: 'flex', flexDirection: 'column', gap: 18 }}>
           {tab === 'reading' && <ReadingTab />}
           {tab === 'replace' && <ReplaceTab lang={lang} rules={rules} onChange={onRulesChange} />}
-          {tab === 'ai' && <AiTab glossary={glossary} currentLang={lang} onTranslate={onTranslate} onTranslateFrom={onTranslateFrom} langs={aiLangs} hint={aiHint} />}
+          {tab === 'ai' && <AiTab glossary={glossary} currentLang={lang} onTranslate={onTranslate} onTranslateFrom={onTranslateFrom} langs={aiLangs} hint={aiHint} book={aiBook} />}
         </div>
       </div>
     </div>
@@ -163,15 +167,44 @@ function ReplaceTab({ lang, rules, onChange }: { lang: ContentLang; rules: Repla
 const panel: React.CSSProperties = { borderRadius: 30, background: 'var(--frost)', padding: 16, display: 'flex', flexDirection: 'column', gap: 12 };
 const panelIcon = (bg: string, fg: string): React.CSSProperties => ({ width: 34, height: 34, borderRadius: '50%', background: bg, color: fg, display: 'grid', placeItems: 'center' });
 
-function AiTab({ glossary: terms, currentLang, onTranslate, onTranslateFrom, langs, hint }: {
+function AiTab({ glossary: terms, currentLang, onTranslate, onTranslateFrom, langs, hint, book }: {
   glossary: Record<string, GlossaryTerm>;
   currentLang: ContentLang;
   onTranslate: (t: Translation) => void;
   onTranslateFrom?: (t: Translation) => Promise<void>;
   langs?: ContentLangInfo[];
   hint?: string;
+  book?: { user: string; novelId: number };
 }) {
   const { t } = useI18n();
+  // The book's genre and instructions, the same ones "translate the whole book" uses.
+  const [prefs, setPrefs] = useState<AiPrefs | null>(null);
+  const dirty = useRef(false);
+  useEffect(() => {
+    if (!book) return;
+    let gone = false;
+    getAiPrefs(book.user, book.novelId).then(p => { if (!gone) setPrefs(p); }).catch(console.warn);
+    return () => { gone = true; };
+  }, [book?.user, book?.novelId]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Closing the panel keeps what was typed too.
+  const latest = useRef({ book, prefs });
+  latest.current = { book, prefs };
+  useEffect(() => () => {
+    const { book: b, prefs: p } = latest.current;
+    if (b && p && dirty.current) void setAiPrefs(b.user, b.novelId, p).catch(console.warn);
+  }, []);
+  /** Keeps what was changed before a chapter is sent, so it goes with it. */
+  const keepPrefs = async () => {
+    if (!book || !prefs || !dirty.current) return;
+    dirty.current = false;
+    await setAiPrefs(book.user, book.novelId, prefs).catch(console.warn);
+  };
+  const changePrefs = (p: AiPrefs) => {
+    dirty.current = true;
+    setPrefs(p);
+    // A new genre is kept at once; the instructions as the box loses focus or a chapter is sent.
+    if (book && p.genre !== prefs?.genre) { dirty.current = false; void setAiPrefs(book.user, book.novelId, p).catch(console.warn); }
+  };
   const [word, setWord] = useState('');
   const [result, setResult] = useState<(DictEntry & { word: string }) | null>(null);
   const [tr, setTr] = useState<Translation>(() => defaultTranslation(currentLang));
@@ -228,10 +261,11 @@ function AiTab({ glossary: terms, currentLang, onTranslate, onTranslateFrom, lan
         </div>
         {hint && <div className="muted" style={{ fontSize: 12, marginTop: -4 }}>{hint}</div>}
         <TranslateFields value={tr} onChange={setTr} glossaryCount={glossary.length} langs={langs} />
-        <button className="btn btn-primary" style={{ height: 48, fontSize: 15 }} onClick={() => onTranslate(tr)}>{t('tr.run')}</button>
+        {book && prefs && <AiPrefsFields idPrefix="reader-ai" value={prefs} onChange={changePrefs} onBlur={() => void keepPrefs()} />}
+        <button className="btn btn-primary" style={{ height: 48, fontSize: 15 }} onClick={() => { void keepPrefs().then(() => onTranslate(tr)); }}>{t('tr.run')}</button>
         {onTranslateFrom && (
           <button className="btn btn-secondary" style={{ height: 48, fontSize: 15, gap: 8 }} disabled={queuing}
-            onClick={() => { setQueuing(true); onTranslateFrom(tr).finally(() => setQueuing(false)); }}>
+            onClick={() => { setQueuing(true); keepPrefs().then(() => onTranslateFrom(tr)).finally(() => setQueuing(false)); }}>
             {queuing && <Spinner size={14} />}{t('tr.runFrom')}
           </button>
         )}

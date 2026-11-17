@@ -1,38 +1,33 @@
-import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ask } from '@tauri-apps/plugin-dialog';
 import { Modal } from '../components/Modal';
 import { levelOf, relWords, useWikiT } from '../components/WikiPopup';
 import { ChevronLeftIcon, ChevronRightIcon, PencilIcon, SparklesIcon, XIcon } from '../components/Icons';
 import { Checkbox, SearchField, Spinner } from '../components/ui';
 import { useI18n } from '../i18n';
-import { AI_LANGS, AiFailure, aiErrorDetail, getReadingLang } from '../lib/ai';
+import { AI_LANGS, AiFailure, aiErrorDetail } from '../lib/ai';
 import { useAsync } from '../lib/useAsync';
 import { useLayout } from '../lib/useLayout';
 import { useThrottledValue } from '../lib/useThrottledValue';
 import {
-  RAW, REL_TYPES, WIKI_KINDS, addWikiRelation, getWiki, getWikiMissing, mergeWikiEntry, removeWikiEntry, removeWikiRelation, saveWikiEntry,
+  RAW, REL_TYPES, WIKI_KINDS, WIKI_LANG, addWikiRelation, getWiki, getWikiMissing, mergeWikiEntry, removeWikiEntry, removeWikiRelation, saveWikiEntry,
   searchWiki, setWikiAuto, translateWiki, wikiChapter, wikiLabel, wikiSummary,
   type Wiki, type WikiEntry, type WikiKind, metaStage } from '../lib/wiki';
 import { useApp } from '../store/AppStore';
 
-/** The wiki's languages: the raw text, then the AI ones. */
-const WIKI_LANGS = [RAW, ...AI_LANGS.map(l => l.code as string)];
-
 /**
  * The wiki of a book on this device: its characters, levels, places (as a map), factions,
  * items and terms with their relationships. The AI fills it while translating; everything
- * can be edited. It shows in the language the book is read in (`lang`), falling back to
- * the raw words, and can fill a language in with the AI.
+ * can be edited. It is written in Vietnamese only (the original names are kept as the
+ * text writes them); what is still missing in Vietnamese is translated when it opens.
  */
-export function WikiScreen({ novelId, title, lang: startLang }: { novelId: number; title: string; lang?: string }) {
+export function WikiScreen({ novelId, title }: { novelId: number; title: string; lang?: string }) {
   const { t } = useI18n();
   const app = useApp();
   const lay = useLayout();
   const user = app.libKey;
-  const [lang, setLang] = useState(() => {
-    const l = startLang ?? getReadingLang(user, novelId);
-    return WIKI_LANGS.includes(l) ? l : RAW;
-  });
+  // The wiki is written in Vietnamese only; what is still missing is translated on open.
+  const lang = WIKI_LANG;
   const langName = (l: string) => (l === RAW ? t('reader.raw') : AI_LANGS.find(x => x.code === l)?.native ?? l);
   const [rev, setRev] = useState(0);
   const q = useAsync(() => getWiki(user, novelId), [user, novelId, rev, app.aiRev]);
@@ -65,21 +60,31 @@ export function WikiScreen({ novelId, title, lang: startLang }: { novelId: numbe
     reload();
   };
 
-  const translate = async () => {
+  const translate = async (quiet = false) => {
     if (translating) return;
     setTranslating(true);
     try {
       const n = await translateWiki(user, novelId, lang);
-      app.showToast(t('wiki.translated', { lang: langName(lang), n }));
+      if (!quiet) app.showToast(t('wiki.translated', { lang: langName(lang), n }));
       reload();
     } catch (e) {
       console.error(e);
       const f = e instanceof AiFailure ? e : null;
+      // Opening the wiki tries once on its own; with no AI set up the button stays.
+      if (quiet && f?.key === 'ai.err.notSet') return;
       app.showToast(f ? `${t(f.key)} ${f.key === 'ai.err.generic' || f.key === 'ai.err.http' ? aiErrorDetail(f.message) : ''}` : String(e));
     } finally {
       setTranslating(false);
     }
   };
+  // Words written before the wiki was Vietnamese only are translated once on opening.
+  const tried = useRef(false);
+  useEffect(() => {
+    if (missing > 0 && !tried.current) {
+      tried.current = true;
+      void translate(true);
+    }
+  }, [missing]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const card = (e: WikiEntry, extra?: ReactNode) => {
     const label = wikiLabel(e, lang);
@@ -136,14 +141,6 @@ export function WikiScreen({ novelId, title, lang: startLang }: { novelId: numbe
           </button>
         </div>
 
-        <div role="radiogroup" aria-label={t('wiki.langAria')} style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-          {WIKI_LANGS.map(l => (
-            <button key={l} role="radio" aria-checked={lang === l} className={`chip chip--sm${lang === l ? ' chip--active' : ''}`} onClick={() => setLang(l)}>
-              {langName(l)}
-            </button>
-          ))}
-        </div>
-
         {q.status === 'failed' && <p role="alert">{t('wiki.failed')} {String(q.error)}</p>}
         {!wiki && q.status === 'loading' && <Spinner size={18} />}
         {wiki && (
@@ -151,7 +148,7 @@ export function WikiScreen({ novelId, title, lang: startLang }: { novelId: numbe
             {missing > 0 && (
               <div role="status" style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '12px 14px', borderRadius: 20, background: 'color-mix(in srgb, var(--color-accent) 10%, var(--color-surface))' }}>
                 <span style={{ flex: '1 1 200px', fontSize: 13 }}>{t('wiki.missing', { n: missing, lang: langName(lang) })}</span>
-                <button className="btn btn-primary" style={{ height: 38, padding: '0 14px', gap: 6 }} disabled={translating} onClick={translate}>
+                <button className="btn btn-primary" style={{ height: 38, padding: '0 14px', gap: 6 }} disabled={translating} onClick={() => translate()}>
                   {translating ? <Spinner size={13} /> : <SparklesIcon size={14} />}
                   {translating ? t('wiki.translating') : t('wiki.translate', { lang: langName(lang) })}
                 </button>
@@ -322,8 +319,8 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
   const [curLevel, setCurLevel] = useState(entry?.meta?.level ?? '');
   const [stageName, setStageName] = useState(entry?.meta?.stageName ?? '');
   const [aliases, setAliases] = useState(entry?.aliases.join(', ') ?? '');
-  // The language whose words are being edited; starts at the wiki's.
-  const [editLang, setEditLang] = useState(lang);
+  // The wiki's words are Vietnamese; the original name stays in `name` and the aliases.
+  const editLang = WIKI_LANG;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [relTo, setRelTo] = useState('');
@@ -337,8 +334,7 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
   const others = wiki.entries.filter(e => e.uid !== saved?.uid);
   const show = (uid: string) => { const e = byUid.get(uid); return e ? wikiLabel(e, lang) : '?'; };
   const langName = (l: string) => (l === RAW ? t('reader.raw') : AI_LANGS.find(x => x.code === l)?.native ?? l);
-  // Free words are kept in the language being read; the raw wiki keeps them as written.
-  const wordsLang = lang === RAW ? (AI_LANGS.find(l => Object.keys(names).includes(l.code))?.code ?? 'vi') : lang;
+  const wordsLang = WIKI_LANG;
 
   const failed = (e: unknown) => {
     console.error(e);
@@ -473,20 +469,11 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
           <input id="wiki-aliases" className="input" style={{ height: 42 }} value={aliases} onChange={e => setAliases(e.target.value)} />
         </div>
 
-        <div role="tablist" aria-label={t('wiki.langAria')} style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-          {WIKI_LANGS.map(l => (
-            <button key={l} type="button" role="tab" aria-selected={editLang === l} className={`chip chip--sm${editLang === l ? ' chip--active' : ''}`} onClick={() => setEditLang(l)}>
-              {langName(l)}{(l === RAW ? summaries[RAW] : names[l] || summaries[l]) ? ' ✓' : ''}
-            </button>
-          ))}
+        <div className="field">
+          <label htmlFor="wiki-name-in">{t('wiki.nameIn', { lang: langName(editLang) })}</label>
+          <input id="wiki-name-in" className="input" style={{ height: 42 }} value={names[editLang] ?? ''}
+            onChange={e => setNames(n => ({ ...n, [editLang]: e.target.value }))} />
         </div>
-        {editLang !== RAW && (
-          <div className="field">
-            <label htmlFor="wiki-name-in">{t('wiki.nameIn', { lang: langName(editLang) })}</label>
-            <input id="wiki-name-in" className="input" style={{ height: 42 }} value={names[editLang] ?? ''}
-              onChange={e => setNames(n => ({ ...n, [editLang]: e.target.value }))} />
-          </div>
-        )}
         <div className="field">
           <label htmlFor="wiki-summary">{t('wiki.summaryIn', { lang: langName(editLang) })}</label>
           <textarea id="wiki-summary" className="input" rows={8} style={{ borderRadius: 20, resize: 'vertical', minHeight: 140 }} value={summaries[editLang] ?? ''}

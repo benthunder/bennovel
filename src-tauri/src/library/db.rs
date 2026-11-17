@@ -584,6 +584,20 @@ create table ai_book_prefs (
 alter table wiki_entries add column meta text not null default '{}';
 alter table wiki_names add column meta text not null default '{}';
 "#,
+    r#"
+-- The wiki is only Vietnamese now (wiki.rs `WIKI_LANG`): where a name, description or
+-- relation already has its Vietnamese words, the other languages' go. Entries with
+-- none yet keep theirs until the wiki screen has them translated (then `only_vi`).
+update wiki_entries set summaries = json_object('vi', json_extract(summaries, '$.vi'))
+ where json_valid(summaries) and json_extract(summaries, '$.vi') is not null
+   and (select count(*) from json_each(wiki_entries.summaries)) > 1;
+update wiki_entries set names = json_object('vi', json_extract(names, '$.vi'))
+ where json_valid(names) and json_extract(names, '$.vi') is not null
+   and (select count(*) from json_each(wiki_entries.names)) > 1;
+update wiki_relations set labels = json_object('vi', json_extract(labels, '$.vi'))
+ where json_valid(labels) and json_extract(labels, '$.vi') is not null
+   and (select count(*) from json_each(wiki_relations.labels)) > 1;
+"#,
 ];
 
 /// The migration (1-based) after which `content` holds blocks.
