@@ -328,12 +328,14 @@ fn graph(
                         &f.terms,
                         "",
                     ) + &book_rules(&f.genre, &f.req.lang, &f.instructions);
-                    let extract = super::wiki::extract_prompt(&f.req.lang, WIKI_MARK, &f.genre);
+                    let extract =
+                        super::wiki::extract_prompt(super::wiki::WIKI_LANG, WIKI_MARK, &f.genre);
                     let system = |part: &str| {
-                        format!("{system}{}{}", f.recall.prompt(part), f.cast.prompt(part))
+                        format!("{system}{}{}", part_recall(&f, part), f.cast.prompt(part))
                     };
                     let lookup = |q: &str| lookup_name(&f, llm.as_ref(), q);
-                    let tools = part_tools(&f, &lookup);
+                    let keep = |facts: &str| keep_part(&f, facts);
+                    let tools = part_tools(&f, &lookup, &keep);
                     let title = (!f.title.trim().is_empty())
                         .then(|| (title_prompt(&f.req.lang), f.title.clone()));
                     let cache = PartCache::open(&f.db, &f.req)?
@@ -354,6 +356,7 @@ fn graph(
                     f.out_title = title
                         .map(|t| clean(&t).lines().next().unwrap_or_default().to_string())
                         .unwrap_or_default();
+                    settle_names(&mut f);
                     Ok(f)
                 })();
                 step(&failed, r)
@@ -376,12 +379,14 @@ fn graph(
                 let r = (|| {
                     let system = rewrite_prompt(&f.req.lang, &f.req.style, "")
                         + &book_rules(&f.genre, &f.req.lang, &f.instructions);
-                    let extract = super::wiki::extract_prompt(&f.req.lang, WIKI_MARK, &f.genre);
+                    let extract =
+                        super::wiki::extract_prompt(super::wiki::WIKI_LANG, WIKI_MARK, &f.genre);
                     let system = |part: &str| {
-                        format!("{system}{}{}", f.recall.prompt(part), f.cast.prompt(part))
+                        format!("{system}{}{}", part_recall(&f, part), f.cast.prompt(part))
                     };
                     let lookup = |q: &str| lookup_name(&f, llm.as_ref(), q);
-                    let tools = part_tools(&f, &lookup);
+                    let keep = |facts: &str| keep_part(&f, facts);
+                    let tools = part_tools(&f, &lookup, &keep);
                     let cache = PartCache::open(&f.db, &f.req)?
                         .map(|c| c.with_draft(&f.title, &f.paragraphs));
                     let (out, _, found) = run_chunks_with(
@@ -398,6 +403,7 @@ fn graph(
                     (f.out, f.found) = (out, found);
                     // Same language: the chapter keeps its title.
                     f.out_title = f.title.clone();
+                    settle_names(&mut f);
                     Ok(f)
                 })();
                 step(&failed, r)
@@ -414,7 +420,12 @@ fn graph(
                     let conn = super::db::open(std::path::Path::new(&f.db))?;
                     save(&conn, &f.req, &f.out_title, &f.out, llm.model())?;
                     PartCache::clear(&conn, &f.req)?;
-                    super::wiki::keep_found(&conn, f.req.chapter_id, &f.req.lang, &f.found)?;
+                    super::wiki::keep_found(
+                        &conn,
+                        f.req.chapter_id,
+                        super::wiki::WIKI_LANG,
+                        &f.found,
+                    )?;
                     super::cast::keep(
                         &conn,
                         f.req.novel_id,
@@ -473,7 +484,7 @@ fn learn(f: &Flow, llm: &dyn Chat) -> Result<(), AiError> {
         llm,
         f.req.novel_id,
         f.req.chapter_id,
-        &f.req.lang,
+        super::wiki::WIKI_LANG,
         &f.paragraphs.join("\n\n"),
         &f.out.join("\n\n"),
         &f.found,
@@ -703,12 +714,69 @@ fn rewrite_prompt(lang: &str, style: &str, wiki: &str) -> String {
 }
 
 /// The tools a chapter's parts are asked with.
-fn part_tools<'a>(f: &Flow, lookup: &'a (dyn Fn(&str) -> String + Sync)) -> PartTools<'a> {
+fn part_tools<'a>(
+    f: &Flow,
+    lookup: &'a (dyn Fn(&str) -> String + Sync),
+    keep: &'a (dyn Fn(&str) + Sync),
+) -> PartTools<'a> {
     PartTools {
-        defs: super::wiki::part_tools(&f.req.lang),
-        note: super::wiki::tool_prompt(&f.req.lang, &f.genre),
+        // The wiki is kept in Vietnamese whatever the translation's language.
+        defs: super::wiki::part_tools(super::wiki::WIKI_LANG),
+        note: super::wiki::tool_prompt(super::wiki::WIKI_LANG, &f.genre),
         lookup,
+        keep,
         off: AtomicBool::new(false),
+    }
+}
+
+/// The names part of a part's prompt: the wiki looked up again just before the part is
+/// sent, so it has the names the parts before it put in, with what the chapter's recall
+/// found.
+fn part_recall(f: &Flow, part: &str) -> String {
+    let fresh = super::db::open(std::path::Path::new(&f.db))
+        .and_then(|conn| super::wiki::recall(&conn, None, f.req.novel_id, part, &f.req.lang));
+    match fresh {
+        Ok(r) => r.with(&f.recall).prompt(part),
+        Err(e) => {
+            eprintln!("ai part recall: {e}");
+            f.recall.prompt(part)
+        }
+    }
+}
+
+/// Puts a part's wiki facts in the book's wiki right away (`wiki::learn_part`).
+fn keep_part(f: &Flow, facts: &str) {
+    let r = super::db::open(std::path::Path::new(&f.db))
+        .map_err(AiError::from)
+        .and_then(|conn| {
+            super::wiki::learn_part(&conn, f.req.novel_id, f.req.chapter_id, &f.req.lang, facts)
+        });
+    if let Err(e) = r {
+        eprintln!("ai wiki part: {e}");
+    }
+}
+
+/// The chapter with the names its parts wrote differently from the wiki written the
+/// wiki's way (`wiki::settled_names`). Only for a Vietnamese translation, the wiki's
+/// language.
+fn settle_names(f: &mut Flow) {
+    if f.req.lang != super::wiki::WIKI_LANG || f.found.is_empty() {
+        return;
+    }
+    let pairs = super::db::open(std::path::Path::new(&f.db))
+        .and_then(|conn| super::wiki::settled_names(&conn, f.req.novel_id, &f.found));
+    let pairs = match pairs {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("ai settle names: {e}");
+            return;
+        }
+    };
+    for (from, to) in &pairs {
+        for p in f.out.iter_mut() {
+            *p = super::wiki::replace_name(p, from, to);
+        }
+        f.out_title = super::wiki::replace_name(&f.out_title, from, to);
     }
 }
 
@@ -978,8 +1046,13 @@ fn run_chunks_with(
                             _ => Ok(None),
                         };
                         let with_extract = |text: &str| format!("{}{extract}", prompt(text));
+                        // Facts that came through `ghi_wiki` are in the wiki already.
+                        let mut kept = false;
                         let reply = match by_tools {
-                            Ok(Some(reply)) => Ok(reply),
+                            Ok(Some(reply)) => {
+                                kept = true;
+                                Ok(reply)
+                            }
                             Ok(None) => ask_part(llm, &with_extract, paras),
                             Err(e) => Err(e),
                         };
@@ -988,6 +1061,7 @@ fn run_chunks_with(
                         // asked once more as text with the rule in front, then failed.
                         match reply {
                             Ok(r) if chatter(split_reply(&r).0, paras) => {
+                                kept = false;
                                 let firm =
                                     |text: &str| format!("{}{NO_CHATTER}", with_extract(text));
                                 match ask_part(llm, &firm, paras) {
@@ -999,6 +1073,14 @@ fn run_chunks_with(
                             }
                             other => other,
                         }
+                        .inspect(|r| {
+                            // A text answer's facts go in the wiki as soon as it is in.
+                            if let (false, Some(t), (_, Some(facts))) =
+                                (kept, tools, split_reply(r))
+                            {
+                                (t.keep)(facts);
+                            }
+                        })
                     }
                     Ask::Title(prompt, text) => AiError::keep_cut(llm.chat(prompt, text)),
                 };
@@ -1146,6 +1228,8 @@ pub(crate) struct PartTools<'a> {
     note: String,
     /// The answer to `tra_ten` for a name.
     lookup: &'a (dyn Fn(&str) -> String + Sync),
+    /// Puts a part's wiki facts in the wiki as soon as they come (`ghi_wiki`).
+    keep: &'a (dyn Fn(&str) + Sync),
     /// The API or model refused tools: the remaining parts are asked as text.
     off: AtomicBool,
 }
@@ -1225,6 +1309,8 @@ fn ask_part_tools(
                 }
                 n if n == super::wiki::PART_FACTS => {
                     if let Some(a) = args.filter(Value::is_object) {
+                        // Into the wiki now: the parts sent after this one find it.
+                        (tools.keep)(&a.to_string());
                         facts.push(a.to_string());
                     }
                     "ok".to_string()
@@ -2074,10 +2160,12 @@ pub(crate) mod tests {
             ..Default::default()
         };
         run_with(&conn, llm.clone(), req(11, "vi"), hooks).unwrap();
-        // The translation went on without learning.
-        assert!(super::super::wiki::entries(&conn, novel)
-            .unwrap()
-            .is_empty());
+        // The names went in as soon as the part brought them; the chapter is read in
+        // by the wiki queue.
+        assert_eq!(
+            super::super::wiki::entries(&conn, novel).unwrap()[0].name,
+            "Lina"
+        );
         let before = llm.0.count();
         assert_eq!(
             super::super::wiki::learn_pending(&conn).unwrap(),
@@ -2519,6 +2607,7 @@ pub(crate) mod tests {
             defs: super::super::wiki::part_tools("vi"),
             note: super::super::wiki::tool_prompt("vi", ""),
             lookup,
+            keep: &|_| {},
             off: AtomicBool::new(false),
         }
     }

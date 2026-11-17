@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import { messageIn, useI18n } from '../i18n';
 import type { MessageKey } from '../i18n/en';
-import { RAW, isRelType, metaStage, wikiLabel, wikiSummary, type Wiki, type WikiEntry, type WikiRelation } from '../lib/wiki';
+import { RAW, WIKI_LANG, isRelType, metaStage, wikiLabel, wikiSummary, type Wiki, type WikiEntry, type WikiRelation } from '../lib/wiki';
 import { Modal } from './Modal';
 
 /**
@@ -76,14 +76,14 @@ export function markWikiTerms(text: string, terms: WikiTerms, onPick: (e: WikiEn
  * One wiki entry over the reader: everything the wiki knows of it, later chapters
  * included, and the entries it is linked to (tap one to go there).
  */
-export function WikiPopup({ wiki, entry, lang, onPick, onOpenWiki, onClose }: {
+export function WikiPopup({ wiki, entry, onPick, onOpenWiki, onClose }: {
   wiki: Wiki; entry: WikiEntry; lang: string;
   onPick: (e: WikiEntry) => void; onOpenWiki: () => void; onClose: () => void;
 }) {
   const { t } = useI18n();
-  const wt = useWikiT(lang);
-  const label = wikiLabel(entry, lang);
-  const sum = wikiSummary(entry, lang);
+  const wt = useWikiT(WIKI_LANG);
+  const label = wikiLabel(entry, WIKI_LANG);
+  const sum = wikiSummary(entry, WIKI_LANG);
   const level = entry.kind === 'character' ? levelOf(wiki, entry.uid) : null;
   const byUid = new Map(wiki.entries.map(e => [e.uid, e]));
   const rels = wiki.relations.filter(r => (r.fromUid === entry.uid || r.toUid === entry.uid) && !(r.kind === 'has_level' && level && r.toUid !== level.uid));
@@ -100,7 +100,7 @@ export function WikiPopup({ wiki, entry, lang, onPick, onOpenWiki, onClose }: {
         </div>
         {(level || entry.meta?.level) && (
           <div style={{ fontSize: 14 }}>
-            <b>{t('wiki.currentLevel')}:</b> {[level ? wikiLabel(level, lang) : entry.meta?.level, metaStage(entry.meta, n => t('wiki.stageN', { n }))].filter(Boolean).join(', ')}
+            <b>{t('wiki.currentLevel')}:</b> {[level ? wikiLabel(level, WIKI_LANG) : entry.meta?.level, metaStage(entry.meta, n => t('wiki.stageN', { n }))].filter(Boolean).join(', ')}
           </div>
         )}
         {entry.kind === 'level' && (entry.rank != null || entry.meta?.system) && (
@@ -118,7 +118,7 @@ export function WikiPopup({ wiki, entry, lang, onPick, onOpenWiki, onClose }: {
                 <button key={r.uid} type="button" data-relation={r.kind} onClick={() => onPick(other)}
                   style={{ display: 'flex', flexDirection: 'column', gap: 2, padding: '8px 12px', borderRadius: 16, border: 'none', background: 'var(--color-bg)', color: 'inherit', font: 'inherit', fontSize: 14, textAlign: 'left', cursor: 'pointer' }}>
                   <span style={{ display: 'flex', gap: 6, alignItems: 'baseline', flexWrap: 'wrap' }}>
-                    <span>{relWords(r, entry.uid, lang, wt)}</span><b>{wikiLabel(other, lang)}</b>
+                    <span>{relWords(r, entry.uid, WIKI_LANG, wt)}</span><b>{wikiLabel(other, WIKI_LANG)}</b>
                     {other.aliases.length > 0 && <span className="muted" style={{ fontSize: 12 }}>({other.aliases.slice(0, 3).join(', ')})</span>}
                   </span>
                   {r.note && <span className="muted" data-relation-note style={{ fontSize: 12, lineHeight: 1.4 }}>{r.note}</span>}

@@ -1220,7 +1220,9 @@ pub async fn wiki_translate<R: Runtime>(
         let model = llm::load(&conn)?
             .map(llm::OpenAi::new)
             .ok_or(AiError::NotSet)?;
-        wiki::translate_missing(&conn, &model, novel_id, &lang)
+        let done = wiki::translate_missing(&conn, &model, novel_id, &lang)?;
+        wiki::only_vi(&conn, novel_id).map_err(|e| AiError::Other(e.to_string()))?;
+        Ok(done)
     })
     .await
 }
