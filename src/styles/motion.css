@@ -54,8 +54,9 @@ body { background: var(--color-neutral-200); }
   box-shadow: 0 -6px 28px color-mix(in srgb, #0f2a6b 12%, transparent);
 }
 .bottom-nav__fab-circle {
-  background: linear-gradient(145deg, var(--color-accent-400), var(--color-accent-700));
-  border-color: color-mix(in srgb, #ffffff 75%, transparent);
+  /* A solid white ring: the gradient stops at the padding edge so no blue shows through it. */
+  background: linear-gradient(145deg, var(--color-accent-400), var(--color-accent-700)) padding-box;
+  border-color: #ffffff;
   box-shadow: 0 8px 24px color-mix(in srgb, var(--color-accent) 45%, transparent);
 }
 .rail, .side {
@@ -112,6 +113,16 @@ body { background: var(--color-neutral-200); }
   .toast { background: var(--color-accent-900); }
   .scrim, .dialog-backdrop { background: color-mix(in srgb, var(--color-accent-900) 45%, transparent); }
 }
+
+/* WebKitGTK (desktop Linux): no live blur at all, see main.tsx. Same solid fallback. */
+:root[data-engine='webkitgtk'] :is(.bottom-nav, .rail, .side, .sheet, .dialog, .toast, .glass, .reader-chrome--glass, .scrim, .dialog-backdrop) {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+:root[data-engine='webkitgtk'] :is(.bottom-nav, .sheet, .dialog) { background: var(--color-bg); }
+:root[data-engine='webkitgtk'] :is(.rail, .side) { background: var(--color-surface); }
+:root[data-engine='webkitgtk'] .toast { background: var(--color-accent-900); }
+:root[data-engine='webkitgtk'] :is(.scrim, .dialog-backdrop) { background: color-mix(in srgb, var(--color-accent-900) 45%, transparent); }
 
 /* — controls: smooth hover, a little give on press — */
 button, .chip, .btn, .seg-opt, .input, a { touch-action: manipulation; }
