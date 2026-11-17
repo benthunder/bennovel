@@ -129,7 +129,8 @@ function useAiQueue(user: string, showToast: (msg: string) => void) {
     });
     return () => { gone = true; stops.forEach(stop => stop()); };
   }, [user, showToast]);
-  return rev;
+  const reload = useCallback(() => setRev(n => n + 1), []);
+  return [rev, reload] as const;
 }
 
 /**
@@ -267,7 +268,7 @@ function useAppState() {
 
   /** Bumped after a restore, so screens list the library books again. */
   const [libraryRev, setLibraryRev] = useState(0);
-  const aiRev = useAiQueue(libKey, showToast);
+  const [aiRev, reloadAi] = useAiQueue(libKey, showToast);
   /** Lists everything again after the library file changed (a backup brought back). */
   const reloadLibrary = useCallback(() => setLibraryRev(n => n + 1), []);
 
@@ -284,7 +285,7 @@ function useAppState() {
     push, back, switchTab,
     setContentLang, openLangDialog: () => setLangDialogOpen(true), closeLangDialog: () => setLangDialogOpen(false), setReaderPrefs,
     showToast, markLocalRead, forgetLocal, ...account,
-    libraryRev, aiRev, reloadLibrary
+    libraryRev, aiRev, reloadAi, reloadLibrary
   };
 }
 

@@ -1,3 +1,4 @@
+import { DraftSheet } from '../components/AiDock';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { ChapterSheet, useSectionName } from '../components/ChapterSheet';
 import { BookOpenIcon, ChevronLeftIcon, DownloadIcon, ListIcon, SlidersIcon, SparklesIcon } from '../components/Icons';
@@ -147,7 +148,9 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
     return list.find(m => ai && styleOf(m.style) === ai.style) ?? list[0];
   };
   /** The chapter being translated (or rewritten) now, shown in the status bar while the reader goes on. */
-  const [aiJob, setAiJob] = useState<{ at: number; kind: 'translate' | 'rewrite'; done: number; total: number } | null>(null);
+  const [aiJob, setAiJob] = useState<{ at: number; kind: 'translate' | 'rewrite'; done: number; total: number; lang: string; style: string } | null>(null);
+  /** The chapter being translated, shown part by part as it comes (DraftSheet). */
+  const [watching, setWatching] = useState<{ novelId: number; index: number; lang: string; style: string; title: string } | null>(null);
   const aiRunning = useRef(false);
   /** Bumped per chapter each time it gets a new AI text, so its part loads it again. */
   const [aiRev, setAiRev] = useState<Record<number, number>>({});
@@ -175,7 +178,7 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
     if (aiRunning.current) { app.showToast(t('ai.busyChapter')); return; }
     aiRunning.current = true;
     if (lay.isPhone) setTools(null);
-    setAiJob({ at, kind: c.lang === lang ? 'rewrite' : 'translate', done: 0, total: 0 });
+    setAiJob({ at, kind: c.lang === lang ? 'rewrite' : 'translate', done: 0, total: 0, lang: c.lang, style: c.style.toLowerCase() });
     const novelId = place.novelId;
     const stop = onAiChapterProgress(p => {
       if (p.novelId === novelId && p.index === at) setAiJob(j => j && { ...j, done: p.done, total: p.total });
@@ -507,11 +510,19 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
               {t(aiJob.kind === 'rewrite' ? 'ai.rewritingName' : 'ai.translatingName', { name: sectionName(book.sections[aiJob.at], aiJob.at, total) })}
               {aiJob.total > 0 && ` · ${t('ai.parts', { done: aiJob.done, total: aiJob.total })}`}
             </span>
+            {place && (
+              <button className="text-link" style={{ fontSize: 'inherit', fontWeight: 700, whiteSpace: 'nowrap', color: 'inherit', textDecoration: 'underline' }}
+                onClick={() => setWatching({ novelId: place.novelId, index: aiJob.at, lang: aiJob.lang, style: aiJob.style, title: book.title ?? '' })}>
+                {t('pipe.watch')}
+              </button>
+            )}
           </span>
         )}
       </ReaderStatusBar>
 
       </div>
+
+      {watching && place && <DraftSheet user={place.user} watch={watching} onClose={() => setWatching(null)} />}
 
       {langMenu && (
         <div onClick={() => setLangMenu(null)} style={{ position: 'fixed', inset: 0, zIndex: 40 }}>

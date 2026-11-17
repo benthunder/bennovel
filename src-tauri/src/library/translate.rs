@@ -1602,6 +1602,29 @@ fn save(
     tx.commit()
 }
 
+/// What a chapter being translated has so far: the draft's title and the paragraphs
+/// of the parts back from the LLM, in the original's order. None when there is no
+/// draft (nothing back yet, or a published chapter being made again).
+pub fn draft(
+    conn: &Connection,
+    chapter_id: i64,
+    lang: &str,
+    style: &str,
+) -> rusqlite::Result<Option<(String, Vec<String>)>> {
+    let title: Option<String> = conn
+        .query_row(
+            "select title from chapter_translations
+             where chapter_id = ?1 and lang = ?2 and style = ?3 and source = 'ai'
+               and state = 'draft'",
+            params![chapter_id, lang, style],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(title) = title else { return Ok(None) };
+    let paragraphs = super::segments::paragraphs(conn, chapter_id, lang, Some(style))?;
+    Ok(Some((title, paragraphs)))
+}
+
 /// The AI text of a chapter in `lang` and `style`, if it was made.
 pub fn get(
     conn: &Connection,
@@ -2249,6 +2272,10 @@ pub(crate) mod tests {
             );
         }
         assert!(versions(&conn, 1).unwrap().is_empty());
+        // What the "watch live" sheet reads: the paragraphs back so far.
+        let (_, so_far) = draft(&conn, chapter, "vi", "natural").unwrap().unwrap();
+        assert_eq!(so_far.len(), 4);
+        assert!(so_far[0].starts_with("[tr] p0 "), "{so_far:?}");
 
         let llm = Arc::new(Fake::new("en"));
         let out = run(&conn, llm.clone(), req(chapter, "vi")).unwrap();

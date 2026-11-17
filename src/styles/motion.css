@@ -123,6 +123,23 @@ body { background: var(--color-neutral-200); }
 :root[data-engine='webkitgtk'] :is(.rail, .side) { background: var(--color-surface); }
 :root[data-engine='webkitgtk'] .toast { background: var(--color-accent-900); }
 :root[data-engine='webkitgtk'] :is(.scrim, .dialog-backdrop) { background: color-mix(in srgb, var(--color-accent-900) 45%, transparent); }
+/* WebKitGTK often paints on the CPU (old GPUs such as Intel HD 4000 get no
+   acceleration), and then every repaint redraws the page's gradients and soft shadows
+   under it. There the wash is one colour, cards are flat, shadows are short, and only
+   colours change on hover and press; a spinner turns in steps instead of every frame. */
+:root[data-engine='webkitgtk'] {
+  --frost: color-mix(in srgb, #ffffff 70%, var(--color-bg));
+  --frost-hover: #ffffff;
+  --frost-shadow: none;
+  --glass-shadow: none;
+}
+:root[data-engine='webkitgtk'] .app { background: var(--color-bg); }
+:root[data-engine='webkitgtk'] :is(.bottom-nav, .bottom-nav__fab-circle, .card, .import-action, .icon-btn, .chip, .cover, .dialog, .sheet, .toast) { box-shadow: none !important; }
+:root[data-engine='webkitgtk'] :is(.btn, .icon-btn, .chip, .text-link, .menu-row, .novel-row, .top-row, .shelf-item, .seg-opt, .bottom-nav__item, .rail__item, .side__item, .search__clear, .input, .check__box, .import-action, .cover) {
+  transition: background-color var(--dur-fast) ease, color var(--dur-fast) ease !important;
+  transform: none !important;
+}
+:root[data-engine='webkitgtk'] .spinner { animation-timing-function: steps(8); animation-duration: 1s; }
 
 /* — controls: smooth hover, a little give on press — */
 button, .chip, .btn, .seg-opt, .input, a { touch-action: manipulation; }
