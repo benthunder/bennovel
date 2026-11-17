@@ -1,4 +1,5 @@
 import { useRef } from 'react';
+import { AiDock } from './components/AiDock';
 import { BottomNav } from './components/BottomNav';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { LangDialog } from './components/LangDialog';
@@ -49,6 +50,7 @@ export default function App() {
         <ErrorBoundary>{renderRoute(top)}</ErrorBoundary>
       </div>
       {showNav && (lay.isPhone ? <BottomNav /> : lay.isTablet ? <NavRail /> : <Sidebar />)}
+      {top.s !== 'login' && <AiDock bottom={showNav && lay.isPhone ? 96 : top.s === 'book' ? 52 : 16} />}
       {app.langDialogOpen && <LangDialog onClose={app.closeLangDialog} />}
       {app.toast && (
         <div className="toast-wrap" style={{ left: contentLeft }}>

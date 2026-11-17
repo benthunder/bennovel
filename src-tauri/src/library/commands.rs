@@ -642,9 +642,13 @@ pub async fn ai_translate_chapter<R: Runtime>(
     glossary: bool,
     again: bool,
 ) -> Result<translate::Translated, AiError> {
+    use tauri::Manager;
     let path = db_path(&app, &user)?;
-    ai_blocking(move || {
-        let conn = db::open(&path)?;
+    let at = index as i64;
+    let db_file = path.clone();
+    let (app2, user2) = (app.clone(), user.clone());
+    let result = ai_blocking(move || {
+        let conn = db::open(&db_file)?;
         let chapter_id = chapter_id(&conn, novel_id, index)?;
         if !again {
             if let Some(t) = translate::get(&conn, chapter_id, &lang, &style)? {
@@ -652,17 +656,53 @@ pub async fn ai_translate_chapter<R: Runtime>(
             }
         }
         let model = std::sync::Arc::new(llm_for(&conn)?);
-        let progress: translate::OnProgress = std::sync::Arc::new(move |done, total| {
-            let _ = app.emit(
-                "ai-chapter-progress",
-                ChapterProgress {
+        let queue = app.state::<Queue>();
+        // Listed in the pipeline panel while it runs, and after it if it fails.
+        let stop = queue.manual_begin(
+            &db_file,
+            queue::Manual {
+                live: queue::Live {
                     novel_id,
-                    index,
-                    done,
-                    total,
+                    lang: lang.clone(),
+                    style: style.clone(),
+                    index: at,
+                    stage: translate::Stage::Detect,
+                    parts_done: 0,
+                    parts_total: 0,
                 },
-            );
-        });
+                title: queue::book_title(&conn, novel_id)?.unwrap_or_default(),
+                glossary,
+                error: None,
+            },
+        );
+        Queue::manual_changed(&app, &user);
+        let progress: translate::OnProgress = {
+            let (app, user, db) = (app.clone(), user.clone(), db_file.clone());
+            std::sync::Arc::new(move |done, total| {
+                app.state::<Queue>().manual_update(&db, novel_id, at, |l| {
+                    (l.parts_done, l.parts_total) = (done, total);
+                });
+                Queue::manual_changed(&app, &user);
+                let _ = app.emit(
+                    "ai-chapter-progress",
+                    ChapterProgress {
+                        novel_id,
+                        index,
+                        done,
+                        total,
+                    },
+                );
+            })
+        };
+        let stage: translate::OnStage = {
+            let (app, user, db) = (app.clone(), user.clone(), db_file.clone());
+            std::sync::Arc::new(move |stage| {
+                app.state::<Queue>().manual_update(&db, novel_id, at, |l| {
+                    (l.stage, l.parts_done, l.parts_total) = (stage, 0, 0);
+                });
+                Queue::manual_changed(&app, &user);
+            })
+        };
         translate::run_with(
             &conn,
             model,
@@ -675,12 +715,79 @@ pub async fn ai_translate_chapter<R: Runtime>(
             },
             translate::Hooks {
                 progress: Some(progress),
+                stage: Some(stage),
                 learn_in_background: true,
+                stop: Some(stop),
                 ..Default::default()
             },
         )
     })
-    .await
+    .await;
+    let error = match &result {
+        Ok(_) | Err(AiError::Stopped) => None,
+        Err(e) => Some(e.to_string()),
+    };
+    app2.state::<Queue>().manual_end(&path, novel_id, at, error);
+    Queue::manual_changed(&app2, &user2);
+    result
+}
+
+/// Everything the pipeline panel shows: the queue's requests of every book, the
+/// chapter it is on, and the chapters translated from the reader.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiStatus {
+    books: Vec<queue::BookProgress>,
+    live: Option<queue::Live>,
+    chapters: Vec<queue::Manual>,
+}
+
+#[tauri::command]
+pub async fn ai_status<R: Runtime>(
+    app: AppHandle<R>,
+    queue: State<'_, Queue>,
+    user: String,
+) -> Result<AiStatus, AiError> {
+    let path = db_path(&app, &user)?;
+    let db_file = path.clone();
+    let books = ai_blocking(move || Ok(queue::progress_all(&db::open(&db_file)?)?)).await?;
+    Ok(AiStatus {
+        books,
+        live: queue.live(&path),
+        chapters: queue.manual(&path),
+    })
+}
+
+/// Stops a chapter translated from the reader, or takes one that failed off the panel.
+#[tauri::command]
+pub fn ai_chapter_stop<R: Runtime>(
+    app: AppHandle<R>,
+    queue: State<'_, Queue>,
+    user: String,
+    novel_id: i64,
+    index: i64,
+) -> Result<bool, AiError> {
+    let path = db_path(&app, &user)?;
+    let found = queue.manual_stop(&path, novel_id, index);
+    Queue::manual_changed(&app, &user);
+    Ok(found)
+}
+
+/// Takes a book's request out of the queue altogether (the chapter being translated
+/// stops); the chapters translated so far stay.
+#[tauri::command]
+pub async fn ai_clear<R: Runtime>(
+    app: AppHandle<R>,
+    queue: State<'_, Queue>,
+    user: String,
+    novel_id: i64,
+) -> Result<usize, AiError> {
+    let path = db_path(&app, &user)?;
+    let db_file = path.clone();
+    let n = ai_blocking(move || Ok(queue::clear(&db::open(&db_file)?, novel_id)?)).await?;
+    queue.stop(&path, novel_id);
+    Queue::manual_changed(&app, &user);
+    Ok(n)
 }
 
 /// The AI text of a chapter, if it was made.
@@ -698,6 +805,34 @@ pub async fn ai_chapter<R: Runtime>(
         let conn = db::open(&path)?;
         let chapter_id = chapter_id(&conn, novel_id, index)?;
         Ok(translate::get(&conn, chapter_id, &lang, &style)?)
+    })
+    .await
+}
+
+/// The draft of a chapter being translated: the parts back so far, to read while the
+/// rest comes.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiDraft {
+    title: String,
+    paragraphs: Vec<String>,
+}
+
+#[tauri::command]
+pub async fn ai_chapter_draft<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+    index: usize,
+    lang: String,
+    style: String,
+) -> Result<Option<AiDraft>, AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || {
+        let conn = db::open(&path)?;
+        let chapter_id = chapter_id(&conn, novel_id, index)?;
+        Ok(translate::draft(&conn, chapter_id, &lang, &style)?
+            .map(|(title, paragraphs)| AiDraft { title, paragraphs }))
     })
     .await
 }
