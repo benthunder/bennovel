@@ -22,7 +22,7 @@
      page through. The dimmed scrim under a sheet keeps that page faint, so the sheet's
      own text stays clear. */
   --glass-bg: linear-gradient(180deg, color-mix(in srgb, #ffffff 86%, transparent), color-mix(in srgb, var(--color-accent-100) 80%, transparent));
-  --glass-bg-strong: linear-gradient(165deg, color-mix(in srgb, #ffffff 96%, transparent), color-mix(in srgb, var(--color-accent-100) 90%, transparent));
+  --glass-bg-strong: linear-gradient(165deg, #ffffff, color-mix(in srgb, var(--color-accent-100) 97%, transparent));
   --glass-surface: linear-gradient(180deg, color-mix(in srgb, #ffffff 80%, transparent), color-mix(in srgb, var(--color-accent-100) 70%, transparent));
   --glass-edge: color-mix(in srgb, #ffffff 80%, transparent);
   /* Depth: a tight contact shadow plus one soft drop. Still, never transitioned. */
@@ -107,7 +107,7 @@ body { background: var(--color-neutral-200); }
    and press; a spinner turns in steps instead of every frame. */
 :root[data-engine='webkitgtk'] {
   --glass-bg: color-mix(in srgb, #ffffff 86%, transparent);
-  --glass-bg-strong: color-mix(in srgb, #ffffff 95%, transparent);
+  --glass-bg-strong: #ffffff;
   --glass-surface: color-mix(in srgb, #ffffff 80%, transparent);
   --frost: color-mix(in srgb, #ffffff 70%, var(--color-bg));
   --frost-hover: #ffffff;
