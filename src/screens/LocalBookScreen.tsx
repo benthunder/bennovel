@@ -9,7 +9,7 @@ import { applyReplaceRules, getBookRules, saveBookRules } from '../data/reposito
 import { CONTENT_LANGS, type ContentLang, type ReplaceRule } from '../data/types';
 import { useI18n } from '../i18n';
 import {
-  AI_LANGS, AiFailure, aiErrorDetail, aiTranslateBook, aiTranslateChapter, aiViewKey, getAiChapter, getAiDraft, getAiMarks, getAiStatus,
+  AI_LANGS, DEFAULT_STYLE, AiFailure, aiErrorDetail, aiTranslateBook, aiTranslateChapter, aiViewKey, getAiChapter, getAiDraft, getAiMarks, getAiStatus,
   onAiMoved, onWatchLive, readingLangOf, styleOf,
   type AiChoice, type AiLang, type AiMark, type AiView, type LiveWatch
 } from '../lib/ai';
@@ -110,7 +110,7 @@ export function LocalBookScreen({ book, place, path, live: liveStart }: { book: 
   const pickView = (l: string) => {
     setLangMenu(null);
     const aiLang = AI_LANGS.find(x => x.code === l)?.code;
-    setAi({ lang: aiLang ?? ai?.lang ?? (lang === 'vi' ? 'en' : 'vi'), style: ai?.style ?? 'Natural', dict: ai?.dict ?? true, view: l });
+    setAi({ lang: aiLang ?? ai?.lang ?? (lang === 'vi' ? 'en' : 'vi'), style: ai?.style ?? DEFAULT_STYLE, dict: ai?.dict ?? true, view: l });
     setOriginal(new Set());
   };
   /**
@@ -169,7 +169,7 @@ export function LocalBookScreen({ book, place, path, live: liveStart }: { book: 
   /** What "translate this chapter" in a chapter uses: into the reading language, in the last style. */
   const lastChoice = (): AiChoice => {
     const into = AI_LANGS.find(x => x.code === viewLang)?.code ?? ai?.lang ?? (lang === 'vi' ? 'en' : 'vi');
-    return { lang: into, style: ai?.style ?? 'Natural', dict: ai?.dict ?? true };
+    return { lang: into, style: ai?.style ?? DEFAULT_STYLE, dict: ai?.dict ?? true };
   };
 
   /** One chapter now, made fresh even when it had this version: a loader over the text, then the AI version in its place. */
