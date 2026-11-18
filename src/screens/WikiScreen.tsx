@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ask } from '@tauri-apps/plugin-dialog';
 import { Modal } from '../components/Modal';
-import { levelOf, relWords, useWikiT } from '../components/WikiPopup';
+import { GroupedRelations, levelOf, relWords, useWikiT } from '../components/WikiPopup';
 import { ChevronLeftIcon, ChevronRightIcon, PencilIcon, SparklesIcon, XIcon } from '../components/Icons';
 import { Checkbox, SearchField, Spinner } from '../components/ui';
 import { useI18n } from '../i18n';
@@ -10,9 +10,9 @@ import { useAsync } from '../lib/useAsync';
 import { useLayout } from '../lib/useLayout';
 import { useThrottledValue } from '../lib/useThrottledValue';
 import {
-  RAW, REL_TYPES, WIKI_KINDS, WIKI_LANG, addWikiRelation, getWiki, getWikiMissing, mergeWikiEntry, removeWikiEntry, removeWikiRelation, saveWikiEntry,
+  PROFILE_FIELDS, RAW, REL_TYPES, WIKI_KINDS, WIKI_LANG, addWikiRelation, getWiki, getWikiMissing, mergeWikiEntry, removeWikiEntry, removeWikiRelation, saveWikiEntry,
   searchWiki, setWikiAuto, translateWiki, wikiChapter, wikiLabel, wikiSummary,
-  type Wiki, type WikiEntry, type WikiKind, metaStage } from '../lib/wiki';
+  type ProfileField, type Wiki, type WikiEntry, type WikiKind, metaStage } from '../lib/wiki';
 import { useApp } from '../store/AppStore';
 
 /**
@@ -318,6 +318,8 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
   const [system, setSystem] = useState(entry?.meta?.system ?? '');
   const [curLevel, setCurLevel] = useState(entry?.meta?.level ?? '');
   const [stageName, setStageName] = useState(entry?.meta?.stageName ?? '');
+  const [profile, setProfile] = useState<Record<ProfileField, string>>(() =>
+    Object.fromEntries(PROFILE_FIELDS.map(f => [f, entry?.meta?.[f] ?? ''])) as Record<ProfileField, string>);
   const [aliases, setAliases] = useState(entry?.aliases.join(', ') ?? '');
   // The wiki's words are Vietnamese; the original name stays in `name` and the aliases.
   const editLang = WIKI_LANG;
@@ -351,7 +353,10 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
       const n = Number.parseInt(rank, 10);
       const e = await saveWikiEntry(user, novelId, {
         uid: saved?.uid, kind, name, names, summaries, rank: kind === 'level' && Number.isFinite(n) ? n : null,
-        meta: { ...saved?.meta, system: system.trim(), level: curLevel.trim(), stageName: stageName.trim() },
+        meta: {
+          ...saved?.meta, system: system.trim(), level: curLevel.trim(), stageName: stageName.trim(),
+          ...Object.fromEntries(PROFILE_FIELDS.map(f => [f, profile[f].trim()]))
+        },
         aliases: aliases.split(/[,，、]/).map(a => a.trim()).filter(Boolean)
       });
       setSaved(e);
@@ -452,18 +457,6 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
             <input id="wiki-system" className="input" style={{ height: 42 }} value={system} placeholder={t('wiki.systemPh')} onChange={e => setSystem(e.target.value)} />
           </div>
         )}
-        {kind === 'character' && (
-          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-            <div className="field" style={{ flex: '2 1 180px' }}>
-              <label htmlFor="wiki-cur-level">{t('wiki.curLevel')}</label>
-              <input id="wiki-cur-level" className="input" style={{ height: 42 }} value={curLevel} onChange={e => setCurLevel(e.target.value)} />
-            </div>
-            <div className="field" style={{ flex: '1 1 120px' }}>
-              <label htmlFor="wiki-stage">{t('wiki.stage')}</label>
-              <input id="wiki-stage" className="input" style={{ height: 42 }} value={stageName} placeholder={t('wiki.stagePh')} onChange={e => setStageName(e.target.value)} />
-            </div>
-          </div>
-        )}
         <div className="field">
           <label htmlFor="wiki-aliases">{t('wiki.aliases')}</label>
           <input id="wiki-aliases" className="input" style={{ height: 42 }} value={aliases} onChange={e => setAliases(e.target.value)} />
@@ -481,12 +474,38 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
             onChange={e => setSummaries(s => ({ ...s, [editLang]: e.target.value }))} />
         </div>
 
+        {kind === 'character' && (
+          <section data-wiki-profile-edit style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div style={{ fontSize: 12, fontWeight: 700 }}>{t('wiki.profile')}</div>
+            {PROFILE_FIELDS.map(f => (
+              <div key={f} className="field">
+                <label htmlFor={`wiki-${f}`}>{t(`wiki.profile.${f}`)}</label>
+                {f === 'age'
+                  ? <input id={`wiki-${f}`} className="input" style={{ height: 42 }} value={profile[f]} placeholder={t(`wiki.profile.${f}Ph`)}
+                      onChange={e => setProfile(p => ({ ...p, [f]: e.target.value }))} />
+                  : <textarea id={`wiki-${f}`} className="input" rows={2} style={{ borderRadius: 20, resize: 'vertical', minHeight: 64 }} value={profile[f]} placeholder={t(`wiki.profile.${f}Ph`)}
+                      onChange={e => setProfile(p => ({ ...p, [f]: e.target.value }))} />}
+              </div>
+            ))}
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              <div className="field" style={{ flex: '2 1 180px' }}>
+                <label htmlFor="wiki-cur-level">{t('wiki.profile.level')}</label>
+                <input id="wiki-cur-level" className="input" style={{ height: 42 }} value={curLevel} onChange={e => setCurLevel(e.target.value)} />
+              </div>
+              <div className="field" style={{ flex: '1 1 120px' }}>
+                <label htmlFor="wiki-stage">{t('wiki.stage')}</label>
+                <input id="wiki-stage" className="input" style={{ height: 42 }} value={stageName} placeholder={t('wiki.stagePh')} onChange={e => setStageName(e.target.value)} />
+              </div>
+            </div>
+          </section>
+        )}
+
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           <div style={{ fontSize: 12, fontWeight: 700 }}>{t('wiki.relations')}</div>
           {!saved ? <div className="muted" style={{ fontSize: 12 }}>{t('wiki.relSaveFirst')}</div> : (
             <>
               {rels.length === 0 && <div className="muted" style={{ fontSize: 12 }}>{t('wiki.noRelations')}</div>}
-              {rels.map(r => {
+              <GroupedRelations wiki={wiki} uid={saved.uid} rels={rels} profiled={false} titled={false} row={r => {
                 const other = r.fromUid === saved.uid ? r.toUid : r.fromUid;
                 return (
                   <div key={r.uid} data-relation={r.kind} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, padding: '6px 6px 6px 12px', borderRadius: 16, background: 'var(--color-bg)' }}>
@@ -497,7 +516,7 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
                     <button type="button" className="icon-btn" style={{ width: 30, height: 30 }} aria-label={t('wiki.remove')} onClick={() => dropRel(r.uid)}><XIcon size={14} /></button>
                   </div>
                 );
-              })}
+              }} />
               {others.length > 0 && (
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                   <select className="input" style={{ height: 38, flex: '1 1 140px' }} aria-label={t('wiki.relType')} value={relType} onChange={e => setRelType(e.target.value)}>

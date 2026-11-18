@@ -1,7 +1,10 @@
 import type { ReactNode } from 'react';
 import { messageIn, useI18n } from '../i18n';
 import type { MessageKey } from '../i18n/en';
-import { RAW, WIKI_LANG, isRelType, metaStage, wikiLabel, wikiSummary, type Wiki, type WikiEntry, type WikiRelation } from '../lib/wiki';
+import {
+  PROFILE_FIELDS, RAW, REL_GROUPS, WIKI_LANG, isRelType, metaStage, relGroup, wikiLabel, wikiSummary,
+  type RelGroup, type Wiki, type WikiEntry, type WikiRelation
+} from '../lib/wiki';
 import { Modal } from './Modal';
 
 /**
@@ -26,6 +29,126 @@ export function levelOf(wiki: Wiki, uid: string) {
     .filter(r => r.kind === 'has_level' && r.fromUid === uid && byUid.get(r.toUid)?.kind === 'level')
     .sort((a, b) => (b.firstChapter ?? 0) - (a.firstChapter ?? 0));
   return reached.length ? byUid.get(reached[0].toUid) ?? null : null;
+}
+
+/** The levels a character went through before its current one, oldest first. */
+export function pastLevelsOf(wiki: Wiki, uid: string, current: WikiEntry | null) {
+  const byUid = new Map(wiki.entries.map(e => [e.uid, e]));
+  return wiki.relations
+    .filter(r => r.kind === 'has_level' && r.fromUid === uid && r.toUid !== current?.uid)
+    .sort((a, b) => (a.firstChapter ?? 0) - (b.firstChapter ?? 0))
+    .map(r => byUid.get(r.toUid))
+    .filter((e): e is WikiEntry => !!e && e.kind === 'level');
+}
+
+/**
+ * An entry's relations sorted for reading: with other characters first, by kind
+ * (master and disciples, family, love, friends, enemies, other), then the rest
+ * (factions, places, items). A character's levels and skills are shown in its profile
+ * instead, so `profiled` leaves them out.
+ */
+export function groupRelations(wiki: Wiki, uid: string, rels: WikiRelation[], profiled: boolean) {
+  const byUid = new Map(wiki.entries.map(e => [e.uid, e]));
+  const other = (r: WikiRelation) => byUid.get(r.fromUid === uid ? r.toUid : r.fromUid);
+  const people = new Map<RelGroup, WikiRelation[]>();
+  const more: WikiRelation[] = [];
+  for (const r of rels) {
+    if (r.fromUid !== uid && r.toUid !== uid) continue;
+    if (profiled && r.fromUid === uid && (r.kind === 'has_level' || r.kind === 'has_skill')) continue;
+    if (other(r)?.kind === 'character') {
+      const g = relGroup(r.kind);
+      people.set(g, [...(people.get(g) ?? []), r]);
+    } else more.push(r);
+  }
+  const groups = (Object.keys(REL_GROUPS) as RelGroup[]).filter(g => people.has(g)).map(g => ({ group: g, rels: people.get(g)! }));
+  return { groups, more };
+}
+
+/** A relation group's heading: "Sư môn", "Gia đình"… */
+function GroupTitle({ children }: { children: ReactNode }) {
+  return <div className="muted" style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4, marginTop: 4 }}>{children}</div>;
+}
+
+/** The relations of `uid`, grouped, each drawn by `row`. */
+export function GroupedRelations({ wiki, uid, rels, profiled, row, titled = true }: {
+  wiki: Wiki; uid: string; rels: WikiRelation[]; profiled: boolean; row: (r: WikiRelation) => ReactNode;
+  /** Off when a "Relationships" heading is already above: the rest then has none of its own unless groups come first. */
+  titled?: boolean;
+}) {
+  const { t } = useI18n();
+  const { groups, more } = groupRelations(wiki, uid, rels, profiled);
+  if (!groups.length && !more.length) return null;
+  return (
+    <>
+      {groups.length > 0 && (
+        <section data-wiki-rel-people style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <div style={{ fontSize: 13, fontWeight: 700 }}>{t('wiki.relChars')}</div>
+          {groups.map(g => (
+            <div key={g.group} data-rel-group={g.group} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <GroupTitle>{t(`wiki.relGroup.${g.group}`)}</GroupTitle>
+              {g.rels.map(row)}
+            </div>
+          ))}
+        </section>
+      )}
+      {more.length > 0 && (
+        <section data-wiki-rel-more style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {(groups.length > 0 || profiled) ? <div style={{ fontSize: 13, fontWeight: 700 }}>{t(profiled ? 'wiki.relMore' : 'wiki.relOther')}</div>
+            : titled && <div style={{ fontSize: 13, fontWeight: 700 }}>{t('wiki.relations')}</div>}
+          {more.map(row)}
+        </section>
+      )}
+    </>
+  );
+}
+
+/**
+ * A character's profile, one row each in this order: personality, age, background,
+ * skills (its own words, then the named skills it knows) and level (with the ones before).
+ */
+export function CharacterProfile({ wiki, entry, onPick }: { wiki: Wiki; entry: WikiEntry; onPick?: (e: WikiEntry) => void }) {
+  const { t } = useI18n();
+  const m = entry.meta ?? {};
+  const byUid = new Map(wiki.entries.map(e => [e.uid, e]));
+  const level = levelOf(wiki, entry.uid);
+  const past = pastLevelsOf(wiki, entry.uid, level);
+  const skills = wiki.relations
+    .filter(r => r.kind === 'has_skill' && r.fromUid === entry.uid)
+    .map(r => byUid.get(r.toUid))
+    .filter((e): e is WikiEntry => !!e);
+  const chip = (e: WikiEntry) => onPick
+    ? <button key={e.uid} type="button" className="chip chip--sm" data-wiki-skill style={{ fontSize: 12 }} onClick={() => onPick(e)}>{wikiLabel(e, WIKI_LANG)}</button>
+    : <span key={e.uid} className="chip chip--sm" data-wiki-skill style={{ fontSize: 12, pointerEvents: 'none' }}>{wikiLabel(e, WIKI_LANG)}</span>;
+  const levelText = [level ? wikiLabel(level, WIKI_LANG) : m.level, metaStage(m, n => t('wiki.stageN', { n }))].filter(Boolean).join(', ');
+  const rows: { key: string; value: ReactNode }[] = [
+    ...PROFILE_FIELDS.map(f => ({
+      key: f,
+      value: f === 'abilities' && skills.length
+        ? <>{m.abilities && <span>{m.abilities}</span>}<span style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: m.abilities ? 4 : 0 }}>{skills.map(chip)}</span></>
+        : m[f] || null
+    })),
+    {
+      key: 'level',
+      value: levelText
+        ? <>{levelText}{past.length > 0 && <span className="muted" style={{ display: 'block', fontSize: 12 }}>{t('wiki.profile.pastLevels', { levels: past.map(e => wikiLabel(e, WIKI_LANG)).join(' → ') })}</span>}</>
+        : null
+    }
+  ];
+  return (
+    <section data-wiki-profile style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div style={{ fontSize: 13, fontWeight: 700 }}>{t('wiki.profile')}</div>
+      <dl style={{ margin: 0, display: 'grid', gridTemplateColumns: 'minmax(78px, auto) 1fr', borderRadius: 16, overflow: 'hidden', background: 'var(--color-bg)' }}>
+        {rows.map((r, i) => (
+          <div key={r.key} data-profile={r.key} style={{ display: 'contents' }}>
+            <dt style={{ padding: '8px 10px 8px 12px', fontSize: 12, fontWeight: 700, color: 'var(--color-neutral-700)', borderTop: i ? '1px solid var(--color-neutral-200)' : 'none' }}>{t(`wiki.profile.${r.key}` as MessageKey)}</dt>
+            <dd style={{ margin: 0, padding: '8px 12px 8px 0', fontSize: 14, lineHeight: 1.45, overflowWrap: 'anywhere', borderTop: i ? '1px solid var(--color-neutral-200)' : 'none' }}>
+              {r.value ?? <span className="muted" style={{ fontSize: 13 }}>{t('wiki.profile.unknown')}</span>}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </section>
+  );
 }
 
 /** A way to find the wiki's entries in a chapter's text. */
@@ -86,6 +209,7 @@ export function WikiPopup({ wiki, entry, onPick, onOpenWiki, onClose }: {
   const sum = wikiSummary(entry, WIKI_LANG);
   const level = entry.kind === 'character' ? levelOf(wiki, entry.uid) : null;
   const byUid = new Map(wiki.entries.map(e => [e.uid, e]));
+  const isChar = entry.kind === 'character';
   const rels = wiki.relations.filter(r => (r.fromUid === entry.uid || r.toUid === entry.uid) && !(r.kind === 'has_level' && level && r.toUid !== level.uid));
   return (
     <Modal onClose={onClose}>
@@ -98,7 +222,7 @@ export function WikiPopup({ wiki, entry, onPick, onOpenWiki, onClose }: {
             {entry.aliases.length > 0 && <span>· {entry.aliases.join(', ')}</span>}
           </div>
         </div>
-        {(level || entry.meta?.level) && (
+        {!isChar && (level || entry.meta?.level) && (
           <div style={{ fontSize: 14 }}>
             <b>{t('wiki.currentLevel')}:</b> {[level ? wikiLabel(level, WIKI_LANG) : entry.meta?.level, metaStage(entry.meta, n => t('wiki.stageN', { n }))].filter(Boolean).join(', ')}
           </div>
@@ -109,24 +233,20 @@ export function WikiPopup({ wiki, entry, onPick, onOpenWiki, onClose }: {
         {sum.text
           ? <p style={{ margin: 0, fontSize: 15, lineHeight: 1.5 }}>{sum.text}</p>
           : <p className="muted" style={{ margin: 0, fontSize: 14 }}>{t('wiki.noSummary')}</p>}
-        {rels.length > 0 && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <div style={{ fontSize: 12, fontWeight: 700 }}>{t('wiki.relations')}</div>
-            {rels.map(r => {
-              const other = byUid.get(r.fromUid === entry.uid ? r.toUid : r.fromUid);
-              return other && (
-                <button key={r.uid} type="button" data-relation={r.kind} onClick={() => onPick(other)}
-                  style={{ display: 'flex', flexDirection: 'column', gap: 2, padding: '8px 12px', borderRadius: 16, border: 'none', background: 'var(--color-bg)', color: 'inherit', font: 'inherit', fontSize: 14, textAlign: 'left', cursor: 'pointer' }}>
-                  <span style={{ display: 'flex', gap: 6, alignItems: 'baseline', flexWrap: 'wrap' }}>
-                    <span>{relWords(r, entry.uid, WIKI_LANG, wt)}</span><b>{wikiLabel(other, WIKI_LANG)}</b>
-                    {other.aliases.length > 0 && <span className="muted" style={{ fontSize: 12 }}>({other.aliases.slice(0, 3).join(', ')})</span>}
-                  </span>
-                  {r.note && <span className="muted" data-relation-note style={{ fontSize: 12, lineHeight: 1.4 }}>{r.note}</span>}
-                </button>
-              );
-            })}
-          </div>
-        )}
+        {isChar && <CharacterProfile wiki={wiki} entry={entry} onPick={onPick} />}
+        <GroupedRelations wiki={wiki} uid={entry.uid} rels={rels} profiled={isChar} row={r => {
+          const other = byUid.get(r.fromUid === entry.uid ? r.toUid : r.fromUid);
+          return other && (
+            <button key={r.uid} type="button" data-relation={r.kind} onClick={() => onPick(other)}
+              style={{ display: 'flex', flexDirection: 'column', gap: 2, padding: '8px 12px', borderRadius: 16, border: 'none', background: 'var(--color-bg)', color: 'inherit', font: 'inherit', fontSize: 14, textAlign: 'left', cursor: 'pointer' }}>
+              <span style={{ display: 'flex', gap: 6, alignItems: 'baseline', flexWrap: 'wrap' }}>
+                <span>{relWords(r, entry.uid, WIKI_LANG, wt)}</span><b>{wikiLabel(other, WIKI_LANG)}</b>
+                {other.aliases.length > 0 && <span className="muted" style={{ fontSize: 12 }}>({other.aliases.slice(0, 3).join(', ')})</span>}
+              </span>
+              {r.note && <span className="muted" data-relation-note style={{ fontSize: 12, lineHeight: 1.4 }}>{r.note}</span>}
+            </button>
+          );
+        }} />
         <div className="dialog-actions">
           <button type="button" className="btn btn-secondary" style={{ height: 44, padding: '0 18px' }} onClick={onOpenWiki}>{t('wiki.open')}</button>
           <button type="button" className="btn btn-primary" style={{ height: 44, padding: '0 22px' }} onClick={onClose}>{t('common.close')}</button>
