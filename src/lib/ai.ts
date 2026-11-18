@@ -49,6 +49,8 @@ export interface AiProgress {
   paused: number; error: string | null;
 }
 
+/** The style a book is translated in until the user picks another. */
+export const DEFAULT_STYLE: TranslateStyle = 'Literary';
 /** A request as the app keeps it; the native side takes the style in lower case. */
 export interface AiChoice { lang: AiLang; style: TranslateStyle; dict: boolean }
 const styleArg = (s: TranslateStyle) => s.toLowerCase();

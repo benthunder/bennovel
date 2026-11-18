@@ -2014,13 +2014,25 @@ impl Recall {
 
 /* ---------- Learning from a chapter ---------- */
 
-/// What `Meta` holds, for the JSON part of a prompt.
+/// What `Meta` holds, for the JSON part of a prompt (`full`: with the profile and the
+/// skill's grade, for learning a chapter on its own; a translation's part gets the
+/// short one so the translation keeps the model's attention).
+fn meta_doc(vi: bool, full: bool) -> &'static str {
+    match (vi, full) {
+        (true, true) => META_VI,
+        (false, true) => META_EN,
+        (true, false) => META_VI_PART,
+        (false, false) => META_EN_PART,
+    }
+}
+const META_VI_PART: &str = "{\"system\": tên thang cấp bậc (chỉ cho level, ví dụ hệ tu luyện), \"level\": cảnh giới hiện tại (chỉ cho character), \"stage\": bậc nhỏ trong cảnh giới (sơ kỳ 1, trung kỳ 2, hậu kỳ 3, đại viên mãn 4), \"stage_name\": tên bậc nhỏ}, bỏ trống khi không rõ";
+const META_EN_PART: &str = "{\"system\": the ladder's name (level only, e.g. the cultivation system), \"level\": current level (character only), \"stage\": step inside the level (early 1, middle 2, late 3, peak 4), \"stage_name\": that step's name}, left out when unknown";
 const META_VI: &str = "{\"system\": tên thang cấp bậc (chỉ cho level, ví dụ hệ tu luyện), \"level\": cảnh giới hiện tại (chỉ cho character), \"stage\": bậc nhỏ trong cảnh giới (sơ kỳ 1, trung kỳ 2, hậu kỳ 3, đại viên mãn 4), \"stage_name\": tên bậc nhỏ, \"personality\": tính cách (chỉ cho character), \"age\": tuổi tác (chỉ cho character, ví dụ 15 tuổi, thiếu niên), \"origin\": xuất thân (chỉ cho character: gia tộc, quê quán, thân phận), \"abilities\": kỹ năng, sở trường (chỉ cho character), \"grade\": đẳng cấp của công pháp như truyện xếp hạng (chỉ cho skill, ví dụ Thiên giai, Huyền cấp thượng phẩm), \"difficulty\": độ khó tu luyện hay sử dụng (chỉ cho skill)}, mỗi mục hồ sơ một hai câu tiếng Việt, gồm cả điều đã biết trước đó; bỏ trống khi không rõ";
 const META_EN: &str = "{\"system\": the ladder's name (level only, e.g. the cultivation system), \"level\": current level (character only), \"stage\": step inside the level (early 1, middle 2, late 3, peak 4), \"stage_name\": that step's name, \"personality\": personality (character only), \"age\": age (character only, e.g. 15, a teenager), \"origin\": background (character only: family, home, standing), \"abilities\": skills and strengths (character only), \"grade\": the technique's grade as the story ranks them (skill only), \"difficulty\": how hard it is to learn or use (skill only)}, each profile field one or two sentences, earlier facts included; left out when unknown";
 
-fn meta_schema(vi: bool) -> Value {
+fn meta_schema(vi: bool, full: bool) -> Value {
     let t = |v: &str, e: &str| if vi { v.to_string() } else { e.to_string() };
-    json!({
+    let mut schema = json!({
         "type": "object",
         "description": t("Chỉ cho level và character; bỏ trống khi không rõ.", "Only for a level or a character; left out when unknown."),
         "properties": {
@@ -2035,7 +2047,14 @@ fn meta_schema(vi: bool) -> Value {
             "grade": { "type": "string", "description": t("Skill: đẳng cấp của công pháp như truyện xếp hạng (Thiên giai, Địa giai, Huyền cấp thượng phẩm…), ngắn gọn.", "Skill: its grade as the story ranks techniques, short.") },
             "difficulty": { "type": "string", "description": t("Skill: độ khó tu luyện hay sử dụng, điều kiện, cái giá phải trả; một câu tiếng Việt.", "Skill: how hard it is to learn or use, what it needs or costs; one sentence.") }
         }
-    })
+    });
+    if !full {
+        let props = schema["properties"].as_object_mut().expect("properties");
+        for k in ["personality", "age", "origin", "abilities", "grade", "difficulty"] {
+            props.remove(k);
+        }
+    }
+    schema
 }
 
 /// The tools a translation or rewrite request offers: `nop_ban_viet` for the text,
@@ -2055,7 +2074,7 @@ pub fn part_tools(lang: &str) -> Value {
             "aliases": { "type": "array", "items": { "type": "string" }, "description": t("Biệt danh, danh hiệu, cách gọi khác của cùng người hay vật này trong văn bản gốc.", "Nicknames, titles and other ways the original refers to this same one.".into()) },
             "summary": s(t("Tối đa ba câu tiếng Việt.", format!("At most three sentences in {l}."))),
             "rank": { "type": "integer", "description": t("Chỉ cho level: thứ bậc trong thang, 1 là thấp nhất.", "Level only: its place in its ladder, 1 for the lowest.".into()) },
-            "meta": meta_schema(vi)
+            "meta": meta_schema(vi, false)
         },
         "required": ["name", "kind"]
     });
@@ -2145,12 +2164,12 @@ pub fn tool_prompt(lang: &str, genre: &str) -> String {
     if lang == "vi" {
         return format!(
             "\n\nCÁCH TRẢ LỜI: chỉ trả lời bằng tool. Nộp văn bản đã viết qua {PART_TEXT}: mỗi đoạn vào là đúng một phần tử của doan, cùng thứ tự, không thêm gì khác. Cùng lúc đó ghi dữ kiện của đoạn qua {PART_FACTS} (không có gì đáng ghi thì bỏ qua). Nếu đoạn có một tên không nằm trong danh sách tên riêng mà bạn cần biết là ai để viết đúng, gọi {PART_LOOKUP} trước rồi mới nộp. Không bao giờ trả lời bằng lời, không hỏi lại, không xin văn bản khác: luôn nộp kết quả qua {PART_TEXT}.\n\nGHI WIKI. {}",
-            learn_rules(lang, genre)
+            learn_rules(lang, genre, false)
         );
     }
     format!(
         "\n\nHOW TO ANSWER: answer only through the tools. Hand in the text through {PART_TEXT}: one item of doan per paragraph given, in the same order, nothing else. At the same time record the part's facts through {PART_FACTS} (skip it when there is nothing worth keeping). When the part has a name the names list does not have and you need to know who it is to write it right, call {PART_LOOKUP} first, then hand in. Never answer in words, never ask anything back, never ask for another text: always hand in the result through {PART_TEXT}.\n\nKEEP THE WIKI. {}",
-        learn_rules(lang, genre)
+        learn_rules(lang, genre, false)
     )
 }
 
@@ -2243,7 +2262,7 @@ fn tools(lang: &str) -> Value {
                         "aliases": { "type": "array", "items": { "type": "string" }, "description": t("Mọi cách khác văn bản gốc dùng để chỉ cùng người hay vật này: biệt danh, danh hiệu, cách gọi, mô tả thay cho tên.", "Every other way the original text refers to this same one: nicknames, titles, epithets, descriptions that stand for it (\"the girl in green\").".to_string()) },
                         "summary": { "type": "string", "description": t("Bằng tiếng Việt, tối đa ba câu: người hay vật này là gì, theo những gì đã biết. Viết lại cả tóm tắt, gồm cả thông tin cũ.", format!("In {lang}, at most three sentences: who or what it is, as known so far. Write the whole summary, old facts included.")) },
                         "rank": { "type": "integer", "description": t("Chỉ cho loại level: thứ bậc trong thang cảnh giới hay cấp bậc, 1 là thấp nhất.", "Only for kind level: its place in its ladder of ranks or cultivation realms, 1 for the lowest.".to_string()) },
-                        "meta": meta_schema(vi)
+                        "meta": meta_schema(vi, true)
                     },
                     "required": ["name", "kind"]
                 }
@@ -2269,15 +2288,23 @@ fn tools(lang: &str) -> Value {
     ])
 }
 
-fn learn_rules(lang: &str, genre: &str) -> String {
+/// The rules for keeping the wiki. `full` (learning a chapter on its own) also asks
+/// for the characters' profiles, the skills' grades, matching levels and a faction's
+/// leaders; a translation's part does without them, so the translation keeps the
+/// model's attention.
+const VI_PROFILE: &str = " và hồ sơ vào meta: personality (tính cách), age (tuổi tác), origin (xuất thân), abilities (kỹ năng, sở trường), mỗi mục một hai câu, viết lại cả điều đã biết; summary chỉ là một hai câu giới thiệu nhân vật là ai, không lặp lại hồ sơ. Với công pháp, chiêu thức (skill): summary mô tả nó ra sao, làm được gì; ghi đẳng cấp vào meta.grade và độ khó vào meta.difficulty. Với cảnh giới: khi truyện cho biết một cảnh giới tương đương với cảnh giới ở thang cấp bậc khác (ví dụ tu tiên và luyện thể), ghi quan hệ equivalent_to giữa hai cảnh giới đó. Với thế lực: ghi leader_of từ mỗi người đứng đầu đến thế lực, kể cả người tiền nhiệm và người kế nhiệm khi truyện tiết lộ hay đổi người; note ghi người đó là đời thứ mấy (nếu truyện cho biết) và nắm quyền khi nào.";
+const EN_PROFILE: &str = " and its profile in meta: personality, age, origin (background), abilities (skills and strengths), one or two sentences each, earlier facts included; its summary then only says in a sentence or two who it is, without repeating the profile. For a skill, the summary says what it is and does; put its grade in meta.grade and how hard it is in meta.difficulty. For levels, when the story says a level of one ladder matches a level of another, record equivalent_to between them. For a faction, record leader_of from each of its leaders, predecessors and successors included when the story reveals or changes them; the note says which leader in line they are (when the story says) and when they led.";
+
+fn learn_rules(lang: &str, genre: &str, full: bool) -> String {
     if lang == "vi" {
         let names = if genre == "nonfiction" {
             " Đây là sách tài liệu thực tế: tên dịch luôn là tên gốc tiếng Anh, không dịch."
         } else {
             ""
         };
+        let profile = if full { VI_PROFILE } else { "." };
         return format!(
-            "Bạn ghi wiki cho một truyện đang được chuyển sang tiếng Việt. Từ văn bản dưới đây, chỉ ghi các danh từ riêng có vai trò trong truyện: tên riêng của nhân vật, địa danh, thế lực hay tông môn, vật phẩm, cảnh giới hay cấp bậc (kèm số bậc, tên thang cấp bậc và bậc nhỏ trong meta) và công pháp hay chiêu thức có tên. Không ghi danh từ chung hay từ mô tả, dù quan trọng với cảnh truyện: một nơi hay một vật chỉ được ghi khi nó có tên riêng. Tên riêng thường viết hoa; cụm không viết hoa hoặc chỉ là mô tả (người, đồ vật, nơi chốn chung chung) thì không phải tên riêng. Ghi mỗi tên trọn vẹn, đúng như văn bản gốc viết, không cắt một phần của từ hay tên dài hơn. Biệt danh, danh hiệu, cách gọi hay mô tả dùng để chỉ một nhân vật hay nơi đã có tên thì không phải mục mới: ghi vào tên gọi khác (aliases) của mục đó. Với nhân vật, ghi cảnh giới hiện tại vào meta (level, stage) và hồ sơ vào meta: personality (tính cách), age (tuổi tác), origin (xuất thân), abilities (kỹ năng, sở trường), mỗi mục một hai câu, viết lại cả điều đã biết; summary chỉ là một hai câu giới thiệu nhân vật là ai, không lặp lại hồ sơ. Với công pháp, chiêu thức (skill): summary mô tả nó ra sao, làm được gì; ghi đẳng cấp vào meta.grade và độ khó vào meta.difficulty. Với cảnh giới: khi truyện cho biết một cảnh giới tương đương với cảnh giới ở thang cấp bậc khác (ví dụ tu tiên và luyện thể), ghi quan hệ equivalent_to giữa hai cảnh giới đó. Với thế lực: ghi leader_of từ mỗi người đứng đầu đến thế lực, kể cả người tiền nhiệm và người kế nhiệm khi truyện tiết lộ hay đổi người; note ghi người đó là đời thứ mấy (nếu truyện cho biết) và nắm quyền khi nào. Ghi các quan hệ: giữa nhân vật với nhau, với thế lực, cảnh giới hiện tại, công pháp nhân vật biết, nơi nào nằm trong nơi nào; mỗi quan hệ kèm ghi chú bằng tiếng Việt về hoàn cảnh (vì sao có quan hệ đó, hai bên gọi nhau thế nào). Viết mọi tên dịch, tóm tắt, quan hệ tự do và ghi chú chỉ bằng tiếng Việt, không trộn ngôn ngữ. Ghi hết những gì văn bản cho biết về một mục, kể cả tình tiết về sau (không cần tránh tiết lộ nội dung), và liên kết nó với các mục liên quan; không đoán.{names}"
+            "Bạn ghi wiki cho một truyện đang được chuyển sang tiếng Việt. Từ văn bản dưới đây, chỉ ghi các danh từ riêng có vai trò trong truyện: tên riêng của nhân vật, địa danh, thế lực hay tông môn, vật phẩm, cảnh giới hay cấp bậc (kèm số bậc, tên thang cấp bậc và bậc nhỏ trong meta) và công pháp hay chiêu thức có tên. Không ghi danh từ chung hay từ mô tả, dù quan trọng với cảnh truyện: một nơi hay một vật chỉ được ghi khi nó có tên riêng. Tên riêng thường viết hoa; cụm không viết hoa hoặc chỉ là mô tả (người, đồ vật, nơi chốn chung chung) thì không phải tên riêng. Ghi mỗi tên trọn vẹn, đúng như văn bản gốc viết, không cắt một phần của từ hay tên dài hơn. Biệt danh, danh hiệu, cách gọi hay mô tả dùng để chỉ một nhân vật hay nơi đã có tên thì không phải mục mới: ghi vào tên gọi khác (aliases) của mục đó. Với nhân vật, ghi cảnh giới hiện tại vào meta (level, stage){profile} Ghi các quan hệ: giữa nhân vật với nhau, với thế lực, cảnh giới hiện tại, công pháp nhân vật biết, nơi nào nằm trong nơi nào; mỗi quan hệ kèm ghi chú bằng tiếng Việt về hoàn cảnh (vì sao có quan hệ đó, hai bên gọi nhau thế nào). Viết mọi tên dịch, tóm tắt, quan hệ tự do và ghi chú chỉ bằng tiếng Việt, không trộn ngôn ngữ. Ghi hết những gì văn bản cho biết về một mục, kể cả tình tiết về sau (không cần tránh tiết lộ nội dung), và liên kết nó với các mục liên quan; không đoán.{names}"
         );
     }
     let l = super::translate::lang_name(lang);
@@ -2286,8 +2313,9 @@ fn learn_rules(lang: &str, genre: &str) -> String {
     } else {
         String::new()
     };
+    let profile = if full { EN_PROFILE } else { "." };
     format!(
-        "You keep the wiki of a novel being translated into {l}. From the chapter below, record only proper nouns that matter to the story: the names of specific characters, places, factions or sects, items, levels (ranks, cultivation realms, each with its rank number, its ladder and stage in meta) and skills (named techniques, martial arts, spells). Never record a common noun or a generic word, however important to the scene (mountain, river, sword, city, sect, spirit energy, núi, sông, kiếm, thành, linh khí, tông môn): a place or thing is kept only under its own name. Write each name whole and exactly as the original text writes it, never a piece of a longer word or name (not a surname cut out of another word). A nickname, title, epithet or description that stands for a character or place already named (\"the girl in green\", \"bé áo xanh\", \"the old man\", \"Sư phụ\" for one person) is not a new entry: put it in that entry's aliases. For a character, put its current level in meta (level, stage) and its profile in meta: personality, age, origin (background), abilities (skills and strengths), one or two sentences each, earlier facts included; its summary then only says in a sentence or two who it is, without repeating the profile. For a skill, the summary says what it is and does; put its grade in meta.grade and how hard it is in meta.difficulty. For levels, when the story says a level of one ladder matches a level of another, record equivalent_to between them. For a faction, record leader_of from each of its leaders, predecessors and successors included when the story reveals or changes them; the note says which leader in line they are (when the story says) and when they led. Record the relationships: between characters, with factions, a character's current level, the skills a character has, which place lies in which (the map), each with a note in {l} on the circumstances (how it came about, what one calls the other). Write every translated name, summary, free relation and note in {l} only, never mixing languages. Record all the chapter shows about an entry, later events included (spoilers are fine), and link it to the others it involves; do not guess.{names}"
+        "You keep the wiki of a novel being translated into {l}. From the chapter below, record only proper nouns that matter to the story: the names of specific characters, places, factions or sects, items, levels (ranks, cultivation realms, each with its rank number, its ladder and stage in meta) and skills (named techniques, martial arts, spells). Never record a common noun or a generic word, however important to the scene (mountain, river, sword, city, sect, spirit energy, núi, sông, kiếm, thành, linh khí, tông môn): a place or thing is kept only under its own name. Write each name whole and exactly as the original text writes it, never a piece of a longer word or name (not a surname cut out of another word). A nickname, title, epithet or description that stands for a character or place already named (\"the girl in green\", \"bé áo xanh\", \"the old man\", \"Sư phụ\" for one person) is not a new entry: put it in that entry's aliases. For a character, put its current level in meta (level, stage){profile} Record the relationships: between characters, with factions, a character's current level, the skills a character has, which place lies in which (the map), each with a note in {l} on the circumstances (how it came about, what one calls the other). Write every translated name, summary, free relation and note in {l} only, never mixing languages. Record all the chapter shows about an entry, later events included (spoilers are fine), and link it to the others it involves; do not guess.{names}"
     )
 }
 
@@ -2295,24 +2323,25 @@ fn learn_prompt(lang: &str, genre: &str) -> String {
     if lang == "vi" {
         return format!(
             "{} Dùng các công cụ: wiki_search để xem wiki đã biết gì (tìm cả biệt danh trước khi thêm mục mới), wiki_upsert để thêm hoặc cập nhật một mục, wiki_relate để ghi quan hệ (thêm cả hai mục trước). Khi wiki đã cập nhật xong, trả lời DONE.",
-            learn_rules(lang, genre)
+            learn_rules(lang, genre, true)
         );
     }
     format!(
         "{} Use the tools: wiki_search to check what is known (search a nickname too before adding it as new), wiki_upsert to add or update an entry, wiki_relate for relationships (add both entries first). When the wiki is up to date, reply with DONE.",
-        learn_rules(lang, genre)
+        learn_rules(lang, genre, true)
     )
 }
 
 /// The JSON object the AI answers with when it does not use the tools.
-fn json_shape(lang: &str) -> String {
+fn json_shape(lang: &str, full: bool) -> String {
+    let meta = meta_doc(lang == "vi", full);
     if lang == "vi" {
         return format!(
-            "{{\"entries\": [{{\"name\": tên gốc, \"kind\": một trong {KINDS_VI}, \"translated\": tên trong bản tiếng Việt, \"aliases\": [biệt danh, danh hiệu và các cách văn bản gốc gọi mục này], \"summary\": tối đa ba câu tiếng Việt, \"rank\": số bậc, chỉ cho level, \"meta\": {META_VI}}}], \"relations\": [{{\"from\": tên gốc, \"to\": tên gốc, \"relation\": một trong {RELS_VI} (nếu không có loại nào hợp thì vài chữ tiếng Việt), \"note\": hoàn cảnh, bằng tiếng Việt}}]}}"
+            "{{\"entries\": [{{\"name\": tên gốc, \"kind\": một trong {KINDS_VI}, \"translated\": tên trong bản tiếng Việt, \"aliases\": [biệt danh, danh hiệu và các cách văn bản gốc gọi mục này], \"summary\": tối đa ba câu tiếng Việt, \"rank\": số bậc, chỉ cho level, \"meta\": {meta}}}], \"relations\": [{{\"from\": tên gốc, \"to\": tên gốc, \"relation\": một trong {RELS_VI} (nếu không có loại nào hợp thì vài chữ tiếng Việt), \"note\": hoàn cảnh, bằng tiếng Việt}}]}}"
         );
     }
     format!(
-        "{{\"entries\": [{{\"name\": original name, \"kind\": one of {}, \"translated\": name in the translation, \"aliases\": [nicknames, titles and other ways the original refers to it], \"summary\": at most three sentences in {l}, \"rank\": number for a level only, \"meta\": {META_EN}}}], \"relations\": [{{\"from\": original name, \"to\": original name, \"relation\": one of {} (else a few words in {l}), \"note\": the circumstances in {l}}}]}}",
+        "{{\"entries\": [{{\"name\": original name, \"kind\": one of {}, \"translated\": name in the translation, \"aliases\": [nicknames, titles and other ways the original refers to it], \"summary\": at most three sentences in {l}, \"rank\": number for a level only, \"meta\": {meta}}}], \"relations\": [{{\"from\": original name, \"to\": original name, \"relation\": one of {} (else a few words in {l}), \"note\": the circumstances in {l}}}]}}",
         KINDS.join(", "),
         REL_TYPES.join(", "),
         l = super::translate::lang_name(lang),
@@ -2323,14 +2352,14 @@ fn json_prompt(lang: &str, genre: &str) -> String {
     if lang == "vi" {
         return format!(
             "{} Chỉ trả về đúng một đối tượng JSON, không gì khác (giữ nguyên tên khóa và mã tiếng Anh): {}",
-            learn_rules(lang, genre),
-            json_shape(lang)
+            learn_rules(lang, genre, true),
+            json_shape(lang, true)
         );
     }
     format!(
         "{} Reply with only one JSON object and nothing else: {}",
-        learn_rules(lang, genre),
-        json_shape(lang)
+        learn_rules(lang, genre, true),
+        json_shape(lang, true)
     )
 }
 
@@ -2340,15 +2369,15 @@ pub fn extract_prompt(lang: &str, mark: &str, genre: &str) -> String {
     if lang == "vi" {
         return format!(
             "\n\nGHI WIKI. {} Sau phần văn bản đã viết, viết một dòng chỉ có {mark}, rồi đúng một đối tượng JSON, không gì khác (giữ nguyên tên khóa và mã tiếng Anh): {}, thêm hai danh sách: {}. Nếu văn bản không có gì đáng ghi, viết {{\"entries\": [], \"relations\": []}}.",
-            learn_rules(lang, genre),
-            json_shape(lang),
+            learn_rules(lang, genre, false),
+            json_shape(lang, false),
             super::cast::shape(lang)
         );
     }
     format!(
         "\n\nAlso keep the novel's wiki. {} After the translated text, write a line with only {mark}, then one JSON object and nothing else: {}, with two more lists in it: {}. When the text shows nothing worth keeping, write {{\"entries\": [], \"relations\": []}}.",
-        learn_rules(lang, genre),
-        json_shape(lang),
+        learn_rules(lang, genre, false),
+        json_shape(lang, false),
         super::cast::shape(lang)
     )
 }
@@ -3490,6 +3519,28 @@ mod tests {
             summary: String::new(),
             rank: None,
             meta: Default::default(),
+        }
+    }
+
+    #[test]
+    fn a_translation_part_asks_only_for_names_and_relations() {
+        // The profile, grades and leaders are asked when a chapter is learnt on its
+        // own, not in the request that also translates.
+        for lang in ["vi", "en"] {
+            let part = format!(
+                "{}{}{}",
+                tool_prompt(lang, "xianxia"),
+                extract_prompt(lang, "@@", "xianxia"),
+                part_tools(lang)
+            );
+            for word in ["personality", "difficulty", "ghi quan hệ equivalent_to", "record equivalent_to", "leader_of từ", "record leader_of"] {
+                assert!(!part.contains(word), "{lang}: {word}");
+            }
+            assert!(part.contains("stage_name"), "{lang}");
+            let learn = format!("{}{}{}", learn_prompt(lang, "xianxia"), json_prompt(lang, "xianxia"), tools(lang));
+            for word in ["personality", "difficulty", "equivalent_to"] {
+                assert!(learn.contains(word), "{lang}: {word}");
+            }
         }
     }
 
