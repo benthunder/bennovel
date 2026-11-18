@@ -53,6 +53,7 @@ pub const REL_TYPES: &[&str] = &[
     "owns",
     "has_level",
     "has_skill",
+    "equivalent_to",
 ];
 /// The one language the wiki is written in: names, descriptions, relations and notes
 /// are Vietnamese, whatever language a chapter is translated into. The original name
@@ -147,6 +148,12 @@ pub struct Meta {
     pub origin: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub abilities: String,
+    /// A skill's grade as the story ranks techniques ("Thiên giai", "Huyền cấp thượng
+    /// phẩm") and how hard it is to learn or use, in the wiki's language.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub grade: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub difficulty: String,
 }
 
 impl Meta {
@@ -173,6 +180,11 @@ impl Meta {
                 abilities: long(self.abilities),
                 ..Default::default()
             },
+            "skill" => Meta {
+                grade: t(self.grade),
+                difficulty: long(self.difficulty),
+                ..Default::default()
+            },
             _ => Meta::default(),
         }
     }
@@ -189,6 +201,8 @@ impl Meta {
             age: pick(self.age, new.age),
             origin: pick(self.origin, new.origin),
             abilities: pick(self.abilities, new.abilities),
+            grade: pick(self.grade, new.grade),
+            difficulty: pick(self.difficulty, new.difficulty),
         }
     }
 }
@@ -438,6 +452,18 @@ const REL_WORDS: &[(&str, &[&str])] = &[
         &["level", "realm", "rank", "cảnh giới", "cấp bậc", "tu vi"],
     ),
     (
+        "equivalent_to",
+        &[
+            "equivalent",
+            "equivalent to",
+            "equals",
+            "tương đương",
+            "tương đương với",
+            "ngang với",
+            "ngang hàng",
+        ],
+    ),
+    (
         "has_skill",
         &[
             "skill",
@@ -503,6 +529,7 @@ fn rel_vi(code: &str) -> &'static str {
         "owns" => "sở hữu",
         "has_level" => "đang ở cảnh giới / cấp bậc",
         "has_skill" => "biết",
+        "equivalent_to" => "tương đương với",
         _ => "liên quan đến",
     }
 }
@@ -575,7 +602,7 @@ fn entry_line(e: &Entry, shown: &str, vi: bool) -> String {
 const KINDS_VI: &str = "character (nhân vật), place (địa danh), faction (thế lực, tông môn, gia tộc), item (vật phẩm), level (cảnh giới, cấp bậc), skill (công pháp, chiêu thức), term (thuật ngữ), other (khác)";
 
 /// What each relation code means, for a Vietnamese prompt.
-const RELS_VI: &str = "master_of (là sư phụ của), disciple_of (là đệ tử của), parent_of (là cha mẹ của), child_of (là con của), sibling_of (là anh chị em của), spouse_of (là vợ / chồng của), lover_of (là người yêu của), friend_of (là bạn của), enemy_of (là kẻ thù của), member_of (là thành viên của), leader_of (đứng đầu), located_in (nằm trong, cho địa danh hay thế lực nằm trong nơi lớn hơn), owns (sở hữu), has_level (cảnh giới / cấp bậc hiện tại của nhân vật), has_skill (công pháp, chiêu thức nhân vật biết)";
+const RELS_VI: &str = "master_of (là sư phụ của), disciple_of (là đệ tử của), parent_of (là cha mẹ của), child_of (là con của), sibling_of (là anh chị em của), spouse_of (là vợ / chồng của), lover_of (là người yêu của), friend_of (là bạn của), enemy_of (là kẻ thù của), member_of (là thành viên của), leader_of (đứng đầu), located_in (nằm trong, cho địa danh hay thế lực nằm trong nơi lớn hơn), owns (sở hữu), has_level (cảnh giới / cấp bậc hiện tại của nhân vật), has_skill (công pháp, chiêu thức nhân vật biết), equivalent_to (cảnh giới tương đương với cảnh giới ở thang cấp bậc khác)";
 
 fn to_json<T: Serialize>(v: &T, empty: &str) -> String {
     serde_json::to_string(v).unwrap_or_else(|_| empty.into())
@@ -2000,8 +2027,8 @@ impl Recall {
 /* ---------- Learning from a chapter ---------- */
 
 /// What `Meta` holds, for the JSON part of a prompt.
-const META_VI: &str = "{\"system\": tên thang cấp bậc (chỉ cho level, ví dụ hệ tu luyện), \"level\": cảnh giới hiện tại (chỉ cho character), \"stage\": bậc nhỏ trong cảnh giới (sơ kỳ 1, trung kỳ 2, hậu kỳ 3, đại viên mãn 4), \"stage_name\": tên bậc nhỏ, \"personality\": tính cách (chỉ cho character), \"age\": tuổi tác (chỉ cho character, ví dụ 15 tuổi, thiếu niên), \"origin\": xuất thân (chỉ cho character: gia tộc, quê quán, thân phận), \"abilities\": kỹ năng, sở trường (chỉ cho character)}, mỗi mục hồ sơ một hai câu tiếng Việt, gồm cả điều đã biết trước đó; bỏ trống khi không rõ";
-const META_EN: &str = "{\"system\": the ladder's name (level only, e.g. the cultivation system), \"level\": current level (character only), \"stage\": step inside the level (early 1, middle 2, late 3, peak 4), \"stage_name\": that step's name, \"personality\": personality (character only), \"age\": age (character only, e.g. 15, a teenager), \"origin\": background (character only: family, home, standing), \"abilities\": skills and strengths (character only)}, each profile field one or two sentences, earlier facts included; left out when unknown";
+const META_VI: &str = "{\"system\": tên thang cấp bậc (chỉ cho level, ví dụ hệ tu luyện), \"level\": cảnh giới hiện tại (chỉ cho character), \"stage\": bậc nhỏ trong cảnh giới (sơ kỳ 1, trung kỳ 2, hậu kỳ 3, đại viên mãn 4), \"stage_name\": tên bậc nhỏ, \"personality\": tính cách (chỉ cho character), \"age\": tuổi tác (chỉ cho character, ví dụ 15 tuổi, thiếu niên), \"origin\": xuất thân (chỉ cho character: gia tộc, quê quán, thân phận), \"abilities\": kỹ năng, sở trường (chỉ cho character), \"grade\": đẳng cấp của công pháp như truyện xếp hạng (chỉ cho skill, ví dụ Thiên giai, Huyền cấp thượng phẩm), \"difficulty\": độ khó tu luyện hay sử dụng (chỉ cho skill)}, mỗi mục hồ sơ một hai câu tiếng Việt, gồm cả điều đã biết trước đó; bỏ trống khi không rõ";
+const META_EN: &str = "{\"system\": the ladder's name (level only, e.g. the cultivation system), \"level\": current level (character only), \"stage\": step inside the level (early 1, middle 2, late 3, peak 4), \"stage_name\": that step's name, \"personality\": personality (character only), \"age\": age (character only, e.g. 15, a teenager), \"origin\": background (character only: family, home, standing), \"abilities\": skills and strengths (character only), \"grade\": the technique's grade as the story ranks them (skill only), \"difficulty\": how hard it is to learn or use (skill only)}, each profile field one or two sentences, earlier facts included; left out when unknown";
 
 fn meta_schema(vi: bool) -> Value {
     let t = |v: &str, e: &str| if vi { v.to_string() } else { e.to_string() };
@@ -2016,7 +2043,9 @@ fn meta_schema(vi: bool) -> Value {
             "personality": { "type": "string", "description": t("Character: tính cách, một hai câu tiếng Việt.", "Character: its personality, one or two sentences.") },
             "age": { "type": "string", "description": t("Character: tuổi tác, ngắn gọn (15 tuổi, thiếu niên, lão giả trăm tuổi).", "Character: its age, short (15, a teenager, a hundred-year-old elder).") },
             "origin": { "type": "string", "description": t("Character: xuất thân (gia tộc, quê quán, thân phận), một hai câu tiếng Việt.", "Character: its background (family, home, standing), one or two sentences.") },
-            "abilities": { "type": "string", "description": t("Character: kỹ năng, sở trường, năng lực đặc biệt, một hai câu tiếng Việt; công pháp có tên thì ghi thêm thành mục skill và quan hệ has_skill.", "Character: its skills, strengths and special powers, one or two sentences; a named technique is also its own skill entry with a has_skill relation.") }
+            "abilities": { "type": "string", "description": t("Character: kỹ năng, sở trường, năng lực đặc biệt, một hai câu tiếng Việt; công pháp có tên thì ghi thêm thành mục skill và quan hệ has_skill.", "Character: its skills, strengths and special powers, one or two sentences; a named technique is also its own skill entry with a has_skill relation.") },
+            "grade": { "type": "string", "description": t("Skill: đẳng cấp của công pháp như truyện xếp hạng (Thiên giai, Địa giai, Huyền cấp thượng phẩm…), ngắn gọn.", "Skill: its grade as the story ranks techniques, short.") },
+            "difficulty": { "type": "string", "description": t("Skill: độ khó tu luyện hay sử dụng, điều kiện, cái giá phải trả; một câu tiếng Việt.", "Skill: how hard it is to learn or use, what it needs or costs; one sentence.") }
         }
     })
 }
@@ -2242,7 +2271,7 @@ fn tools(lang: &str) -> Value {
                     "properties": {
                         "from": { "type": "string" },
                         "to": { "type": "string" },
-                        "relation": { "type": "string", "description": if vi { format!("`from` là gì của `to`: một trong {RELS_VI}. Chỉ khi không loại nào hợp, viết vài chữ tiếng Việt.") } else { format!("What `from` is to `to`: one of {} (located_in for a place or faction inside a bigger place, has_level for a character's current rank or realm, has_skill for a technique or ability a character knows). Only when none fits, a few words in {lang}.", REL_TYPES.join(", ")) } },
+                        "relation": { "type": "string", "description": if vi { format!("`from` là gì của `to`: một trong {RELS_VI}. Chỉ khi không loại nào hợp, viết vài chữ tiếng Việt.") } else { format!("What `from` is to `to`: one of {} (located_in for a place or faction inside a bigger place, has_level for a character's current rank or realm, has_skill for a technique or ability a character knows, equivalent_to for a level matching a level of another ladder). Only when none fits, a few words in {lang}.", REL_TYPES.join(", ")) } },
                         "note": { "type": "string", "description": t("Bằng tiếng Việt, một câu: hoàn cảnh (vì sao có quan hệ này, hai bên gọi nhau thế nào).", format!("In {lang}: the circumstances (how it came about, what one calls the other), one sentence.")) }
                     },
                     "required": ["from", "to", "relation"]
@@ -2260,7 +2289,7 @@ fn learn_rules(lang: &str, genre: &str) -> String {
             ""
         };
         return format!(
-            "Bạn ghi wiki cho một truyện đang được chuyển sang tiếng Việt. Từ văn bản dưới đây, chỉ ghi các danh từ riêng có vai trò trong truyện: tên riêng của nhân vật, địa danh, thế lực hay tông môn, vật phẩm, cảnh giới hay cấp bậc (kèm số bậc, tên thang cấp bậc và bậc nhỏ trong meta) và công pháp hay chiêu thức có tên. Không ghi danh từ chung hay từ mô tả, dù quan trọng với cảnh truyện: một nơi hay một vật chỉ được ghi khi nó có tên riêng. Tên riêng thường viết hoa; cụm không viết hoa hoặc chỉ là mô tả (người, đồ vật, nơi chốn chung chung) thì không phải tên riêng. Ghi mỗi tên trọn vẹn, đúng như văn bản gốc viết, không cắt một phần của từ hay tên dài hơn. Biệt danh, danh hiệu, cách gọi hay mô tả dùng để chỉ một nhân vật hay nơi đã có tên thì không phải mục mới: ghi vào tên gọi khác (aliases) của mục đó. Với nhân vật, ghi cảnh giới hiện tại vào meta (level, stage) và hồ sơ vào meta: personality (tính cách), age (tuổi tác), origin (xuất thân), abilities (kỹ năng, sở trường), mỗi mục một hai câu, viết lại cả điều đã biết; summary chỉ là một hai câu giới thiệu nhân vật là ai, không lặp lại hồ sơ. Ghi các quan hệ: giữa nhân vật với nhau, với thế lực, cảnh giới hiện tại, công pháp nhân vật biết, nơi nào nằm trong nơi nào; mỗi quan hệ kèm ghi chú bằng tiếng Việt về hoàn cảnh (vì sao có quan hệ đó, hai bên gọi nhau thế nào). Viết mọi tên dịch, tóm tắt, quan hệ tự do và ghi chú chỉ bằng tiếng Việt, không trộn ngôn ngữ. Ghi hết những gì văn bản cho biết về một mục, kể cả tình tiết về sau (không cần tránh tiết lộ nội dung), và liên kết nó với các mục liên quan; không đoán.{names}"
+            "Bạn ghi wiki cho một truyện đang được chuyển sang tiếng Việt. Từ văn bản dưới đây, chỉ ghi các danh từ riêng có vai trò trong truyện: tên riêng của nhân vật, địa danh, thế lực hay tông môn, vật phẩm, cảnh giới hay cấp bậc (kèm số bậc, tên thang cấp bậc và bậc nhỏ trong meta) và công pháp hay chiêu thức có tên. Không ghi danh từ chung hay từ mô tả, dù quan trọng với cảnh truyện: một nơi hay một vật chỉ được ghi khi nó có tên riêng. Tên riêng thường viết hoa; cụm không viết hoa hoặc chỉ là mô tả (người, đồ vật, nơi chốn chung chung) thì không phải tên riêng. Ghi mỗi tên trọn vẹn, đúng như văn bản gốc viết, không cắt một phần của từ hay tên dài hơn. Biệt danh, danh hiệu, cách gọi hay mô tả dùng để chỉ một nhân vật hay nơi đã có tên thì không phải mục mới: ghi vào tên gọi khác (aliases) của mục đó. Với nhân vật, ghi cảnh giới hiện tại vào meta (level, stage) và hồ sơ vào meta: personality (tính cách), age (tuổi tác), origin (xuất thân), abilities (kỹ năng, sở trường), mỗi mục một hai câu, viết lại cả điều đã biết; summary chỉ là một hai câu giới thiệu nhân vật là ai, không lặp lại hồ sơ. Với công pháp, chiêu thức (skill): summary mô tả nó ra sao, làm được gì; ghi đẳng cấp vào meta.grade và độ khó vào meta.difficulty. Với cảnh giới: khi truyện cho biết một cảnh giới tương đương với cảnh giới ở thang cấp bậc khác (ví dụ tu tiên và luyện thể), ghi quan hệ equivalent_to giữa hai cảnh giới đó. Với thế lực: ghi leader_of từ mỗi người đứng đầu đến thế lực, kể cả người tiền nhiệm và người kế nhiệm khi truyện tiết lộ hay đổi người; note ghi người đó là đời thứ mấy (nếu truyện cho biết) và nắm quyền khi nào. Ghi các quan hệ: giữa nhân vật với nhau, với thế lực, cảnh giới hiện tại, công pháp nhân vật biết, nơi nào nằm trong nơi nào; mỗi quan hệ kèm ghi chú bằng tiếng Việt về hoàn cảnh (vì sao có quan hệ đó, hai bên gọi nhau thế nào). Viết mọi tên dịch, tóm tắt, quan hệ tự do và ghi chú chỉ bằng tiếng Việt, không trộn ngôn ngữ. Ghi hết những gì văn bản cho biết về một mục, kể cả tình tiết về sau (không cần tránh tiết lộ nội dung), và liên kết nó với các mục liên quan; không đoán.{names}"
         );
     }
     let l = super::translate::lang_name(lang);
@@ -2270,7 +2299,7 @@ fn learn_rules(lang: &str, genre: &str) -> String {
         String::new()
     };
     format!(
-        "You keep the wiki of a novel being translated into {l}. From the chapter below, record only proper nouns that matter to the story: the names of specific characters, places, factions or sects, items, levels (ranks, cultivation realms, each with its rank number, its ladder and stage in meta) and skills (named techniques, martial arts, spells). Never record a common noun or a generic word, however important to the scene (mountain, river, sword, city, sect, spirit energy, núi, sông, kiếm, thành, linh khí, tông môn): a place or thing is kept only under its own name. Write each name whole and exactly as the original text writes it, never a piece of a longer word or name (not a surname cut out of another word). A nickname, title, epithet or description that stands for a character or place already named (\"the girl in green\", \"bé áo xanh\", \"the old man\", \"Sư phụ\" for one person) is not a new entry: put it in that entry's aliases. For a character, put its current level in meta (level, stage) and its profile in meta: personality, age, origin (background), abilities (skills and strengths), one or two sentences each, earlier facts included; its summary then only says in a sentence or two who it is, without repeating the profile. Record the relationships: between characters, with factions, a character's current level, the skills a character has, which place lies in which (the map), each with a note in {l} on the circumstances (how it came about, what one calls the other). Write every translated name, summary, free relation and note in {l} only, never mixing languages. Record all the chapter shows about an entry, later events included (spoilers are fine), and link it to the others it involves; do not guess.{names}"
+        "You keep the wiki of a novel being translated into {l}. From the chapter below, record only proper nouns that matter to the story: the names of specific characters, places, factions or sects, items, levels (ranks, cultivation realms, each with its rank number, its ladder and stage in meta) and skills (named techniques, martial arts, spells). Never record a common noun or a generic word, however important to the scene (mountain, river, sword, city, sect, spirit energy, núi, sông, kiếm, thành, linh khí, tông môn): a place or thing is kept only under its own name. Write each name whole and exactly as the original text writes it, never a piece of a longer word or name (not a surname cut out of another word). A nickname, title, epithet or description that stands for a character or place already named (\"the girl in green\", \"bé áo xanh\", \"the old man\", \"Sư phụ\" for one person) is not a new entry: put it in that entry's aliases. For a character, put its current level in meta (level, stage) and its profile in meta: personality, age, origin (background), abilities (skills and strengths), one or two sentences each, earlier facts included; its summary then only says in a sentence or two who it is, without repeating the profile. For a skill, the summary says what it is and does; put its grade in meta.grade and how hard it is in meta.difficulty. For levels, when the story says a level of one ladder matches a level of another, record equivalent_to between them. For a faction, record leader_of from each of its leaders, predecessors and successors included when the story reveals or changes them; the note says which leader in line they are (when the story says) and when they led. Record the relationships: between characters, with factions, a character's current level, the skills a character has, which place lies in which (the map), each with a note in {l} on the circumstances (how it came about, what one calls the other). Write every translated name, summary, free relation and note in {l} only, never mixing languages. Record all the chapter shows about an entry, later events included (spoilers are fine), and link it to the others it involves; do not guess.{names}"
     )
 }
 
@@ -3519,6 +3548,23 @@ mod tests {
         let v = serde_json::to_value(&lam.meta).unwrap();
         assert_eq!(v["personality"], "Kiên nhẫn, trọng tình nghĩa.");
         assert!(v.get("system").is_none());
+        // A skill keeps its grade and how hard it is, nothing of a character's.
+        let fire = AiEntry {
+            meta: serde_json::from_value(json!({
+                "grade": "Thiên giai", "difficulty": "Phải có Thôn Phệ Tổ Phù mới luyện được.", "age": "x"
+            }))
+            .unwrap(),
+            ..ai("吞噬祖符", "skill", "Thôn Phệ Tổ Phù", &[])
+        };
+        upsert_ai(&conn, novel, "vi", Some(3), fire).unwrap();
+        let w = load(&conn, novel).unwrap();
+        let fire = w.entries.iter().find(|e| e.name == "吞噬祖符").unwrap();
+        assert_eq!(fire.meta.grade, "Thiên giai");
+        assert_eq!(
+            fire.meta.difficulty,
+            "Phải có Thôn Phệ Tổ Phù mới luyện được."
+        );
+        assert_eq!(fire.meta.age, "");
     }
 
     #[test]
@@ -4156,6 +4202,9 @@ mod tests {
         assert_eq!((fire.kind.as_str(), fire.rank), ("skill", None));
         add_relation(&conn, novel, &b.uid, &fire.uid, "Has skill", "vi", "").unwrap();
         assert_eq!(relations(&conn, novel).unwrap()[3].kind, "has_skill");
+        // Levels of two ladders that match.
+        assert_eq!(rel_type("tương đương với"), Some("equivalent_to"));
+        assert_eq!(rel_type("Equivalent to"), Some("equivalent_to"));
     }
 
     #[test]

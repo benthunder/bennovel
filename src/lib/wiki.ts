@@ -17,7 +17,7 @@ export type WikiKind = (typeof WIKI_KINDS)[number];
  */
 export const REL_TYPES = [
   'master_of', 'disciple_of', 'parent_of', 'child_of', 'sibling_of', 'spouse_of', 'lover_of',
-  'friend_of', 'enemy_of', 'member_of', 'leader_of', 'located_in', 'owns', 'has_level', 'has_skill'
+  'friend_of', 'enemy_of', 'member_of', 'leader_of', 'located_in', 'owns', 'has_level', 'has_skill', 'equivalent_to'
 ] as const;
 export type RelType = (typeof REL_TYPES)[number];
 export const isRelType = (k: string): k is RelType => (REL_TYPES as readonly string[]).includes(k);
@@ -55,7 +55,13 @@ export interface WikiMeta {
   system?: string; level?: string; stage?: number; stageName?: string;
   /** A character's profile, in the wiki's language (wiki.rs `Meta`). */
   personality?: string; age?: string; origin?: string; abilities?: string;
+  /** A skill's grade as the story ranks techniques, and how hard it is to learn or use. */
+  grade?: string; difficulty?: string;
 }
+
+/** What the wiki keeps of a skill beside its description. */
+export const SKILL_FIELDS = ['grade', 'difficulty'] as const;
+export type SkillField = (typeof SKILL_FIELDS)[number];
 
 /** A character's profile, in the order it is shown: personality, age, background, skills (then its level). */
 export const PROFILE_FIELDS = ['personality', 'age', 'origin', 'abilities'] as const;

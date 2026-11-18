@@ -28,7 +28,12 @@ async function nativeApp(page: Page) {
         }),
         entry('h', 'character', '林啸', 'Lâm Khiếu', 'Cha của Lâm Động.', 1),
         entry('i', 'character', '林琅天', 'Lâm Lang Thiên', 'Thiên tài Lâm gia tông tộc.', 1),
-        entry('j', 'skill', '通背拳', 'Thông Bối Quyền', 'Quyền pháp của Lâm gia.', 1),
+        entry('j', 'skill', '通背拳', 'Thông Bối Quyền', 'Quyền pháp của Lâm gia, đánh liên hoàn như sóng cuộn.', 1, {
+          meta: { grade: 'Hoàng giai', difficulty: 'Dễ nhập môn, luyện đến tầng cuối rất khó.' }
+        }),
+        entry('k', 'level', '先天', 'Tiên Thiên', '', 7, { rank: 1, meta: { system: 'Võ đạo' } }),
+        entry('l', 'character', '应玄子', 'Ứng Huyền Tử', 'Tông chủ Đạo Tông.', 40),
+        entry('m', 'item', '石符', 'Thạch Phù', 'Phù đá bí ẩn.', 1),
         entry('b', 'character', '小貂', 'Tiểu Điêu', 'Yêu thú trong thạch phù, bạn đồng hành của Lâm Động.', 3),
         entry('c', 'faction', '道宗', 'Đạo Tông', 'Một trong những tông môn lớn nhất Đông Huyền vực, chia thành nhiều mạch như Đan Tông, Phù Tông, Thiên Tông và Hoang Điện. Tông chủ là Ứng Huyền Tử. Mỗi lần thi đấu giữa các mạch, đệ tử ưu tú được vào Hoang Điện tu luyện, nơi cất giữ những bí thuật cổ xưa nhất của tông môn.', 40),
         entry('d', 'place', '青阳镇', 'Thanh Dương trấn', 'Thị trấn nhỏ, quê của Lâm gia.', 1),
@@ -43,7 +48,11 @@ async function nativeApp(page: Page) {
         { uid: 'r5', fromUid: 'a', toUid: 'f', kind: 'has_level', labels: {}, note: '', firstChapter: 5 },
         { uid: 'r6', fromUid: 'h', toUid: 'a', kind: 'parent_of', labels: {}, note: '', firstChapter: 1 },
         { uid: 'r7', fromUid: 'i', toUid: 'a', kind: 'enemy_of', labels: {}, note: 'Đánh trọng thương Lâm Khiếu năm xưa.', firstChapter: 1 },
-        { uid: 'r8', fromUid: 'a', toUid: 'j', kind: 'has_skill', labels: {}, note: '', firstChapter: 1 }
+        { uid: 'r8', fromUid: 'a', toUid: 'j', kind: 'has_skill', labels: {}, note: '', firstChapter: 1 },
+        { uid: 'r9', fromUid: 'k', toUid: 'f', kind: 'equivalent_to', labels: {}, note: '', firstChapter: 7 },
+        { uid: 'r10', fromUid: 'l', toUid: 'c', kind: 'leader_of', labels: {}, note: 'Tông chủ đời thứ ba.', firstChapter: 40 },
+        { uid: 'r11', fromUid: 'a', toUid: 'c', kind: 'leader_of', labels: {}, note: 'Kế nhiệm Ứng Huyền Tử.', firstChapter: 900 },
+        { uid: 'r12', fromUid: 'a', toUid: 'm', kind: 'owns', labels: {}, note: '', firstChapter: 1 }
       ],
       auto: true, lastError: null
     };
@@ -107,7 +116,7 @@ test('the book wiki lists, searches and edits entries', async ({ page }, info) =
   await expect(page.getByRole('radio')).toHaveCount(0);
   await expect(page.getByText('Lâm Động', { exact: true })).toBeVisible();
   await expect(page.locator('[data-entry="林动"]').getByText('林动', { exact: true })).toBeVisible();
-  await expect(page.locator('[data-entry="林动"]').getByText('6 quan hệ')).toBeVisible();
+  await expect(page.locator('[data-entry="林动"]').getByText('8 quan hệ')).toBeVisible();
   // A character shows the level it reached last.
   await expect(page.locator('[data-entry="林动"]').getByText('Địa Nguyên cảnh')).toBeVisible();
   await page.screenshot({ path: `test-results/wiki-${info.project.name}-list.png` });
@@ -171,12 +180,17 @@ test('the wiki stays Vietnamese whatever the reading language, with levels in or
 
   // Levels in their order, lowest first, with who is at each.
   await page.getByRole('tab', { name: 'Cảnh giới' }).click();
-  const ladder = page.locator('[data-wiki-ladder] > li');
+  // The whole tree: each ladder with its levels, and what matches in the other ladders.
+  expect(await page.locator('[data-ladder]').evaluateAll(els => els.map(e => e.getAttribute('data-ladder')))).toEqual(['Võ đạo', '']);
+  const ladder = page.locator('[data-ladder=""] [data-wiki-ladder] > li');
   await expect(ladder).toHaveCount(2);
   await expect(ladder.nth(0)).toContainText('淬体 (vi)');
   await expect(ladder.nth(1)).toContainText('地元境 (vi)');
-  await expect(ladder.nth(1)).toContainText('林动 (vi)');
-  await expect(ladder.nth(0)).not.toContainText('林动 (vi)');
+  await expect(ladder.nth(1).locator('[data-wiki-equals]')).toContainText('≈ 先天 (vi) · Võ đạo');
+  await expect(page.locator('[data-ladder="Võ đạo"] [data-wiki-equals]')).toContainText('≈ 地元境 (vi)');
+  // Only the levels: who reached them is on the characters' pages.
+  await expect(page.locator('[data-wiki-ladder-tree]')).not.toContainText('林动 (vi)');
+  await page.screenshot({ path: `test-results/wiki-${info.project.name}-ladder.png`, fullPage: true });
 
   // Places nest by "located in".
   await page.getByRole('tab', { name: 'Bản đồ' }).click();
@@ -205,8 +219,9 @@ test('names in a chapter open the whole wiki with its links', async ({ page }, i
   // The level reached last, and the relationships with their circumstances.
   // A character's profile in order: personality, age, background, skills, level.
   const profile = card.locator('[data-wiki-profile] [data-profile]');
-  await expect(profile).toHaveCount(5);
-  expect(await profile.evaluateAll(els => els.map(e => e.getAttribute('data-profile')))).toEqual(['personality', 'age', 'origin', 'abilities', 'level']);
+  await expect(profile).toHaveCount(6);
+  expect(await profile.evaluateAll(els => els.map(e => e.getAttribute('data-profile')))).toEqual(['personality', 'age', 'origin', 'abilities', 'level', 'items']);
+  await expect(profile.nth(5).locator('[data-wiki-skill]')).toHaveText('Thạch Phù');
   await expect(profile.nth(0)).toContainText('Tính cách');
   await expect(profile.nth(0)).toContainText('Kiên nhẫn, lì đòn, trọng tình nghĩa.');
   await expect(profile.nth(1)).toContainText('15 tuổi');
@@ -220,7 +235,8 @@ test('names in a chapter open the whole wiki with its links', async ({ page }, i
   await expect(groups.nth(0)).toContainText('Gia đình');
   await expect(groups.nth(0)).toContainText(/con của\s*Lâm Khiếu/);
   await expect(groups.nth(1)).toContainText(/kẻ thù của\s*Lâm Lang Thiên/);
-  await expect(card.locator('[data-relation="has_level"], [data-relation="has_skill"]')).toHaveCount(0);
+  await expect(card.locator('[data-relation="has_level"], [data-relation="has_skill"], [data-relation="owns"]')).toHaveCount(0);
+  await expect(card.locator('[data-wiki-rel-more] [data-relation="leader_of"]')).toContainText('Đạo Tông');
   await expect(card.getByText('Gặp nhau trong thạch phù.')).toBeVisible();
   await page.screenshot({ path: `test-results/wiki-${info.project.name}-character.png`, fullPage: true });
   await card.getByRole('button', { name: /Tiểu Điêu/ }).click();
@@ -276,4 +292,38 @@ test('a long wiki description folds to two lines and expands in place', async ({
   // The card itself still opens the entry.
   await card.click({ position: { x: 20, y: 14 } });
   await expect(page.getByRole('dialog', { name: 'Mục wiki' })).toBeVisible();
+});
+
+test('a skill tells its grade and difficulty, a faction its leaders in turn', async ({ page }, info) => {
+  await nativeApp(page);
+  await page.addInitScript(() => {
+    localStorage.setItem('bennovel.aiView.:1', JSON.stringify({ lang: 'vi', style: 'Natural', dict: true, view: 'vi' }));
+  });
+  await page.goto('/');
+  await page.getByText('Võ Động Càn Khôn').filter({ visible: true }).first().click();
+  await page.getByRole('button', { name: /Bắt đầu đọc|Đọc tiếp/ }).filter({ visible: true }).first().click();
+  await page.locator('[data-part="0"] [data-wiki-term="c"]').first().click();
+  const sect = page.getByRole('dialog', { name: 'Đạo Tông' });
+  const leaders = sect.locator('[data-wiki-leaders] [data-leader]');
+  await expect(leaders).toHaveCount(2);
+  await expect(leaders.nth(0)).toContainText('Lần thứ 1');
+  await expect(leaders.nth(0)).toContainText('Ứng Huyền Tử');
+  await expect(leaders.nth(0)).toContainText('Tông chủ đời thứ ba.');
+  await expect(leaders.nth(1)).toContainText('Lần thứ 2');
+  await expect(leaders.nth(1)).toContainText('Lâm Động');
+  await expect(leaders.nth(1)).toContainText('hiện tại');
+  await expect(leaders.nth(1)).toContainText('từ chương 900');
+  await expect(sect.locator('[data-relation="leader_of"]')).toHaveCount(0);
+  await page.screenshot({ path: `test-results/wiki-${info.project.name}-faction.png` });
+
+  // From the leader to his skill: what it is and how high it ranks, not who knows it.
+  await leaders.nth(1).click();
+  const lam = page.getByRole('dialog', { name: 'Lâm Động' });
+  await lam.locator('[data-profile="abilities"] [data-wiki-skill]').click();
+  const fist = page.getByRole('dialog', { name: 'Thông Bối Quyền' });
+  await expect(fist.getByText('Quyền pháp của Lâm gia, đánh liên hoàn như sóng cuộn.')).toBeVisible();
+  await expect(fist.locator('[data-skill="grade"]')).toContainText('Hoàng giai');
+  await expect(fist.locator('[data-skill="difficulty"]')).toContainText('Dễ nhập môn');
+  await expect(fist.locator('[data-relation]')).toHaveCount(0);
+  await page.screenshot({ path: `test-results/wiki-${info.project.name}-skill.png` });
 });

@@ -479,6 +479,20 @@ export const en = {
   'wiki.rel.has_level.rev': 'reached by',
   'wiki.rel.has_skill': 'knows',
   'wiki.rel.has_skill.rev': 'known by',
+  'wiki.rel.equivalent_to': 'equivalent to',
+  'wiki.rel.equivalent_to.rev': 'equivalent to',
+  'wiki.profile.items': 'Items',
+  'wiki.skill': 'About this skill',
+  'wiki.skill.grade': 'Grade',
+  'wiki.skill.difficulty': 'Difficulty',
+  'wiki.skill.gradePh': 'e.g. Heaven grade',
+  'wiki.skill.difficultyPh': 'How hard it is to learn or use…',
+  'wiki.equivalent': 'Equivalent in other ladders',
+  'wiki.ladderNoSystem': 'Other levels',
+  'wiki.ladderCount': '{n} levels',
+  'wiki.leaders': 'Leaders',
+  'wiki.leaderN': 'No. {n}',
+  'wiki.leaderNow': 'current',
 };
 
 export type MessageKey = keyof typeof en;

@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import { messageIn, useI18n } from '../i18n';
 import type { MessageKey } from '../i18n/en';
 import {
-  PROFILE_FIELDS, RAW, REL_GROUPS, WIKI_LANG, isRelType, metaStage, relGroup, wikiLabel, wikiSummary,
+  PROFILE_FIELDS, RAW, REL_GROUPS, SKILL_FIELDS, WIKI_LANG, isRelType, metaStage, relGroup, wikiChapter, wikiLabel, wikiSummary,
   type RelGroup, type Wiki, type WikiEntry, type WikiRelation
 } from '../lib/wiki';
 import { Modal } from './Modal';
@@ -54,7 +54,7 @@ export function groupRelations(wiki: Wiki, uid: string, rels: WikiRelation[], pr
   const more: WikiRelation[] = [];
   for (const r of rels) {
     if (r.fromUid !== uid && r.toUid !== uid) continue;
-    if (profiled && r.fromUid === uid && (r.kind === 'has_level' || r.kind === 'has_skill')) continue;
+    if (profiled && r.fromUid === uid && (r.kind === 'has_level' || r.kind === 'has_skill' || (r.kind === 'owns' && other(r)?.kind === 'item'))) continue;
     if (other(r)?.kind === 'character') {
       const g = relGroup(r.kind);
       people.set(g, [...(people.get(g) ?? []), r]);
@@ -116,6 +116,10 @@ export function CharacterProfile({ wiki, entry, onPick }: { wiki: Wiki; entry: W
     .filter(r => r.kind === 'has_skill' && r.fromUid === entry.uid)
     .map(r => byUid.get(r.toUid))
     .filter((e): e is WikiEntry => !!e);
+  const items = wiki.relations
+    .filter(r => r.kind === 'owns' && r.fromUid === entry.uid)
+    .map(r => byUid.get(r.toUid))
+    .filter((e): e is WikiEntry => !!e && e.kind === 'item');
   const chip = (e: WikiEntry) => onPick
     ? <button key={e.uid} type="button" className="chip chip--sm" data-wiki-skill style={{ fontSize: 12 }} onClick={() => onPick(e)}>{wikiLabel(e, WIKI_LANG)}</button>
     : <span key={e.uid} className="chip chip--sm" data-wiki-skill style={{ fontSize: 12, pointerEvents: 'none' }}>{wikiLabel(e, WIKI_LANG)}</span>;
@@ -132,7 +136,8 @@ export function CharacterProfile({ wiki, entry, onPick }: { wiki: Wiki; entry: W
       value: levelText
         ? <>{levelText}{past.length > 0 && <span className="muted" style={{ display: 'block', fontSize: 12 }}>{t('wiki.profile.pastLevels', { levels: past.map(e => wikiLabel(e, WIKI_LANG)).join(' → ') })}</span>}</>
         : null
-    }
+    },
+    { key: 'items', value: items.length ? <span style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>{items.map(chip)}</span> : null }
   ];
   return (
     <section data-wiki-profile style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -147,6 +152,83 @@ export function CharacterProfile({ wiki, entry, onPick }: { wiki: Wiki; entry: W
           </div>
         ))}
       </dl>
+    </section>
+  );
+}
+
+/** A skill's grade and difficulty, beside its description; who knows it is not listed. */
+export function SkillFacts({ entry }: { entry: WikiEntry }) {
+  const { t } = useI18n();
+  const m = entry.meta ?? {};
+  return (
+    <section data-wiki-skill-facts style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div style={{ fontSize: 13, fontWeight: 700 }}>{t('wiki.skill')}</div>
+      <dl style={{ margin: 0, display: 'grid', gridTemplateColumns: 'minmax(78px, auto) 1fr', borderRadius: 16, overflow: 'hidden', background: 'var(--color-bg)' }}>
+        {SKILL_FIELDS.map((f, i) => (
+          <div key={f} data-skill={f} style={{ display: 'contents' }}>
+            <dt style={{ padding: '8px 10px 8px 12px', fontSize: 12, fontWeight: 700, color: 'var(--color-neutral-700)', borderTop: i ? '1px solid var(--color-neutral-200)' : 'none' }}>{t(`wiki.skill.${f}`)}</dt>
+            <dd style={{ margin: 0, padding: '8px 12px 8px 0', fontSize: 14, lineHeight: 1.45, overflowWrap: 'anywhere', borderTop: i ? '1px solid var(--color-neutral-200)' : 'none' }}>
+              {m[f] || <span className="muted" style={{ fontSize: 13 }}>{t('wiki.profile.unknown')}</span>}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </section>
+  );
+}
+
+/** The levels of other ladders a level matches ("Kim Đan ≈ Tiên Thiên"), either way round. */
+export function equivalentsOf(wiki: Wiki, uid: string) {
+  const byUid = new Map(wiki.entries.map(e => [e.uid, e]));
+  const seen = new Set<string>();
+  const out: WikiEntry[] = [];
+  for (const r of wiki.relations) {
+    if (r.kind !== 'equivalent_to' || (r.fromUid !== uid && r.toUid !== uid)) continue;
+    const o = byUid.get(r.fromUid === uid ? r.toUid : r.fromUid);
+    if (o && !seen.has(o.uid)) { seen.add(o.uid); out.push(o); }
+  }
+  return out;
+}
+
+/** A faction's leaders in the order the story names them (by the chapter first told), the last one current. */
+export function leadersOf(wiki: Wiki, uid: string) {
+  const byUid = new Map(wiki.entries.map(e => [e.uid, e]));
+  return wiki.relations
+    .filter(r => r.kind === 'leader_of' && r.toUid === uid && byUid.has(r.fromUid))
+    .sort((a, b) => (a.firstChapter ?? Infinity) - (b.firstChapter ?? Infinity))
+    .map(r => ({ rel: r, who: byUid.get(r.fromUid)! }));
+}
+
+/** Who leads a faction: each leader in turn, "the 2nd", from which chapter, the current one marked. */
+export function FactionLeaders({ wiki, entry, onPick }: { wiki: Wiki; entry: WikiEntry; onPick?: (e: WikiEntry) => void }) {
+  const { t } = useI18n();
+  const leaders = leadersOf(wiki, entry.uid);
+  return (
+    <section data-wiki-leaders style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div style={{ fontSize: 13, fontWeight: 700 }}>{t('wiki.leaders')}</div>
+      {leaders.length === 0 && <div className="muted" style={{ fontSize: 13 }}>{t('wiki.profile.unknown')}</div>}
+      <ol style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {leaders.map(({ rel, who }, i) => {
+          const current = i === leaders.length - 1;
+          const body = (
+            <>
+              <span style={{ display: 'flex', gap: 6, alignItems: 'baseline', flexWrap: 'wrap' }}>
+                {leaders.length > 1 && <span className="tag tag-neutral" style={{ fontSize: 11 }}>{t('wiki.leaderN', { n: i + 1 })}</span>}
+                <b>{wikiLabel(who, WIKI_LANG)}</b>
+                {current && leaders.length > 1 && <span className="tag tag-accent-2" style={{ fontSize: 11 }}>{t('wiki.leaderNow')}</span>}
+                {wikiChapter(rel) != null && <span className="muted" style={{ fontSize: 11 }}>{t('wiki.fromChapter', { n: wikiChapter(rel)! })}</span>}
+              </span>
+              {rel.note && <span className="muted" data-relation-note style={{ fontSize: 12, lineHeight: 1.4 }}>{rel.note}</span>}
+            </>
+          );
+          const style = { display: 'flex', flexDirection: 'column' as const, gap: 2, padding: '8px 12px', borderRadius: 16, border: 'none', background: 'var(--color-bg)', color: 'inherit', font: 'inherit', fontSize: 14, textAlign: 'left' as const, width: '100%' };
+          return (
+            <li key={rel.uid} data-leader={i + 1}>
+              {onPick ? <button type="button" style={{ ...style, cursor: 'pointer' }} onClick={() => onPick(who)}>{body}</button> : <div style={style}>{body}</div>}
+            </li>
+          );
+        })}
+      </ol>
     </section>
   );
 }
@@ -210,7 +292,17 @@ export function WikiPopup({ wiki, entry, onPick, onOpenWiki, onClose }: {
   const level = entry.kind === 'character' ? levelOf(wiki, entry.uid) : null;
   const byUid = new Map(wiki.entries.map(e => [e.uid, e]));
   const isChar = entry.kind === 'character';
-  const rels = wiki.relations.filter(r => (r.fromUid === entry.uid || r.toUid === entry.uid) && !(r.kind === 'has_level' && level && r.toUid !== level.uid));
+  const isLevel = entry.kind === 'level';
+  const isSkill = entry.kind === 'skill';
+  const isFaction = entry.kind === 'faction';
+  const equals = isLevel ? equivalentsOf(wiki, entry.uid) : [];
+  // A level is only compared with the levels of other ladders, and a skill only
+  // described: who reached or knows them is on the characters' own pages.
+  const rels = wiki.relations.filter(r => (r.fromUid === entry.uid || r.toUid === entry.uid)
+    && !(r.kind === 'has_level' && (isLevel || (level && r.toUid !== level.uid)))
+    && !(isLevel && r.kind === 'equivalent_to')
+    && !(isSkill && r.kind === 'has_skill')
+    && !(isFaction && r.kind === 'leader_of' && r.toUid === entry.uid));
   return (
     <Modal onClose={onClose}>
       <div className="dialog dialog--sheet" role="dialog" aria-modal="true" aria-label={label} onClick={e => e.stopPropagation()}>
@@ -234,6 +326,20 @@ export function WikiPopup({ wiki, entry, onPick, onOpenWiki, onClose }: {
           ? <p style={{ margin: 0, fontSize: 15, lineHeight: 1.5 }}>{sum.text}</p>
           : <p className="muted" style={{ margin: 0, fontSize: 14 }}>{t('wiki.noSummary')}</p>}
         {isChar && <CharacterProfile wiki={wiki} entry={entry} onPick={onPick} />}
+        {isSkill && <SkillFacts entry={entry} />}
+        {isFaction && <FactionLeaders wiki={wiki} entry={entry} onPick={onPick} />}
+        {isLevel && equals.length > 0 && (
+          <section data-wiki-equivalent style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div style={{ fontSize: 13, fontWeight: 700 }}>{t('wiki.equivalent')}</div>
+            <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {equals.map(e => (
+                <button key={e.uid} type="button" className="chip chip--sm" style={{ fontSize: 12 }} onClick={() => onPick(e)}>
+                  ≈ {wikiLabel(e, WIKI_LANG)}{e.meta?.system ? ` · ${e.meta.system}` : ''}
+                </button>
+              ))}
+            </span>
+          </section>
+        )}
         <GroupedRelations wiki={wiki} uid={entry.uid} rels={rels} profiled={isChar} row={r => {
           const other = byUid.get(r.fromUid === entry.uid ? r.toUid : r.fromUid);
           return other && (
