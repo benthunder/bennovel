@@ -233,11 +233,17 @@ export function LocalBookScreen({ book, place, path, live: liveStart }: { book: 
   const dropped = useRef(new Map<number, number>());
   const partEl = (i: number) => scrollRef.current?.querySelector<HTMLElement>(`[data-part="${i}"]`) ?? null;
 
-  /** The part under the header and how far through it, as the bar shows it. */
+  /**
+   * The part under the header and how far through it, as the bar shows it. Only parts
+   * whose text is in count: a chapter still loading above the one being read (scrolled
+   * up to its top quickly) is a placeholder, and taking it for the place read would
+   * anchor the page to it and, once its text came in, land at its start instead of
+   * staying where the reader was (and save that chapter as the reading place).
+   */
   const measure = () => {
     const el = scrollRef.current;
     if (!el) return null;
-    const parts = el.querySelectorAll<HTMLElement>('[data-part]');
+    const parts = el.querySelectorAll<HTMLElement>('[data-part][data-ready]');
     let part: HTMLElement | undefined;
     for (const p of parts) {
       if (!part || p.offsetTop <= el.scrollTop + chromeH + 1) part = p;

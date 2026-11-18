@@ -1,0 +1,129 @@
+kind	vi	en	zh	ko	ja	convert	note
+# Địa danh Trung Quốc → Hán Việt. Địa danh Nhật, Hàn, phương Tây không có ở đây: giữ nguyên tên gốc (chữ Latin).
+# Cột ko bỏ trống khi chữ Hàn trùng một từ thường hoặc địa danh Hàn (vd 강남 Gangnam, 광주 Gwangju, 소주 rượu soju).
+# Tỉnh, vùng hành chính
+province	Tứ Xuyên	Sichuan|Szechuan|Szechwan	四川	사천	四川
+province	Hà Bắc	Hebei	河北	하북	河北
+province	Hà Nam	Henan	河南		河南		ko 하남 trùng TP Hanam
+province	Sơn Đông	Shandong	山东|山東	산동	山東
+province	Sơn Tây	Shanxi	山西	산서	山西
+province	Thiểm Tây	Shaanxi	陕西|陝西	섬서	陝西
+province	Cam Túc	Gansu	甘肃|甘肅	감숙	甘粛
+province	Hồ Bắc	Hubei	湖北	호북	湖北
+province	Hồ Nam	Hunan	湖南		湖南		ko 호남 trùng vùng Honam (Hàn)
+province	Giang Tô	Jiangsu	江苏|江蘇	강소	江蘇
+province	Chiết Giang	Zhejiang	浙江	절강	浙江
+province	An Huy	Anhui	安徽	안휘	安徽
+province	Giang Tây	Jiangxi	江西		江西		ko 강서 trùng quận Gangseo
+province	Phúc Kiến	Fujian	福建	복건	福建
+province	Quảng Đông	Guangdong|Canton	广东|廣東	광동	広東
+province	Quảng Tây	Guangxi	广西|廣西	광서	広西
+province	Vân Nam	Yunnan	云南|雲南	운남	雲南
+province	Quý Châu	Guizhou	贵州|貴州	귀주	貴州
+province	Tây Tạng	Tibet	西藏		西蔵		ko 서장 trùng "cảnh sát trưởng"
+province	Tân Cương	Xinjiang	新疆	신강	新疆
+province	Thanh Hải	Qinghai	青海	청해	青海
+province	Ninh Hạ	Ningxia	宁夏|寧夏		寧夏		ko 영하 trùng "độ âm"
+province	Nội Mông	Inner Mongolia	内蒙古|內蒙古	내몽골|내몽고	内モンゴル
+province	Liêu Ninh	Liaoning	辽宁|遼寧	요령	遼寧
+province	Cát Lâm	Jilin	吉林	길림	吉林
+province	Hắc Long Giang	Heilongjiang	黑龙江|黑龍江	흑룡강	黒竜江
+province	Hải Nam	Hainan	海南		海南		ko 해남 trùng huyện Haenam
+province	Đài Loan	Taiwan	台湾|臺灣|台灣	대만	台湾
+# Vùng cổ, giang hồ
+region	Trung Nguyên	the Central Plains	中原	중원	中原
+region	Giang Nam	Jiangnan	江南		江南		ko 강남 trùng Gangnam
+region	Tây Vực	the Western Regions	西域	서역	西域
+region	Tái Bắc	the Northern Frontier	塞北	새북	塞北
+region	Tái Ngoại	beyond the Great Wall	塞外	새외	塞外
+region	Mạc Bắc	the Northern Desert	漠北	막북	漠北
+region	Quan Ngoại	beyond the Pass	关外|關外	관외	関外
+region	Quan Trung	Guanzhong	关中|關中		関中		ko 관중 trùng "khán giả"
+region	Liêu Đông	Liaodong	辽东|遼東	요동	遼東
+region	Ba Thục	Bashu	巴蜀	파촉	巴蜀
+region	Kinh Sở	Jingchu	荆楚|荊楚	형초	荊楚
+region	Miêu Cương	the Miao Borderlands	苗疆	묘강	苗疆
+region	Nam Man	the Southern Barbarian lands	南蛮|南蠻	남만	南蛮
+region	Lĩnh Nam	Lingnan	岭南|嶺南		嶺南		ko 영남 trùng vùng Yeongnam
+# Thành, kinh đô
+city	Bắc Kinh	Beijing|Peking	北京	북경	北京
+city	Nam Kinh	Nanjing	南京	남경	南京
+city	Trường An	Chang'an	长安|長安	장안	長安
+city	Lạc Dương	Luoyang	洛阳|洛陽	낙양	洛陽
+city	Khai Phong	Kaifeng	开封|開封		開封		ko 개봉 trùng "công chiếu"
+city	Biện Kinh	Bianjing	汴京		汴京		ko 변경 trùng "thay đổi"
+city	Lâm An	Lin'an	临安|臨安	임안	臨安
+city	Hàng Châu	Hangzhou	杭州	항주	杭州
+city	Tô Châu	Suzhou	苏州|蘇州		蘇州		ko 소주 trùng rượu soju
+city	Cô Tô	Gusu	姑苏|姑蘇		姑蘇		ko 고소 trùng "kiện tụng"
+city	Dương Châu	Yangzhou	扬州|揚州		揚州		ko 양주 trùng "rượu tây"
+city	Kim Lăng	Jinling	金陵	금릉	金陵
+city	Thành Đô	Chengdu	成都		成都		ko 성도 trùng "tín đồ"
+city	Trùng Khánh	Chongqing	重庆|重慶	중경	重慶
+city	Tương Dương	Xiangyang	襄阳|襄陽		襄陽		ko 양양 trùng huyện Yangyang
+city	Đại Lý	Dali	大理		大理		ko 대리 trùng "đại diện"
+city	Vũ Hán	Wuhan	武汉|武漢		武漢		ko 무한 trùng "vô hạn"
+city	Quảng Châu	Guangzhou|Canton City	广州|廣州		広州		ko 광주 trùng Gwangju
+city	Thiên Tân	Tianjin	天津		天津		ko 천진 trùng "ngây thơ"
+city	Thượng Hải	Shanghai	上海		上海		ko 상해 trùng "thương tích"
+city	Hồng Kông	Hong Kong	香港	홍콩	香港
+city	Tây An	Xi'an	西安	서안	西安
+city	Thái Nguyên	Taiyuan	太原	태원	太原
+city	Lan Châu	Lanzhou	兰州|蘭州	난주	蘭州
+city	Đôn Hoàng	Dunhuang	敦煌	돈황	敦煌
+city	Tuyền Châu	Quanzhou	泉州		泉州		ko 천주 trùng "Thiên Chúa"
+city	Phúc Châu	Fuzhou	福州	복주	福州
+city	Tế Nam	Jinan	济南|濟南	제남	済南
+city	Thiệu Hưng	Shaoxing	绍兴|紹興	소흥	紹興
+city	Khúc Phụ	Qufu	曲阜	곡부	曲阜
+# Núi
+mountain	Thái Sơn	Mount Tai|Taishan	泰山	태산	泰山
+mountain	Hoa Sơn	Mount Hua|Huashan	华山|華山		華山		ko 화산 trùng "núi lửa"
+mountain	Tung Sơn	Mount Song|Songshan	嵩山	숭산	嵩山
+mountain	Hành Sơn	Mount Heng (Hunan)	衡山	형산	衡山
+mountain	Hằng Sơn	Mount Heng (Shanxi)	恒山|恆山	항산	恒山
+mountain	Nga Mi sơn	Mount Emei	峨眉山|峨嵋山	아미산	峨眉山
+mountain	Võ Đang sơn	Wudang Mountains|Mount Wudang	武当山|武當山	무당산	武当山
+mountain	Côn Lôn sơn	Kunlun Mountains	昆仑山|崑崙山	곤륜산	崑崙山	Côn Luân sơn
+mountain	Thiên Sơn	Tianshan Mountains	天山	천산	天山
+mountain	Hoàng Sơn	Huangshan|Yellow Mountain	黄山|黃山		黄山		ko 황산 trùng "axit sunfuric"
+mountain	Thiếu Thất sơn	Mount Shaoshi	少室山	소실산	少室山
+mountain	Lư Sơn	Mount Lu|Lushan	庐山|廬山	여산	廬山
+mountain	Chung Nam sơn	Zhongnan Mountains	终南山|終南山	종남산	終南山
+mountain	Trường Bạch sơn	Changbai Mountains	长白山|長白山	장백산	長白山
+mountain	Thục Sơn	Shushan	蜀山	촉산	蜀山
+mountain	Thanh Thành sơn	Mount Qingcheng	青城山	청성산	青城山
+mountain	Điểm Thương sơn	Cangshan|Diancang Mountains	点苍山|點蒼山	점창산	点蒼山
+mountain	Không Động sơn	Mount Kongtong	崆峒山	공동산	崆峒山
+mountain	Tây Sơn	Western Hills	西山		西山		ko 서산 trùng TP Seosan
+# Sông, hồ, biển
+water	Hoàng Hà	the Yellow River	黄河|黃河	황하	黄河
+water	Trường Giang	the Yangtze River	长江|長江	장강	長江
+water	Tây Hồ	West Lake	西湖	서호	西湖
+water	Động Đình hồ	Dongting Lake	洞庭湖	동정호	洞庭湖
+water	Thái Hồ	Lake Tai|Taihu	太湖	태호	太湖
+water	Bà Dương hồ	Poyang Lake	鄱阳湖|鄱陽湖	파양호	鄱陽湖
+water	Hoài Hà	the Huai River	淮河	회하	淮河
+water	Tần Hoài	the Qinhuai River	秦淮	진회	秦淮
+water	Mịch La	the Miluo River	汨罗|汨羅	멱라	汨羅
+# Cửa ải, công trình
+pass	Vạn Lý Trường Thành	the Great Wall	万里长城|萬里長城	만리장성	万里の長城
+pass	Nhạn Môn quan	Yanmen Pass	雁门关|雁門關	안문관	雁門関
+pass	Sơn Hải quan	Shanhai Pass	山海关|山海關	산해관	山海関
+pass	Ngọc Môn quan	Yumen Pass	玉门关|玉門關	옥문관	玉門関
+pass	Hàm Cốc quan	Hangu Pass	函谷关|函谷關	함곡관	函谷関
+pass	Đồng Quan	Tong Pass	潼关|潼關	동관	潼関
+# Quốc gia, triều đại
+state	Đại Tống	the Song Empire|Great Song	大宋	대송	大宋
+state	Đại Đường	the Tang Empire|Great Tang	大唐	대당	大唐
+state	Đại Minh	the Ming Empire|Great Ming	大明	대명	大明
+state	Đại Thanh	the Qing Empire|Great Qing	大清	대청	大清
+state	Mông Cổ	Mongolia|the Mongols	蒙古	몽골|몽고	蒙古|モンゴル
+state	Kim quốc	the Jin State	金国|金國	금나라|금국	金国
+state	Liêu quốc	the Liao State	辽国|遼國	요나라|요국	遼国
+state	Tây Hạ	Western Xia	西夏	서하	西夏
+state	Thổ Phồn	the Tubo Empire|Tibetan Empire	吐蕃	토번	吐蕃
+state	Hung Nô	the Xiongnu	匈奴	흉노	匈奴
+state	Đột Quyết	the Turks|Gokturks	突厥	돌궐	突厥
+state	Tiên Ti	the Xianbei	鲜卑|鮮卑		鮮卑		ko 선비 trùng "học sĩ"
+state	Nữ Chân	the Jurchens	女真	여진	女真

@@ -37,6 +37,11 @@ pub fn run() {
         .manage(opened::OpenedFiles::from_args())
         .setup(|_app| {
             use tauri::Manager;
+            // The genre terms the translation uses: built into their own file once
+            // per version of the data.
+            if let Ok(dir) = _app.path().app_data_dir() {
+                library::genre_terms::init(&dir);
+            }
             // AI translation runs in the background, one chapter at a time.
             _app.manage(library::queue::Queue::start(_app.handle().clone()));
             // Android: a foreground service with the progress keeps it going with the

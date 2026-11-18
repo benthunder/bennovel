@@ -1,0 +1,68 @@
+kind	vi	en	zh	ko	ja	convert	note
+# Tên môn phái, thế lực: mỗi dòng là một môn phái. Cột vi = tên Hán Việt chuẩn (đích tiếng Việt),
+# cột en = tên tiếng Anh (đích tiếng Anh, đồng thời là cách viết gặp trong bản tiếng Anh, tên đầu tiên là chuẩn).
+# Các cột zh, ko, ja, convert = cách viết trong bản gốc; nhiều cách viết cách nhau bằng |.
+# Cửu đại môn phái và Ngũ Nhạc
+sect	Thiếu Lâm tự	Shaolin Temple|Shaolin Sect	少林寺|少林派	소림사|소림파	少林寺	Thiếu Lâm tông	chùa nên là "tự"
+sect	Võ Đang phái	Wudang Sect|Wudang Clan|Wudang School	武当派|武當派	무당파	武当派|武當派	Võ Đang tông
+sect	Nga Mi phái	Emei Sect|Emei School	峨眉派|峨嵋派	아미파	峨眉派	Nga Mi tông|Nga My phái|Nga My tông
+sect	Hoa Sơn phái	Mount Hua Sect|Huashan Sect|Hwasan Sect	华山派|華山派	화산파	華山派	Hoa Sơn tông
+sect	Côn Lôn phái	Kunlun Sect|Gonryun Sect	昆仑派|崑崙派|昆侖派	곤륜파	崑崙派	Côn Luân phái|Côn Lôn tông|Côn Luân tông
+sect	Không Động phái	Kongtong Sect|Gongdong Sect	崆峒派	공동파	崆峒派	Không Động tông
+sect	Thanh Thành phái	Qingcheng Sect|Cheongseong Sect	青城派	청성파	青城派	Thanh Thành tông
+sect	Điểm Thương phái	Diancang Sect|Jeomchang Sect	点苍派|點蒼派	점창파	点蒼派	Điểm Thương tông
+sect	Cái Bang	Beggars' Sect|Beggar Sect|Beggars' Gang|Gaebang	丐帮|丐幫		丐幇|丐幫	Khất Cái bang|Cái bang phái	bỏ ko 개방 vì trùng nghĩa "mở cửa"
+sect	Hành Sơn phái	Hengshan Sect|Mount Heng Sect	衡山派	형산파	衡山派	Hành Sơn tông	衡山 (Hồ Nam)
+sect	Hằng Sơn phái	Northern Hengshan Sect	恒山派|恆山派	항산파	恒山派	Hằng Sơn tông	恒山 (Sơn Tây), khác Hành Sơn
+sect	Thái Sơn phái	Taishan Sect|Mount Tai Sect	泰山派	태산파	泰山派	Thái Sơn tông
+sect	Tung Sơn phái	Songshan Sect|Mount Song Sect	嵩山派	숭산파	嵩山派	Tung Sơn tông
+sect	Ngũ Nhạc kiếm phái	Five Mountains Sword Sect|Five Sacred Mountains Sword Alliance	五岳剑派|五嶽劍派	오악검파	五岳剣派|五嶽剣派	Ngũ Nhạc kiếm tông
+sect	Thiên Sơn phái	Tianshan Sect|Mount Tian Sect	天山派	천산파	天山派	Thiên Sơn tông
+sect	Tuyết Sơn phái	Snow Mountain Sect	雪山派	설산파	雪山派	Tuyết Sơn tông
+sect	Thục Sơn phái	Shushan Sect|Mount Shu Sect	蜀山派	촉산파	蜀山派	Thục Sơn tông
+# Đạo, giáo phái
+sect	Toàn Chân giáo	Quanzhen Sect|Quanzhen School	全真教	전진교	全真教	Toàn Chân phái|Toàn Chân tông
+sect	Cổ Mộ phái	Ancient Tomb Sect	古墓派	고묘파	古墓派	Cổ Mộ tông
+sect	Tiêu Dao phái	Xiaoyao Sect|Carefree Sect	逍遥派|逍遙派	소요파	逍遥派|逍遙派	Tiêu Dao tông
+sect	Tinh Tú phái	Xingxiu Sect|Star Constellation Sect	星宿派	성숙파	星宿派	Tinh Túc phái	cách gọi quen thuộc là "Tinh Tú"
+sect	Minh giáo	Ming Cult|Ming Sect|Manichean Cult	明教	명교	明教
+sect	Nhật Nguyệt Thần giáo	Sun Moon Holy Cult|Sun Moon Divine Cult	日月神教	일월신교	日月神教
+sect	Thiên Ma Thần giáo	Heavenly Demon Divine Cult|Heavenly Demon Cult	天魔神教	천마신교	天魔神教
+sect	Ma giáo	Demonic Cult|Demon Cult	魔教	마교	魔教
+sect	Huyết giáo	Blood Cult	血教	혈교	血教
+sect	Ngũ Độc giáo	Five Poisons Cult|Five Venoms Sect	五毒教	오독교	五毒教
+sect	Thần Long giáo	Divine Dragon Cult	神龙教|神龍教	신룡교	神龍教
+sect	Bạch Liên giáo	White Lotus Sect|White Lotus Society	白莲教|白蓮教	백련교	白蓮教
+sect	Bái Hỏa giáo	Fire-Worshipping Cult	拜火教	배화교	拜火教
+# Nhánh tông (đây "tông" là đúng)
+sect	Kiếm tông	Sword Faction	剑宗|劍宗	검종	剣宗	Kiếm phái tông	nhánh luyện kiếm (Hoa Sơn)
+sect	Khí tông	Qi Faction	气宗|氣宗		気宗		nhánh luyện khí (Hoa Sơn)
+sect	Thiền tông	Chan Buddhism|Zen School	禅宗|禪宗	선종	禅宗
+sect	Mật tông	Tantric Buddhism|Esoteric School	密宗	밀종	密宗
+# Thế gia, gia tộc
+sect	Nam Cung thế gia	Namgung Clan|Namgung Family|Nangong Clan	南宫世家|南宮世家	남궁세가	南宮世家	Nam Cung gia tộc
+sect	Mộ Dung thế gia	Moyong Clan|Murong Clan	慕容世家	모용세가	慕容世家	Mộ Dung gia tộc
+sect	Cô Tô Mộ Dung	Gusu Murong	姑苏慕容|姑蘇慕容	고소모용	姑蘇慕容
+sect	Gia Cát thế gia	Jegal Clan|Zhuge Clan	诸葛世家|諸葛世家	제갈세가	諸葛世家	Chư Cát thế gia
+sect	Hoàng Phủ thế gia	Hwangbo Clan|Huangfu Clan	皇甫世家	황보세가	皇甫世家
+sect	Hà Bắc Bành gia	Hebei Paeng Clan|Hebei Peng Family|Paeng Clan	河北彭家	하북팽가	河北彭家
+sect	Tứ Xuyên Đường gia	Sichuan Tang Clan|Sichuan Tang Family	四川唐家	사천당가	四川唐家
+sect	Đường Môn	Tang Sect|Tang Clan	唐门|唐門	당문	唐門	Đường môn phái
+sect	Đại Lý Đoàn thị	Duan Clan of Dali	大理段氏	대리단씨	大理段氏
+# Nơi chốn - thế lực
+sect	Đào Hoa đảo	Peach Blossom Island	桃花岛|桃花島	도화도	桃花島
+sect	Bạch Đà sơn trang	White Camel Mountain Villa	白驼山庄|白駝山莊	백타산장	白駝山荘
+sect	Linh Thứu cung	Lingjiu Palace|Spirit Vulture Palace	灵鹫宫|靈鷲宮	영취궁	霊鷲宮
+# Liên minh, phe phái, hội
+sect	Võ Lâm Minh	Martial Alliance|Murim Alliance|Wulin Alliance	武林盟	무림맹	武林盟	Võ Lâm Liên Minh
+sect	Chính phái	Orthodox Faction|Righteous Faction		정파			phe chính đạo; bỏ zh 正派 vì còn nghĩa "đứng đắn"
+sect	Tà phái	Unorthodox Faction|Evil Faction	邪派	사파	邪派		phe tà đạo
+sect	Lục Lâm	the Greenwood|Nokrim	绿林|綠林	녹림	緑林		giới thảo khấu, sơn tặc
+sect	Hạ Ô Môn	Haomun|Lower Filth Sect	下污门|下汚門	하오문	下汚門		thế lực trong truyện võ hiệp Hàn
+sect	Thiên Địa hội	Heaven and Earth Society	天地会|天地會	천지회	天地会
+sect	Hồng Hoa hội	Red Flower Society	红花会|紅花會	홍화회	紅花会
+sect	Phúc Uy tiêu cục	Fuwei Escort Agency	福威镖局|福威鏢局	복위표국	福威鏢局
+# Cơ quan triều đình
+sect	Cẩm Y vệ	Embroidered Uniform Guard|Jinyiwei	锦衣卫|錦衣衛	금의위	錦衣衛
+sect	Đông Xưởng	Eastern Depot	东厂|東廠		東廠		ko 동창 cũng là "bạn học", nên bỏ
+sect	Lục Phiến Môn	Six Doors|Six Fan Gate	六扇门|六扇門	육선문	六扇門		nha môn bắt tội phạm

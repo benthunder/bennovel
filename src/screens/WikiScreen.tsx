@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ask } from '@tauri-apps/plugin-dialog';
 import { Modal } from '../components/Modal';
-import { levelOf, relWords, useWikiT } from '../components/WikiPopup';
+import { GroupedRelations, equivalentsOf, levelOf, relWords, useWikiT } from '../components/WikiPopup';
 import { ChevronLeftIcon, ChevronRightIcon, PencilIcon, SparklesIcon, XIcon } from '../components/Icons';
 import { Checkbox, SearchField, Spinner } from '../components/ui';
 import { useI18n } from '../i18n';
@@ -10,9 +10,9 @@ import { useAsync } from '../lib/useAsync';
 import { useLayout } from '../lib/useLayout';
 import { useThrottledValue } from '../lib/useThrottledValue';
 import {
-  RAW, REL_TYPES, WIKI_KINDS, WIKI_LANG, addWikiRelation, getWiki, getWikiMissing, mergeWikiEntry, removeWikiEntry, removeWikiRelation, saveWikiEntry,
+  PROFILE_FIELDS, RAW, REL_TYPES, SKILL_FIELDS, WIKI_KINDS, WIKI_LANG, addWikiRelation, getWiki, getWikiMissing, mergeWikiEntry, removeWikiEntry, removeWikiRelation, saveWikiEntry,
   searchWiki, setWikiAuto, translateWiki, wikiChapter, wikiLabel, wikiSummary,
-  type Wiki, type WikiEntry, type WikiKind, metaStage } from '../lib/wiki';
+  type ProfileField, type SkillField, type Wiki, type WikiEntry, type WikiKind, metaStage } from '../lib/wiki';
 import { useApp } from '../store/AppStore';
 
 /**
@@ -107,6 +107,7 @@ export function WikiScreen({ novelId, title }: { novelId: number; title: string;
           <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 2 }}>
             <span className="tag tag-neutral" style={{ fontSize: 11 }}>{t(`wiki.kind.${e.kind}`)}</span>
             {e.kind === 'level' && e.meta?.system && <span className="tag tag-neutral" style={{ fontSize: 11 }}>{e.meta.system}</span>}
+            {e.kind === 'skill' && e.meta?.grade && <span className="tag tag-accent-2" style={{ fontSize: 11 }}>{e.meta.grade}</span>}
             {e.kind === 'level' && e.rank != null && <span className="tag tag-accent-2" style={{ fontSize: 11 }}>{t('wiki.rankN', { n: e.rank })}</span>}
             {(level || e.meta?.level) && (
               <span className="tag tag-accent-2" style={{ fontSize: 11 }}>
@@ -119,6 +120,26 @@ export function WikiScreen({ novelId, title }: { novelId: number; title: string;
           {extra}
         </span>
         <ChevronRightIcon size={16} style={{ flex: 'none', marginTop: 4, color: 'var(--color-neutral-500)' }} />
+      </div>
+    );
+  };
+
+  // One line per entry, for the ladder and the map: its name and, short, what it is.
+  const row = (e: WikiEntry, extra?: ReactNode) => {
+    const label = wikiLabel(e, lang);
+    const sum = wikiSummary(e, lang);
+    return (
+      <div key={e.uid} data-entry={e.name} role="button" tabIndex={0} className="novel-row" style={{ alignItems: 'center', gap: 10, padding: '9px 12px', borderRadius: 16, background: 'var(--frost)', minWidth: 0, textAlign: 'left', width: '100%' }}
+        onClick={() => setOpen(e)} onKeyDown={ev => { if (ev.target === ev.currentTarget && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); setOpen(e); } }}>
+        <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <span style={{ display: 'flex', gap: 6, alignItems: 'baseline', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 14, fontWeight: 700 }}>{label}</span>
+            {label !== e.name && <span className="muted" style={{ fontSize: 12 }}>{e.name}</span>}
+          </span>
+          {sum.text && <span className="muted" style={{ fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{sum.text}</span>}
+          {extra}
+        </span>
+        <ChevronRightIcon size={14} style={{ flex: 'none', color: 'var(--color-neutral-500)' }} />
       </div>
     );
   };
@@ -185,8 +206,8 @@ export function WikiScreen({ novelId, title }: { novelId: number; title: string;
 
             {shown == null ? <Spinner size={16} />
               : shown.length === 0 ? <p className="muted" style={{ fontSize: 14 }}>{t(wiki.entries.length ? 'wiki.noMatch' : 'wiki.empty')}</p>
-                : !term && kind === 'level' ? <Ladder wiki={wiki} lang={lang} card={card} />
-                  : !term && kind === 'place' ? <MapTree wiki={wiki} card={card} />
+                : !term && kind === 'level' ? <Ladder wiki={wiki} lang={lang} row={row} />
+                  : !term && kind === 'place' ? <MapTree wiki={wiki} card={row} />
                     : list(shown)}
           </>
         )}
@@ -234,30 +255,49 @@ function Summary({ text, children }: { text: string; children?: ReactNode }) {
   );
 }
 
-/** The levels in order, lowest first, with who has reached each. */
-function Ladder({ wiki, lang, card }: { wiki: Wiki; lang: string; card: (e: WikiEntry, extra?: ReactNode) => ReactNode }) {
-  const levels = wiki.entries.filter(e => e.kind === 'level')
-    .sort((a, b) => (a.meta?.system ?? '').localeCompare(b.meta?.system ?? '')
-      || (a.rank ?? Infinity) - (b.rank ?? Infinity) || a.name.localeCompare(b.name));
-  const byUid = new Map(wiki.entries.map(e => [e.uid, e]));
+/**
+ * The story's whole tree of levels: each ladder (cultivation, alchemy…) with its levels
+ * in order, lowest first, and what each matches in the other ladders.
+ */
+function Ladder({ wiki, lang, row }: { wiki: Wiki; lang: string; row: (e: WikiEntry, extra?: ReactNode) => ReactNode }) {
+  const { t } = useI18n();
+  const levels = wiki.entries.filter(e => e.kind === 'level');
+  const systems = [...new Set(levels.map(l => l.meta?.system?.trim() ?? ''))]
+    .sort((a, b) => (a ? 0 : 1) - (b ? 0 : 1) || a.localeCompare(b));
   return (
-    <ol data-wiki-ladder style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
-      {levels.map(l => {
-        const who = wiki.relations
-          .filter(r => r.kind === 'has_level' && r.toUid === l.uid)
-          .map(r => byUid.get(r.fromUid))
-          .filter((e): e is WikiEntry => !!e && levelOf(wiki, e.uid)?.uid === l.uid);
+    <div data-wiki-ladder-tree style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      {systems.map(sys => {
+        const own = levels.filter(l => (l.meta?.system?.trim() ?? '') === sys)
+          .sort((a, b) => (a.rank ?? Infinity) - (b.rank ?? Infinity) || a.name.localeCompare(b.name));
         return (
-          <li key={l.uid}>
-            {card(l, who.length > 0 && (
-              <span style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 4 }}>
-                {who.map(e => <span key={e.uid} className="chip chip--sm" style={{ fontSize: 11, pointerEvents: 'none' }}>{wikiLabel(e, lang)}</span>)}
-              </span>
-            ))}
-          </li>
+          <section key={sys || '-'} data-ladder={sys}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 6 }}>
+              <span style={{ fontSize: 15, fontWeight: 700 }}>{sys || t('wiki.ladderNoSystem')}</span>
+              <span className="muted" style={{ fontSize: 12 }}>{t('wiki.ladderCount', { n: own.length })}</span>
+            </div>
+            <ol data-wiki-ladder style={{ listStyle: 'none', margin: 0, padding: '0 0 0 14px', borderLeft: '2px solid var(--color-neutral-200)', display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {own.map((l, i) => {
+                const eq = equivalentsOf(wiki, l.uid);
+                return (
+                  <li key={l.uid} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span className="tag tag-neutral" style={{ fontSize: 11, flex: 'none', minWidth: 26, justifyContent: 'center' }}>{l.rank ?? i + 1}</span>
+                    {row(l, eq.length > 0 && (
+                      <span data-wiki-equals style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 2 }}>
+                        {eq.map(e => (
+                          <span key={e.uid} className="chip chip--sm" style={{ fontSize: 11, pointerEvents: 'none' }}>
+                            ≈ {wikiLabel(e, lang)}{e.meta?.system ? ` · ${e.meta.system}` : ''}
+                          </span>
+                        ))}
+                      </span>
+                    ))}
+                  </li>
+                );
+              })}
+            </ol>
+          </section>
         );
       })}
-    </ol>
+    </div>
   );
 }
 
@@ -318,6 +358,10 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
   const [system, setSystem] = useState(entry?.meta?.system ?? '');
   const [curLevel, setCurLevel] = useState(entry?.meta?.level ?? '');
   const [stageName, setStageName] = useState(entry?.meta?.stageName ?? '');
+  const [skill, setSkill] = useState<Record<SkillField, string>>(() =>
+    Object.fromEntries(SKILL_FIELDS.map(f => [f, entry?.meta?.[f] ?? ''])) as Record<SkillField, string>);
+  const [profile, setProfile] = useState<Record<ProfileField, string>>(() =>
+    Object.fromEntries(PROFILE_FIELDS.map(f => [f, entry?.meta?.[f] ?? ''])) as Record<ProfileField, string>);
   const [aliases, setAliases] = useState(entry?.aliases.join(', ') ?? '');
   // The wiki's words are Vietnamese; the original name stays in `name` and the aliases.
   const editLang = WIKI_LANG;
@@ -351,7 +395,11 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
       const n = Number.parseInt(rank, 10);
       const e = await saveWikiEntry(user, novelId, {
         uid: saved?.uid, kind, name, names, summaries, rank: kind === 'level' && Number.isFinite(n) ? n : null,
-        meta: { ...saved?.meta, system: system.trim(), level: curLevel.trim(), stageName: stageName.trim() },
+        meta: {
+          ...saved?.meta, system: system.trim(), level: curLevel.trim(), stageName: stageName.trim(),
+          ...Object.fromEntries(PROFILE_FIELDS.map(f => [f, profile[f].trim()])),
+          ...Object.fromEntries(SKILL_FIELDS.map(f => [f, skill[f].trim()]))
+        },
         aliases: aliases.split(/[,，、]/).map(a => a.trim()).filter(Boolean)
       });
       setSaved(e);
@@ -452,18 +500,6 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
             <input id="wiki-system" className="input" style={{ height: 42 }} value={system} placeholder={t('wiki.systemPh')} onChange={e => setSystem(e.target.value)} />
           </div>
         )}
-        {kind === 'character' && (
-          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-            <div className="field" style={{ flex: '2 1 180px' }}>
-              <label htmlFor="wiki-cur-level">{t('wiki.curLevel')}</label>
-              <input id="wiki-cur-level" className="input" style={{ height: 42 }} value={curLevel} onChange={e => setCurLevel(e.target.value)} />
-            </div>
-            <div className="field" style={{ flex: '1 1 120px' }}>
-              <label htmlFor="wiki-stage">{t('wiki.stage')}</label>
-              <input id="wiki-stage" className="input" style={{ height: 42 }} value={stageName} placeholder={t('wiki.stagePh')} onChange={e => setStageName(e.target.value)} />
-            </div>
-          </div>
-        )}
         <div className="field">
           <label htmlFor="wiki-aliases">{t('wiki.aliases')}</label>
           <input id="wiki-aliases" className="input" style={{ height: 42 }} value={aliases} onChange={e => setAliases(e.target.value)} />
@@ -481,12 +517,50 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
             onChange={e => setSummaries(s => ({ ...s, [editLang]: e.target.value }))} />
         </div>
 
+        {kind === 'skill' && (
+          <section data-wiki-skill-edit style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div style={{ fontSize: 12, fontWeight: 700 }}>{t('wiki.skill')}</div>
+            {SKILL_FIELDS.map(f => (
+              <div key={f} className="field">
+                <label htmlFor={`wiki-${f}`}>{t(`wiki.skill.${f}`)}</label>
+                <input id={`wiki-${f}`} className="input" style={{ height: 42 }} value={skill[f]} placeholder={t(`wiki.skill.${f}Ph`)}
+                  onChange={e => setSkill(p => ({ ...p, [f]: e.target.value }))} />
+              </div>
+            ))}
+          </section>
+        )}
+        {kind === 'character' && (
+          <section data-wiki-profile-edit style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div style={{ fontSize: 12, fontWeight: 700 }}>{t('wiki.profile')}</div>
+            {PROFILE_FIELDS.map(f => (
+              <div key={f} className="field">
+                <label htmlFor={`wiki-${f}`}>{t(`wiki.profile.${f}`)}</label>
+                {f === 'age'
+                  ? <input id={`wiki-${f}`} className="input" style={{ height: 42 }} value={profile[f]} placeholder={t(`wiki.profile.${f}Ph`)}
+                      onChange={e => setProfile(p => ({ ...p, [f]: e.target.value }))} />
+                  : <textarea id={`wiki-${f}`} className="input" rows={2} style={{ borderRadius: 20, resize: 'vertical', minHeight: 64 }} value={profile[f]} placeholder={t(`wiki.profile.${f}Ph`)}
+                      onChange={e => setProfile(p => ({ ...p, [f]: e.target.value }))} />}
+              </div>
+            ))}
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              <div className="field" style={{ flex: '2 1 180px' }}>
+                <label htmlFor="wiki-cur-level">{t('wiki.profile.level')}</label>
+                <input id="wiki-cur-level" className="input" style={{ height: 42 }} value={curLevel} onChange={e => setCurLevel(e.target.value)} />
+              </div>
+              <div className="field" style={{ flex: '1 1 120px' }}>
+                <label htmlFor="wiki-stage">{t('wiki.stage')}</label>
+                <input id="wiki-stage" className="input" style={{ height: 42 }} value={stageName} placeholder={t('wiki.stagePh')} onChange={e => setStageName(e.target.value)} />
+              </div>
+            </div>
+          </section>
+        )}
+
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           <div style={{ fontSize: 12, fontWeight: 700 }}>{t('wiki.relations')}</div>
           {!saved ? <div className="muted" style={{ fontSize: 12 }}>{t('wiki.relSaveFirst')}</div> : (
             <>
               {rels.length === 0 && <div className="muted" style={{ fontSize: 12 }}>{t('wiki.noRelations')}</div>}
-              {rels.map(r => {
+              <GroupedRelations wiki={wiki} uid={saved.uid} rels={rels} profiled={false} titled={false} row={r => {
                 const other = r.fromUid === saved.uid ? r.toUid : r.fromUid;
                 return (
                   <div key={r.uid} data-relation={r.kind} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, padding: '6px 6px 6px 12px', borderRadius: 16, background: 'var(--color-bg)' }}>
@@ -497,7 +571,7 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
                     <button type="button" className="icon-btn" style={{ width: 30, height: 30 }} aria-label={t('wiki.remove')} onClick={() => dropRel(r.uid)}><XIcon size={14} /></button>
                   </div>
                 );
-              })}
+              }} />
               {others.length > 0 && (
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                   <select className="input" style={{ height: 38, flex: '1 1 140px' }} aria-label={t('wiki.relType')} value={relType} onChange={e => setRelType(e.target.value)}>
