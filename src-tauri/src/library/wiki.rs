@@ -1508,23 +1508,25 @@ fn head(text: &str, chars: usize) -> String {
 
 /* ---------- The vector table of proper nouns ---------- */
 
-/// Names embedded per request.
-const EMBED_BATCH: usize = 64;
+/// What the vectors are made with: letter trigrams on the device (`genre_terms::embed`),
+/// no embedding model. Rows made another way are made again.
+const VEC_MODEL: &str = "trigram-256";
 /// Two names closer than this (cosine distance) may be the same entity…
-const NEAR: f64 = 0.12;
+const NEAR: f64 = 0.35;
 /// …and closer than this they are, whatever else.
-const SAME: f64 = 0.04;
+const SAME: f64 = 0.06;
 
 fn to_blob(v: &[f32]) -> Vec<u8> {
     v.iter().flat_map(|f| f.to_le_bytes()).collect()
 }
 
-/// What a name is embedded as: the raw name, the translated one and the kind.
-fn embed_text(raw: &str, translated: &str, kind: &str) -> String {
+/// What a name is embedded as: the raw name and the translated one (the kind is
+/// compared on its own).
+fn embed_text(raw: &str, translated: &str) -> String {
     if translated.is_empty() || translated == raw {
-        format!("{raw} ({kind})")
+        raw.to_string()
     } else {
-        format!("{raw} → {translated} ({kind})")
+        format!("{raw} {translated}")
     }
 }
 
@@ -1540,11 +1542,11 @@ pub struct Name {
 
 /// Brings the book's vector table (`wiki_names`) for `lang` in line with its wiki: one
 /// row per entry name and alias, with the name the translation uses (an alias takes its
-/// entry's) and the kind. With `llm` and its embedding model, the rows not embedded by
-/// that model yet are embedded. Returns the rows embedded.
+/// entry's) and the kind, and the rows without a vector yet get one, made on the device
+/// (`VEC_MODEL`). Returns the rows given a vector. `_llm` is not used any more.
 pub fn index_names(
     conn: &Connection,
-    llm: Option<&dyn Chat>,
+    _llm: Option<&dyn Chat>,
     novel_id: i64,
     lang: &str,
 ) -> Result<usize, AiError> {
@@ -1591,9 +1593,7 @@ pub fn index_names(
         params![novel_id, lang, to_json(&raws, "[]")],
     )?;
     tx.commit()?;
-    let Some((llm, model)) = llm.and_then(|l| l.embed_model().map(|m| (l, m.to_string()))) else {
-        return Ok(0);
-    };
+    let model = VEC_MODEL;
     let mut stmt = conn.prepare(
         "select id, raw, translated, kind from wiki_names
          where novel_id = ?1 and lang = ?2 and (embedding is null or model is not ?3)",
@@ -1602,25 +1602,18 @@ pub fn index_names(
         .query_map(params![novel_id, lang, model], |r| {
             Ok((
                 r.get(0)?,
-                embed_text(
-                    &r.get::<_, String>(1)?,
-                    &r.get::<_, String>(2)?,
-                    &r.get::<_, String>(3)?,
-                ),
+                embed_text(&r.get::<_, String>(1)?, &r.get::<_, String>(2)?),
             ))
         })?
         .collect::<rusqlite::Result<_>>()?;
     let mut done = 0;
-    for batch in todo.chunks(EMBED_BATCH) {
-        let texts: Vec<String> = batch.iter().map(|(_, t)| t.clone()).collect();
-        let vectors = llm.embed(&texts)?;
-        for ((id, _), v) in batch.iter().zip(vectors) {
-            conn.execute(
-                "update wiki_names set embedding = ?2, model = ?3 where id = ?1",
-                params![id, to_blob(&v), model],
-            )?;
-            done += 1;
-        }
+    for (id, text) in todo {
+        let v = super::genre_terms::embed(&text);
+        conn.execute(
+            "update wiki_names set embedding = ?2, model = ?3 where id = ?1",
+            params![id, to_blob(&v), model],
+        )?;
+        done += 1;
     }
     Ok(done)
 }
@@ -1671,8 +1664,8 @@ fn alike(a: &Name, b: &Name) -> bool {
 
 /// Merges the book's entries whose names land together in the vector table: the same
 /// kind, closer than `SAME`, or closer than `NEAR` and `alike`. The entry met first
-/// keeps its name; two entries of the user's are never merged. Needs the rows embedded
-/// (`index_names` with an embedding model); returns the merges made.
+/// keeps its name; two entries of the user's are never merged. Needs the rows given
+/// their vectors (`index_names`); returns the merges made.
 pub fn merge_near(conn: &Connection, novel_id: i64, lang: &str) -> rusqlite::Result<usize> {
     let mut stmt = conn.prepare(
         "select a.raw, a.translated, a.kind, a.entry_uid, b.raw, b.translated, b.kind, b.entry_uid,
@@ -1752,8 +1745,8 @@ const FIND_MAX: usize = 64;
 const RECALL_ENTRIES: usize = 300;
 
 /// The proper nouns a chapter names, with what the wiki knows of them, found before it
-/// is translated: by the exact names in the vector table, and with an embedding model
-/// also by the phrases that look like names and land next to a row of it (a name the
+/// is translated: by the exact names in the vector table, and also by the phrases that
+/// look like names and whose vectors (made on the device) land next to a row of it (a name the
 /// convert wrote a little differently). Each part of the chapter then gets only the
 /// names it has (`prompt`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1774,7 +1767,7 @@ struct Recalled {
 
 /// Words that start with a capital letter, one to four in a row: what may be a name in
 /// a text in a cased script ("Vương thành", "Lâm Động ca"). Not for Chinese and the like.
-fn name_phrases(text: &str) -> Vec<String> {
+pub(crate) fn name_phrases(text: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut add = |run: &[&str]| {
         for n in (1..=run.len().min(4)).rev() {
@@ -1811,19 +1804,16 @@ fn shares_word(phrase: &str, name: &str) -> bool {
 }
 
 /// The rows of the vector table next to the phrases of `text` that may be names and are
-/// not already found: (phrase, row). Needs `llm` with an embedding model and the rows
-/// embedded by it; nothing otherwise, or when the embedding fails.
+/// not already found: (phrase, row). The phrases get their vectors on the device, like
+/// the rows (`index_names`).
 fn near_names(
     conn: &Connection,
-    llm: Option<&dyn Chat>,
     novel_id: i64,
     lang: &str,
     text: &str,
     found: &[Name],
 ) -> rusqlite::Result<Vec<(String, Name)>> {
-    let Some((llm, model)) = llm.and_then(|l| l.embed_model().map(|m| (l, m.to_string()))) else {
-        return Ok(Vec::new());
-    };
+    let model = VEC_MODEL;
     let known = |p: &str| {
         found
             .iter()
@@ -1837,9 +1827,7 @@ fn near_names(
     if phrases.is_empty() {
         return Ok(Vec::new());
     }
-    let Ok(vectors) = llm.embed(&phrases) else {
-        return Ok(Vec::new());
-    };
+    let vectors: Vec<Vec<f32>> = phrases.iter().map(|p| super::genre_terms::embed(p)).collect();
     let mut stmt = conn.prepare(
         "select raw, translated, kind, entry_uid, vec_distance_cosine(embedding, ?3) as d
          from wiki_names
@@ -1876,14 +1864,14 @@ fn near_names(
 /// What the wiki knows of the proper nouns `text` names (`Recall`).
 pub fn recall(
     conn: &Connection,
-    llm: Option<&dyn Chat>,
+    _llm: Option<&dyn Chat>,
     novel_id: i64,
     text: &str,
     lang: &str,
 ) -> rusqlite::Result<Recall> {
     let vi = lang == "vi";
     let found = names_in(conn, novel_id, lang, text)?;
-    let near = near_names(conn, llm, novel_id, lang, text, &found)?;
+    let near = near_names(conn, novel_id, lang, text, &found)?;
     let mut order: Vec<String> = Vec::new();
     let mut extra: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for n in &found {
@@ -2170,7 +2158,7 @@ pub fn tool_prompt(lang: &str, genre: &str) -> String {
 /// or translation; else the nearest name in the vector table), with their relations.
 pub fn lookup(
     conn: &Connection,
-    llm: Option<&dyn Chat>,
+    _llm: Option<&dyn Chat>,
     novel_id: i64,
     lang: &str,
     query: &str,
@@ -2181,7 +2169,7 @@ pub fn lookup(
     }
     let mut found: Vec<Entry> = search(conn, novel_id, q, 3).unwrap_or_default();
     if found.is_empty() {
-        let near = near_names(conn, llm, novel_id, lang, q, &[])?;
+        let near = near_names(conn, novel_id, lang, q, &[])?;
         for (_, n) in near {
             if let Some(e) = by_uid(conn, &n.entry_uid)? {
                 if !found.iter().any(|f| f.uid == e.uid) {
@@ -3667,8 +3655,8 @@ mod tests {
             level("Nhất Phẩm", "Luyện đan sư"),
         )
         .unwrap();
-        // Names that all land together (the test embedding only reads the first two
-        // letters): the ones of one ladder merge, the other ladder's stays apart.
+        // Names that land together and hold one another: the one of the same ladder
+        // merges, the other ladder's stays apart.
         upsert_ai(
             &conn,
             novel,
@@ -3682,7 +3670,7 @@ mod tests {
             novel,
             "vi",
             Some(3),
-            level("Nhị Phẩm Võ Giả", "Võ giả"),
+            level("Nhất Phẩm Đan", "Luyện đan sư"),
         )
         .unwrap();
         let llm = Embedder(Mutex::new(0));
@@ -3869,8 +3857,8 @@ mod tests {
         assert_eq!(rel_type("ân nhân cứu mạng"), None);
     }
 
-    /// Embeds a name as a direction picked by its first letters, so names that start
-    /// the same land together.
+    /// A model for the calls that take one; the vectors are made on the device.
+    #[allow(dead_code)]
     struct Embedder(Mutex<usize>);
 
     impl Chat for Embedder {
@@ -3879,22 +3867,6 @@ mod tests {
         }
         fn model(&self) -> &str {
             "m"
-        }
-        fn embed_model(&self) -> Option<&str> {
-            Some("emb")
-        }
-        fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, AiError> {
-            *self.0.lock().unwrap() += texts.len();
-            Ok(texts
-                .iter()
-                .map(|t| {
-                    // One direction per first two letters.
-                    let c: Vec<u32> = t.chars().take(2).map(|c| c as u32).collect();
-                    let mut v = vec![0.0; 64];
-                    v[((c[0] * 31 + c[1]) % 64) as usize] = 1.0;
-                    v
-                })
-                .collect())
         }
     }
 
@@ -3924,9 +3896,8 @@ mod tests {
         // The convert wrote the city with a capital T: no exact match, but the vector
         // table finds it.
         let text = "Lâm Động đi vào Vương Thành.\n\nĐộng thiếu ngồi xuống.";
-        let none = recall(&conn, None, novel, text, "vi").unwrap();
-        assert!(!none.prompt(text).contains("Vương thành (địa danh)"));
-        let r = recall(&conn, Some(&llm), novel, text, "vi").unwrap();
+        // The vectors are made on the device: no model is needed to find it.
+        let r = recall(&conn, None, novel, text, "vi").unwrap();
         let all = r.prompt(text);
         assert!(all.contains("- Vương thành → Vương thành (địa danh)"));
         assert!(all.contains("- Lâm Động → Lâm Động (nhân vật); tên gọi khác: Động thiếu"));
