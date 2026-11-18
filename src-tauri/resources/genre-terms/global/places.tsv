@@ -2,7 +2,7 @@ kind	vi	en	zh	ko	ja	convert	note
 # Địa danh Trung Quốc → Hán Việt. Địa danh Nhật, Hàn, phương Tây không có ở đây: giữ nguyên tên gốc (chữ Latin).
 # Cột ko bỏ trống khi chữ Hàn trùng một từ thường hoặc địa danh Hàn (vd 강남 Gangnam, 광주 Gwangju, 소주 rượu soju).
 # Tỉnh, vùng hành chính
-province	Tứ Xuyên	Sichuan|Szechuan	四川	사천	四川
+province	Tứ Xuyên	Sichuan|Szechuan|Szechwan	四川	사천	四川
 province	Hà Bắc	Hebei	河北	하북	河北
 province	Hà Nam	Henan	河南		河南		ko 하남 trùng TP Hanam
 province	Sơn Đông	Shandong	山东|山東	산동	山東

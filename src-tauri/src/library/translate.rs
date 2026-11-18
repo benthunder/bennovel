@@ -197,7 +197,10 @@ pub fn run_with(
         genre,
         instructions,
     } = prefs(conn, req.novel_id)?;
-    let genre_terms = super::genre_terms::load(&genre, &req.lang).without(&terms);
+    let mut genre_terms = super::genre_terms::load(&genre, &req.lang).without(&terms);
+    // Spellings of the shared terms the table has no exact match for, found through its
+    // vector table on the device.
+    genre_terms.near(&content);
     let flow = Flow {
         db: conn.path().unwrap_or_default().to_string(),
         req,
@@ -298,9 +301,6 @@ fn graph(
             async move {
                 let r = (|| {
                     let conn = super::db::open(std::path::Path::new(&f.db))?;
-                    // Spellings of the shared terms the table has no exact match for,
-                    // found through its vector table.
-                    f.genre_terms.near(llm.as_ref(), &f.paragraphs.join("\n\n"));
                     super::wiki::index_names(&conn, None, f.req.novel_id, &f.req.lang)?;
                     f.recall = super::wiki::recall(
                         &conn,

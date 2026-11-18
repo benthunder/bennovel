@@ -10,13 +10,14 @@
 //! itself changed). Before a chapter's part goes to the LLM, the part's text is compared
 //! with the table and the part gets only the terms it names (`Terms::prompt`).
 //!
-//! Vector layer: the Latin-script spellings (English, Vietnamese convert) are also kept as
-//! embeddings of the user's embedding model in `<app data>/rag/genre-terms-vec.sqlite`
-//! (`term_vectors`), made the first time a book is translated with that model and kept
-//! across data versions. Before a chapter is translated, its phrases that look like names
-//! and match nothing exactly ("Vo Dang Tong") are embedded and looked up there; one close
-//! enough to a term counts as a spelling of it (`Terms::near`). Chinese, Japanese and
-//! Korean spellings are matched exactly only.
+//! Vector layer, on the device and without an LLM: every Latin-script spelling (English,
+//! Vietnamese convert) is also kept as a vector of its letter trigrams (`embed`: marks
+//! and case dropped, hashed into `DIMS` numbers) in `term_vectors`, made when the file is
+//! built. Before a chapter is translated, its phrases that look like names and match
+//! nothing exactly ("Vo Dang Tong", "Wu-dang Sect", "Szechwan") get the same kind of
+//! vector and are looked up there; one close enough to a term counts as a spelling of it
+//! for the chapter (`Terms::near`). Chinese, Japanese and Korean spellings are matched
+//! exactly only.
 //!
 //! Two shapes of TSV file (README.md there):
 //! - a term file (header has `term`): one source spelling per row, one column per target
@@ -25,7 +26,6 @@
 //!   names (`vi`, `en`) and its spellings in each source language (`zh`, `ko`, `ja`, `en`,
 //!   `convert` = Vietnamese convert text), several split by `|`.
 
-use super::llm::Chat;
 use aho_corasick::{AhoCorasick, MatchKind};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -75,17 +75,14 @@ const SOURCE_COLS: &[(&str, &str)] = &[("zh", "zh"), ("ko", "ko"), ("ja", "ja"),
 const MAX_PER_PART: usize = 60;
 /// The file, under the app's data folder.
 const FILE: &str = "rag/genre-terms.sqlite";
-/// The vector table's file: embeddings of the terms by the user's embedding model. Kept
-/// apart, so a new version of the data does not embed again what it already has.
-const VEC_FILE: &str = "rag/genre-terms-vec.sqlite";
-/// Terms embedded per request.
-const EMBED_BATCH: usize = 64;
+/// Numbers in a term's vector (`embed`).
+const DIMS: usize = 256;
 /// Phrases of a chapter looked up in the vector table at most.
-const NEAR_MAX: usize = 64;
+const NEAR_MAX: usize = 200;
 /// A phrase is a term when closer than this (cosine distance)…
-const NEAR: f32 = 0.12;
+const NEAR: f32 = 0.2;
 /// …or closer than this and sharing a word with it.
-const FIND: f32 = 0.25;
+const FIND: f32 = 0.4;
 
 const SCHEMA: &str = "
 create table meta (key text primary key, value text not null);
@@ -103,6 +100,11 @@ create table terms (
   unique (genre, term, lang)
 );
 create index terms_genre_lang on terms (genre, lang);
+-- The vector of each Latin-script spelling (`embed`), for the near lookup.
+create table term_vectors (
+  term      text primary key,
+  embedding blob not null
+);
 -- How a kind of organisation is called by the end of its name.
 create table org_suffixes (
   id      integer primary key,
@@ -318,6 +320,17 @@ pub fn build(path: &Path) -> Result<(), String> {
                     }
                 }
             }
+            let terms: Vec<String> = {
+                let mut q = tx.prepare("select distinct term from terms").map_err(e)?;
+                let rows = q.query_map([], |r| r.get::<_, String>(0)).map_err(e)?;
+                rows.collect::<Result<_, _>>().map_err(e)?
+            };
+            let mut vec = tx
+                .prepare("insert or ignore into term_vectors (term, embedding) values (?1, ?2)")
+                .map_err(e)?;
+            for t in terms.iter().filter(|t| script(t) == "vi") {
+                vec.execute(params![t, to_blob(&embed(t))]).map_err(e)?;
+            }
             let mut suf = tx
                 .prepare("insert into org_suffixes (vi, en, zh, ko, ja, meaning) values (?1, ?2, ?3, ?4, ?5, ?6)")
                 .map_err(e)?;
@@ -367,15 +380,12 @@ pub fn ensure(path: &Path) -> Result<(), String> {
 
 /// Where the app keeps the file, set once the app knows its data folder.
 static PATH: OnceLock<PathBuf> = OnceLock::new();
-/// Where the app keeps the vector table.
-static VEC_PATH: OnceLock<PathBuf> = OnceLock::new();
 /// Whether `PATH` was checked (and built if needed) in this run.
 static READY: Mutex<bool> = Mutex::new(false);
 
 /// Sets the app's data folder and makes the file ready, off the caller's thread.
 pub fn init(app_data: &Path) {
     let _ = PATH.set(app_data.join(FILE));
-    let _ = VEC_PATH.set(app_data.join(VEC_FILE));
     std::thread::spawn(|| {
         if let Err(e) = ready() {
             eprintln!("genre terms: {e}");
@@ -546,64 +556,58 @@ impl Terms {
     }
 
     /// Adds the phrases of `text` the vector table finds close to a term, as spellings
-    /// of that term, so the parts that have them get the term (`prompt`). Needs `llm`
-    /// with an embedding model; otherwise, or when anything fails, it adds nothing.
-    /// Returns the spellings added.
-    pub fn near(&mut self, llm: &dyn Chat, text: &str) -> usize {
-        let Some(path) = VEC_PATH.get() else {
-            return 0;
-        };
-        let r = open_vectors(path).and_then(|conn| self.near_with(&conn, llm, text));
+    /// of that term, so the parts that have them get the term (`prompt`). Adds nothing
+    /// before `init` or when the file cannot be read. Returns the spellings added.
+    pub fn near(&mut self, text: &str) -> usize {
+        let r = ready().and_then(|path| {
+            let Some(path) = path else { return Ok(0) };
+            let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .map_err(|e| e.to_string())?;
+            self.near_with(&conn, text)
+        });
         r.unwrap_or_else(|e| {
             eprintln!("genre terms near: {e}");
             0
         })
     }
 
-    /// `near` with the vector table open.
-    fn near_with(&mut self, conn: &Connection, llm: &dyn Chat, text: &str) -> Result<usize, String> {
-        let Some(model) = llm.embed_model().map(str::to_string) else {
-            return Ok(0);
-        };
+    /// `near` with the file open.
+    fn near_with(&mut self, conn: &Connection, text: &str) -> Result<usize, String> {
         // Phrases of two words or more that are not already a term, a part of one the
-        // text has, or a name to use: one word alone ("Hắn", "Bang") is too often not
-        // a name. Longest first, so a phrase inside an accepted one is skipped below.
+        // text has, or (a part of) a name to use: one word alone ("Hắn", "Bang") is too
+        // often not a name. Longest first, so a phrase inside an accepted one is skipped.
         let exact: Vec<String> = self.found(text).iter().map(|(t, _)| t.to_lowercase()).collect();
-        let values: std::collections::HashSet<String> =
-            self.entries.iter().map(|(_, v)| fold(v)).collect();
+        let values: Vec<String> = self.entries.iter().map(|(_, v)| fold(v)).collect();
         let mut phrases: Vec<String> = super::wiki::name_phrases(text)
             .into_iter()
             .filter(|p| p.split_whitespace().count() >= 2)
             .filter(|p| self.found(p).is_empty())
             .filter(|p| !exact.iter().any(|t| t.contains(&p.to_lowercase())))
-            .filter(|p| !values.contains(&fold(p)))
+            .filter(|p| {
+                let f = fold(p);
+                !values.iter().any(|v| v.contains(&f))
+            })
             .take(NEAR_MAX)
             .collect();
-        phrases.sort_by_key(|p| std::cmp::Reverse(p.split_whitespace().count()));
         if phrases.is_empty() {
             return Ok(0);
         }
-        let table = vectors(conn, llm, &model, &self.entries)?;
-        if table.is_empty() {
-            return Ok(0);
-        }
-        let asked = llm.embed(&phrases).map_err(|e| e.to_string())?;
+        phrases.sort_by_key(|p| std::cmp::Reverse(p.split_whitespace().count()));
+        let table = self.vectors(conn).map_err(|e| e.to_string())?;
         let mut added = 0;
         let mut taken: Vec<String> = Vec::new();
-        for (p, v) in phrases.iter().zip(asked) {
+        for p in &phrases {
             if taken.iter().any(|t| t.contains(&p.to_lowercase())) {
                 continue;
             }
+            let v = embed(p);
             let best = table
                 .iter()
                 .map(|(i, t)| (*i, cosine_distance(&v, t)))
                 .min_by(|a, b| a.1.total_cmp(&b.1));
             let Some((i, d)) = best else { continue };
             let (term, value) = self.entries[i].clone();
-            // A capitalised word at the start of a sentence ("Hắn") is not a name: a
-            // phrase must share a word with the term (marks aside), or be of two words
-            // and very close.
-            let close = (d < FIND && (shares_word(p, &term) || shares_word(p, &value))) || d < NEAR;
+            let close = d < NEAR || (d < FIND && (shares_word(p, &term) || shares_word(p, &value)));
             if close && !self.entries.iter().any(|(t, _)| t.to_lowercase() == p.to_lowercase()) {
                 self.entries.push((p.clone(), value));
                 taken.push(p.to_lowercase());
@@ -614,6 +618,23 @@ impl Terms {
             self.matcher = OnceLock::new();
         }
         Ok(added)
+    }
+
+    /// The vectors of this table's Latin-script terms: (index in `entries`, vector).
+    fn vectors(&self, conn: &Connection) -> rusqlite::Result<Vec<(usize, Vec<f32>)>> {
+        let mut all: std::collections::HashMap<String, Vec<f32>> = Default::default();
+        let mut stmt = conn.prepare("select term, embedding from term_vectors")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
+        for row in rows {
+            let (t, b) = row?;
+            all.insert(t, from_blob(&b));
+        }
+        Ok(self
+            .entries
+            .iter()
+            .enumerate()
+            .filter_map(|(i, (t, _))| all.remove(t).map(|v| (i, v)))
+            .collect())
     }
 
     /// The part of a part's prompt: the rules, then the terms it names.
@@ -652,25 +673,6 @@ fn shares_word(phrase: &str, name: &str) -> bool {
     fold(phrase).split_whitespace().any(|w| words.contains(&w))
 }
 
-const VEC_SCHEMA: &str = "
-create table if not exists term_vectors (
-  term      text not null,
-  model     text not null,
-  dims      integer not null,
-  embedding blob not null,
-  primary key (term, model)
-);
-";
-
-fn open_vectors(path: &Path) -> Result<Connection, String> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    }
-    let conn = Connection::open(path).map_err(|e| e.to_string())?;
-    conn.execute_batch(VEC_SCHEMA).map_err(|e| e.to_string())?;
-    Ok(conn)
-}
-
 fn to_blob(v: &[f32]) -> Vec<u8> {
     v.iter().flat_map(|f| f.to_le_bytes()).collect()
 }
@@ -697,53 +699,29 @@ fn cosine_distance(a: &[f32], b: &[f32]) -> f32 {
     1.0 - dot / (na.sqrt() * nb.sqrt())
 }
 
-/// The vectors of the Latin-script terms of `entries` by `model`: (index in `entries`,
-/// vector). The ones the table does not have yet are embedded and kept.
-fn vectors(
-    conn: &Connection,
-    llm: &dyn Chat,
-    model: &str,
-    entries: &[(String, String)],
-) -> Result<Vec<(usize, Vec<f32>)>, String> {
-    let latin: Vec<usize> = (0..entries.len())
-        .filter(|&i| script(&entries[i].0) == "vi")
+/// A text's vector, made on the device: its letter trigrams, marks and case dropped
+/// ("Võ Đang" and "vo dang" are one), each word padded with spaces so the ends count,
+/// hashed into `DIMS` numbers and scaled to length 1. Spellings that share most of their
+/// letters in the same order land close together.
+pub fn embed(text: &str) -> Vec<f32> {
+    let mut v = vec![0.0f32; DIMS];
+    let folded: String = fold(text)
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
         .collect();
-    let mut have: std::collections::HashMap<String, Vec<f32>> = Default::default();
-    {
-        let mut stmt = conn
-            .prepare("select term, embedding from term_vectors where model = ?1")
-            .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map([model], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?)))
-            .map_err(|e| e.to_string())?;
-        for row in rows {
-            let (t, b) = row.map_err(|e| e.to_string())?;
-            have.insert(t, from_blob(&b));
-        }
+    let joined = format!(" {} ", folded.split_whitespace().collect::<Vec<_>>().join(" "));
+    let chars: Vec<char> = joined.chars().collect();
+    for w in chars.windows(3) {
+        let h = w.iter().fold(0xcbf2_9ce4_8422_2325_u64, |h, c| {
+            (h ^ *c as u64).wrapping_mul(0x0100_0000_01b3)
+        });
+        v[(h % DIMS as u64) as usize] += 1.0;
     }
-    let missing: Vec<String> = latin
-        .iter()
-        .map(|&i| entries[i].0.clone())
-        .filter(|t| !have.contains_key(t))
-        .collect();
-    for batch in missing.chunks(EMBED_BATCH) {
-        let got = llm.embed(batch).map_err(|e| e.to_string())?;
-        if got.len() != batch.len() {
-            return Err("embeddings: wrong count".into());
-        }
-        for (t, v) in batch.iter().zip(got) {
-            conn.execute(
-                "insert or replace into term_vectors (term, model, dims, embedding) values (?1, ?2, ?3, ?4)",
-                params![t, model, v.len() as i64, to_blob(&v)],
-            )
-            .map_err(|e| e.to_string())?;
-            have.insert(t.clone(), v);
-        }
+    let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if n > 0.0 {
+        v.iter_mut().for_each(|x| *x /= n);
     }
-    Ok(latin
-        .into_iter()
-        .filter_map(|i| have.get(&entries[i].0).map(|v| (i, v.clone())))
-        .collect())
+    v
 }
 
 /// Whether the hit at `start..end` of `hay` is not part of a longer word. Only a term
@@ -923,62 +901,31 @@ mod tests {
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
-    /// Embeds a text by its letters without marks and case, so "Vo Dang tong" lands on
-    /// "Võ Đang tông".
-    struct Embedder(std::sync::Mutex<usize>);
-
-    impl Chat for Embedder {
-        fn chat(&self, _: &str, _: &str) -> Result<String, super::super::llm::AiError> {
-            Ok(String::new())
-        }
-        fn model(&self) -> &str {
-            "m"
-        }
-        fn embed_model(&self) -> Option<&str> {
-            Some("emb")
-        }
-        fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, super::super::llm::AiError> {
-            *self.0.lock().unwrap() += texts.len();
-            Ok(texts
-                .iter()
-                .map(|t| {
-                    let mut v = vec![0.0f32; 64];
-                    for c in t.to_lowercase().chars() {
-                        let c = match c {
-                            'õ' | 'ơ' | 'ô' | 'ó' | 'ò' | 'ộ' | 'ồ' | 'ố' => 'o',
-                            'đ' => 'd',
-                            'á' | 'à' | 'â' | 'ă' | 'ạ' => 'a',
-                            c => c,
-                        };
-                        if c.is_alphanumeric() {
-                            v[(c as usize) % 64] += 1.0;
-                        }
-                    }
-                    v
-                })
-                .collect())
-        }
-    }
-
     #[test]
     fn the_vector_table_finds_a_spelling_the_table_does_not_have() {
         let path = temp("vec");
         build(&path).unwrap();
         let conn = Connection::open(&path).unwrap();
+        let n: i64 = conn.query_row("select count(*) from term_vectors", [], |r| r.get(0)).unwrap();
+        assert!(n > 300, "{n}");
         let mut terms = load_from(&conn, "wuxia", "vi").unwrap();
-        let vec = open_vectors(&path.with_file_name("vec.sqlite")).unwrap();
-        let llm = Embedder(Default::default());
-        let text = "Hắn là đệ tử Vo Dang Tong, quen biết người Cái Bang.";
-        assert!(terms.found(text).is_empty());
-        let added = terms.near_with(&vec, &llm, text).unwrap();
-        assert_eq!(added, 1, "{:?}", &terms.entries[terms.entries.len() - added..]);
-        assert_eq!(terms.found(text).first(), Some(&("Vo Dang Tong", "Võ Đang phái")));
-        // The terms were embedded once and kept: a second chapter embeds its phrases only.
-        let first = *llm.0.lock().unwrap();
-        terms.near_with(&vec, &llm, "Gặp Vo Dang Tong lần nữa.").unwrap();
-        let n = *llm.0.lock().unwrap() - first;
-        assert!(n < 10, "{n} {:?}", &terms.entries[terms.entries.len() - added..]);
+        let text = "Hắn là đệ tử Vo Dang Tong, từng tới Nga Mi Tong, quen người Cái Bang và Wu-dang Sect. Võ Đang hôm nay vắng.";
+        assert!(terms.found("Vo Dang Tong").is_empty());
+        let added = terms.near_with(&conn, text).unwrap();
+        let found = terms.found(text);
+        assert!(found.contains(&("Vo Dang Tong", "Võ Đang phái")), "{found:?}");
+        assert!(found.contains(&("Wu-dang Sect", "Võ Đang phái")), "{found:?}");
+        assert!(found.contains(&("Nga Mi Tong", "Nga Mi phái")), "{found:?}");
+        assert_eq!(added, 3, "{:?}", &terms.entries[terms.entries.len() - added..]);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn close_spellings_have_close_vectors() {
+        let d = |a: &str, b: &str| cosine_distance(&embed(a), &embed(b));
+        assert!(d("Võ Đang tông", "vo dang tong") < 0.001);
+        assert!(d("Wudang Sect", "Wu-dang Sect") < 0.4, "{}", d("Wudang Sect", "Wu-dang Sect"));
+        assert!(d("Wudang Sect", "Kunlun Sect") > 0.5);
     }
 
     /// How long finding terms takes with a big table:

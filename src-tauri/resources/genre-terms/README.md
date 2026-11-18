@@ -43,3 +43,12 @@ Nhiều cách viết trong một ô cách nhau bằng `|`.
 
 Kiểm tra: `cargo test --lib genre_terms` (báo dòng sai cột, một thuật ngữ hai nghĩa).
 Xuất bảng để review: `GENRE_TERMS_REVIEW=bang.md cargo test --lib genre_terms::tests::review`.
+
+## Tìm từ gần giống (vector trên máy)
+
+Khi dựng file, mỗi cách viết chữ Latin (tiếng Anh, convert) được lưu thêm một vector
+256 chiều trong bảng `term_vectors`. Vector được tạo từ các cụm 3 ký tự sau khi bỏ dấu và hoa thường, không cần LLM hay model.
+Trước khi dịch một chương, những cụm giống tên riêng (từ 2 từ viết hoa trở lên) mà không
+khớp chính xác ("Vo Dang Tong", "Wu-dang Sect") được tạo vector và so với bảng. Cụm nào đủ gần
+thì được coi là cách viết của thuật ngữ đó trong chương. Chữ Hán, Hàn, Nhật chỉ khớp chính xác,
+nên hãy liệt kê đủ giản thể, phồn thể và các biến thể trong TSV.
