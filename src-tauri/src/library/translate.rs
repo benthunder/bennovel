@@ -142,6 +142,9 @@ struct Flow {
     source_lang: Option<String>,
     mode: Option<Mode>,
     terms: Vec<(String, String)>,
+    /// The genre's shared terms (genre_terms.rs), the ones a part names put in its prompt.
+    #[serde(default)]
+    genre_terms: super::genre_terms::Terms,
     /// The proper nouns the chapter names and what the wiki knows of them (recall), put
     /// in each part's prompt.
     recall: super::wiki::Recall,
@@ -194,12 +197,14 @@ pub fn run_with(
         genre,
         instructions,
     } = prefs(conn, req.novel_id)?;
+    let genre_terms = super::genre_terms::load(&genre, &req.lang).without(&terms);
     let flow = Flow {
         db: conn.path().unwrap_or_default().to_string(),
         req,
         source_lang: None,
         mode: None,
         terms,
+        genre_terms,
         recall: super::wiki::Recall::default(),
         genre,
         instructions,
@@ -331,7 +336,12 @@ fn graph(
                     let extract =
                         super::wiki::extract_prompt(super::wiki::WIKI_LANG, WIKI_MARK, &f.genre);
                     let system = |part: &str| {
-                        format!("{system}{}{}", part_recall(&f, part), f.cast.prompt(part))
+                        format!(
+                            "{system}{}{}{}",
+                            f.genre_terms.prompt(part),
+                            part_recall(&f, part),
+                            f.cast.prompt(part)
+                        )
                     };
                     let lookup = |q: &str| lookup_name(&f, llm.as_ref(), q);
                     let keep = |facts: &str| keep_part(&f, facts);
@@ -382,7 +392,12 @@ fn graph(
                     let extract =
                         super::wiki::extract_prompt(super::wiki::WIKI_LANG, WIKI_MARK, &f.genre);
                     let system = |part: &str| {
-                        format!("{system}{}{}", part_recall(&f, part), f.cast.prompt(part))
+                        format!(
+                            "{system}{}{}{}",
+                            f.genre_terms.prompt(part),
+                            part_recall(&f, part),
+                            f.cast.prompt(part)
+                        )
                     };
                     let lookup = |q: &str| lookup_name(&f, llm.as_ref(), q);
                     let keep = |facts: &str| keep_part(&f, facts);

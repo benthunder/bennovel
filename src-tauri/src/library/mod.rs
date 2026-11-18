@@ -9,6 +9,7 @@ pub mod cast;
 pub mod commands;
 pub mod db;
 pub mod folder;
+pub mod genre_terms;
 pub mod llm;
 pub mod names;
 pub mod ocr;

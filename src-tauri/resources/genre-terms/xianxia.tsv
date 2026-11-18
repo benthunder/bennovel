@@ -1,0 +1,46 @@
+term	kind	vi	en	note
+# Cảnh giới tu luyện (thứ tự từ thấp lên cao)
+练气	realm	Luyện Khí	Qi Refining
+炼气	realm	Luyện Khí	Qi Refining
+筑基	realm	Trúc Cơ	Foundation Establishment
+结丹	realm	Kết Đan	Core Formation
+金丹	realm	Kim Đan	Golden Core
+元婴	realm	Nguyên Anh	Nascent Soul
+化神	realm	Hóa Thần	Deity Transformation
+炼虚	realm	Luyện Hư	Void Refinement
+合体	realm	Hợp Thể	Body Integration
+大乘	realm	Đại Thừa	Great Ascension
+渡劫	realm	Độ Kiếp	Tribulation Transcendence
+# Thứ tự từ trong bản convert
+nội môn đệ tử	title	đệ tử nội môn	inner disciple	convert
+ngoại môn đệ tử	title	đệ tử ngoại môn	outer disciple	convert
+chân truyền đệ tử	title	đệ tử chân truyền	core disciple	convert
+内门弟子	title	đệ tử nội môn	inner disciple
+外门弟子	title	đệ tử ngoại môn	outer disciple
+真传弟子	title	đệ tử chân truyền	core disciple
+# Danh xưng
+宗门	term	tông môn	sect
+宗主	title	tông chủ	Sect Master
+师尊	address	sư tôn	Master
+道友	address	đạo hữu	Fellow Daoist
+本座	address	bản tọa	this venerable one
+修士	title	tu sĩ	cultivator
+# Thuật ngữ
+修仙	term	tu tiên	immortal cultivation
+灵气	term	linh khí	spiritual qi
+灵根	term	linh căn	spiritual root
+功法	skill	công pháp	cultivation technique
+神识	term	thần thức	divine sense
+天劫	term	thiên kiếp	heavenly tribulation
+雷劫	term	lôi kiếp	lightning tribulation
+洞府	term	động phủ	cave abode
+阵法	skill	trận pháp	formation
+妖兽	term	yêu thú	demonic beast
+# Vật phẩm
+灵石	item	linh thạch	spirit stone
+法宝	item	pháp bảo	magic treasure
+丹药	item	đan dược	pill
+储物袋	item	túi trữ vật	storage pouch
+储物戒指	item	nhẫn trữ vật	storage ring
+飞剑	item	phi kiếm	flying sword
+傀儡	item	khôi lỗi	puppet
