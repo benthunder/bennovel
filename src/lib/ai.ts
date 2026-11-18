@@ -153,9 +153,34 @@ export const getAiStatus = (user: string) => invoke<AiStatus>('ai_status', { use
 export const stopAiChapter = (user: string, novelId: number, index: number) => invoke<boolean>('ai_chapter_stop', { user, novelId, index });
 /** Takes a book's request out of the queue altogether; chapters translated so far stay. */
 export const clearAiTranslation = (user: string, novelId: number) => invoke<number>('ai_clear', { user, novelId });
+/** A chapter to read in the reader as it is translated: its parts replace the raw text as they come. */
+export interface LiveWatch { index: number; lang: string; style: string }
+const LIVE_EVENT = 'bennovel:watch-live';
+/**
+ * Asks the reader open on `novelId` to show chapter `w` live; false when no reader of
+ * that book is open (then the caller opens one).
+ */
+export function watchLive(novelId: number, w: LiveWatch): boolean {
+  const detail = { novelId, watch: w, taken: false };
+  window.dispatchEvent(new CustomEvent(LIVE_EVENT, { detail }));
+  return detail.taken;
+}
+/** The reader of `novelId` takes "watch live" asks for its book. */
+export function onWatchLive(novelId: number, cb: (w: LiveWatch) => void): () => void {
+  const on = (e: Event) => {
+    const d = (e as CustomEvent<{ novelId: number; watch: LiveWatch; taken: boolean }>).detail;
+    if (d.novelId !== novelId) return;
+    d.taken = true;
+    cb(d.watch);
+  };
+  window.addEventListener(LIVE_EVENT, on);
+  return () => window.removeEventListener(LIVE_EVENT, on);
+}
+/** A chapter's parts back so far: each paragraph with the position of the raw block it translates. */
+export interface AiDraft { title: string; paragraphs: string[]; positions: number[] }
 /** What a chapter being translated has so far (null before its first part is back). `style` as the native side keeps it. */
 export const getAiDraft = (user: string, novelId: number, index: number, lang: string, style: string) =>
-  invoke<{ title: string; paragraphs: string[] } | null>('ai_chapter_draft', { user, novelId, index, lang, style: style.toLowerCase() });
+  invoke<AiDraft | null>('ai_chapter_draft', { user, novelId, index, lang, style: style.toLowerCase() });
 
 /** Calls `cb` (at most every `ms`) whenever a translation anywhere moves; returns the way to stop listening. */
 export function onAiMoved(cb: () => void, ms = 400): () => void {

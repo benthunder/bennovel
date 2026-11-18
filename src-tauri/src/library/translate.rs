@@ -1667,6 +1667,10 @@ fn save(
     tx.commit()
 }
 
+/// A draft: its title, and each paragraph back with the position of the raw block it
+/// translates.
+pub type DraftText = (String, Vec<(i64, String)>);
+
 /// What a chapter being translated has so far: the draft's title and the paragraphs
 /// of the parts back from the LLM, in the original's order. None when there is no
 /// draft (nothing back yet, or a published chapter being made again).
@@ -1675,7 +1679,7 @@ pub fn draft(
     chapter_id: i64,
     lang: &str,
     style: &str,
-) -> rusqlite::Result<Option<(String, Vec<String>)>> {
+) -> rusqlite::Result<Option<DraftText>> {
     let title: Option<String> = conn
         .query_row(
             "select title from chapter_translations
@@ -1686,8 +1690,8 @@ pub fn draft(
         )
         .optional()?;
     let Some(title) = title else { return Ok(None) };
-    let paragraphs = super::segments::paragraphs(conn, chapter_id, lang, Some(style))?;
-    Ok(Some((title, paragraphs)))
+    let blocks = super::segments::placed(conn, chapter_id, lang, Some(style))?;
+    Ok(Some((title, blocks)))
 }
 
 /// The AI text of a chapter in `lang` and `style`, if it was made.
@@ -2366,10 +2370,11 @@ pub(crate) mod tests {
             );
         }
         assert!(versions(&conn, 1).unwrap().is_empty());
-        // What the "watch live" sheet reads: the paragraphs back so far.
+        // What the reader reads live: the paragraphs back so far, each with its place.
         let (_, so_far) = draft(&conn, chapter, "vi", "natural").unwrap().unwrap();
         assert_eq!(so_far.len(), 4);
-        assert!(so_far[0].starts_with("[tr] p0 "), "{so_far:?}");
+        assert_eq!(so_far[0].0, 0);
+        assert!(so_far[0].1.starts_with("[tr] p0 "), "{so_far:?}");
 
         let llm = Arc::new(Fake::new("en"));
         let out = run(&conn, llm.clone(), req(chapter, "vi")).unwrap();

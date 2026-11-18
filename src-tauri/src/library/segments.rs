@@ -124,6 +124,27 @@ pub fn paragraphs(
     rows.collect()
 }
 
+/// `paragraphs` with the position of each: where each block of a draft goes in the
+/// chapter (the raw text's block at that position is the one it translates).
+pub fn placed(
+    conn: &Connection,
+    chapter_id: i64,
+    lang: &str,
+    style: Option<&str>,
+) -> rusqlite::Result<Vec<(i64, String)>> {
+    let mut stmt = conn.prepare_cached(
+        "select position, type, content from segments
+         where chapter_id = ?1 and lang = ?2 and style = ?3 order by position",
+    )?;
+    let rows = stmt.query_map(params![chapter_id, lang, style_key(style)], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            paragraph_of(&r.get::<_, String>(1)?, &r.get::<_, String>(2)?),
+        ))
+    })?;
+    rows.collect()
+}
+
 /// `paragraphs`, or those of `content` for a row whose text is still kept in
 /// `chapter_translations.content` (from before segments).
 pub fn paragraphs_or(

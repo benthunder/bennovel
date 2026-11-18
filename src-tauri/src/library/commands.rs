@@ -816,6 +816,9 @@ pub async fn ai_chapter<R: Runtime>(
 pub struct AiDraft {
     title: String,
     paragraphs: Vec<String>,
+    /// Where each paragraph goes in the chapter: the position of the raw block it
+    /// translates, so the reader can put each one in place as it comes.
+    positions: Vec<i64>,
 }
 
 #[tauri::command]
@@ -831,8 +834,16 @@ pub async fn ai_chapter_draft<R: Runtime>(
     ai_blocking(move || {
         let conn = db::open(&path)?;
         let chapter_id = chapter_id(&conn, novel_id, index)?;
-        Ok(translate::draft(&conn, chapter_id, &lang, &style)?
-            .map(|(title, paragraphs)| AiDraft { title, paragraphs }))
+        Ok(
+            translate::draft(&conn, chapter_id, &lang, &style)?.map(|(title, blocks)| {
+                let (positions, paragraphs) = blocks.into_iter().unzip();
+                AiDraft {
+                    title,
+                    paragraphs,
+                    positions,
+                }
+            }),
+        )
     })
     .await
 }
