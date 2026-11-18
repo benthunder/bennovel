@@ -1255,6 +1255,31 @@ pub(crate) struct PartTools<'a> {
 /// Lookups a part may make before it must hand in its text.
 const MAX_LOOKUPS: usize = 3;
 
+/// The paragraphs of `nop_ban_viet`'s `doan`: a list, as the tool asks, or that list
+/// sent as a JSON string, or one string of paragraphs, as some providers send it.
+/// Taking these keeps the part on the tools, not sent again as text.
+fn doan_blocks(doan: &serde_json::Value) -> Option<Vec<String>> {
+    use serde_json::Value;
+    let list = |a: &Vec<Value>| -> Vec<String> {
+        a.iter().filter_map(Value::as_str).map(str::to_string).collect()
+    };
+    match doan {
+        Value::Array(a) => Some(list(a)),
+        Value::String(s) => match serde_json::from_str::<Value>(s.trim()) {
+            Ok(Value::Array(a)) => Some(list(&a)),
+            _ if !s.trim().is_empty() => Some(
+                s.split("\n\n")
+                    .map(str::trim)
+                    .filter(|p| !p.is_empty())
+                    .map(str::to_string)
+                    .collect(),
+            ),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// A part asked through `tools`: the text from `nop_ban_viet`, then `WIKI_MARK` and
 /// the facts from `ghi_wiki` (the reply a text answer gives, so the cache and the
 /// wiki read both alike). `tra_ten` is answered and the part asked again, up to
@@ -1314,14 +1339,10 @@ fn ask_part_tools(
                 .and_then(|a| serde_json::from_str(a).ok());
             let answer = match name {
                 n if n == super::wiki::PART_TEXT => {
-                    let Some(doan) = args
-                        .as_ref()
-                        .and_then(|a| a.get("doan"))
-                        .and_then(Value::as_array)
+                    let Some(blocks) = args.as_ref().and_then(|a| a.get("doan")).and_then(doan_blocks)
                     else {
                         return Ok(None);
                     };
-                    let blocks: Vec<&str> = doan.iter().filter_map(Value::as_str).collect();
                     written = Some(blocks.join("\n\n"));
                     "ok".to_string()
                 }
@@ -1833,6 +1854,17 @@ pub fn strip(conn: &Connection) -> rusqlite::Result<()> {
 pub(crate) mod tests {
     use super::*;
     use std::sync::Mutex;
+
+    #[test]
+    fn doan_sent_as_a_string_is_still_the_text() {
+        use serde_json::json;
+        let want = vec!["Một.".to_string(), "Hai.".to_string()];
+        assert_eq!(doan_blocks(&json!(["Một.", "Hai."])), Some(want.clone()));
+        assert_eq!(doan_blocks(&json!("[\"Một.\", \"Hai.\"]")), Some(want.clone()));
+        assert_eq!(doan_blocks(&json!("Một.\n\nHai.")), Some(want));
+        assert_eq!(doan_blocks(&json!("  ")), None);
+        assert_eq!(doan_blocks(&json!(3)), None);
+    }
 
     /// Answers like a model: the language code, or the text with a tag.
     pub struct Fake {
