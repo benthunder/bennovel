@@ -365,13 +365,13 @@ export function LocalBookScreen({ book, place, path, live: liveStart }: { book: 
     let gone = false;
     const load = () => {
       getAiStatus(place.user).then(s => {
-        if (gone) return;
+        if (gone || !s) return;
         const next = new Map<number, LiveWatch>();
         const add = (c: { novelId: number; index: number; lang: string; style: string }) => {
           if (c.novelId === place.novelId) next.set(c.index, { index: c.index, lang: c.lang, style: c.style });
         };
         if (s.live) add(s.live);
-        s.chapters.filter(c => !c.error).forEach(add);
+        s.chapters.filter(c => !c.error && !c.stopped).forEach(add);
         const prev = runningRef.current;
         const over = [...prev.keys()].filter(i => !next.has(i));
         const same = over.length === 0 && next.size === prev.size

@@ -47,10 +47,11 @@ async function nativeApp(page: Page) {
           case 'book_section': return { index: args.index, paragraphs: ['林动 看着 道宗 的 人。', '动少 笑了。'] };
           case 'ai_status': return {
             books: [], live: null,
-            chapters: w.__running ? [{ novelId: 1, index: 0, lang: 'vi', style: 'natural', stage: 'translate', partsDone: 1, partsTotal: 2, title: 'Võ Động Càn Khôn', glossary: true, error: null }] : []
+            chapters: w.__running || w.__stopped ? [{ novelId: 1, index: 0, lang: 'vi', style: 'natural', stage: 'translate', partsDone: 1, partsTotal: 2, title: 'Võ Động Càn Khôn', glossary: true, error: null, stopped: !!w.__stopped }] : []
           };
           case 'ai_chapter_draft': return w.__running ? w.__draft : null;
-          case 'ai_chapter_stop': w.__running = false; return true;
+          case 'ai_chapter_stop': w.__running = false; w.__stopped = true; return true;
+          case 'ai_chapter_remove': w.__running = false; w.__stopped = false; return true;
           case 'ai_marks': return w.__done ? [{ index: 0, lang: 'vi', style: 'natural', model: 'm' }] : [];
           case 'ai_chapter': return w.__done && args.index === 0
             ? { title: '', paragraphs: ['[vi] Lâm Động nhìn người Đạo Tông.', '[vi] Động thiếu cười.'], mode: 'translate', model: 'm' }
@@ -130,4 +131,19 @@ test('read raw, a chapter being translated stays raw', async ({ page }) => {
   await page.getByRole('button', { name: 'Mở trong reader' }).click();
   await expect(part.locator('[data-live-banner]')).toContainText('1/2 đoạn');
   await expect(part.locator('p[data-live="done"]')).toHaveText('[vi] Lâm Động nhìn người Đạo Tông.');
+});
+
+test('a chapter stops at once and stays on the panel, to carry on or remove', async ({ page }) => {
+  await openReader(page);
+  await page.locator('.ai-dock__pill').click();
+  const row = page.locator('.ai-dock__item');
+  await row.getByRole('button', { name: 'Dừng', exact: true }).click();
+  await expect(row.locator('[data-stopped]')).toContainText('Đã dừng');
+  await expect(row.getByRole('button', { name: 'Chạy tiếp' })).toBeVisible();
+  // Stopped, the chapter in the reader is raw again (the native side says it moved).
+  await emit(page);
+  await expect(page.locator('[data-part="0"] [data-live-banner]')).toHaveCount(0);
+  await row.getByRole('button', { name: 'Xóa' }).click();
+  expect((await calls(page)).find(c => c.cmd === 'ai_chapter_remove')?.args).toMatchObject({ novelId: 1, index: 0 });
+  await expect(page.locator('.ai-dock')).toHaveCount(0);
 });

@@ -145,12 +145,14 @@ export async function onAiLive(user: string, cb: (l: AiLive | null) => void): Pr
 /** A book's request in the queue that still has chapters to do, paused or failed. */
 export interface AiBookProgress extends AiProgress { title: string }
 /** A chapter translated now from the reader: running, or ended with `error` (kept until tried again or cleared). */
-export interface AiManual extends AiLive { title: string; glossary: boolean; error: string | null }
+export interface AiManual extends AiLive { title: string; glossary: boolean; error: string | null; stopped: boolean }
 /** Everything the pipeline panel shows, for every book. */
 export interface AiStatus { books: AiBookProgress[]; live: AiLive | null; chapters: AiManual[] }
 export const getAiStatus = (user: string) => invoke<AiStatus>('ai_status', { user });
 /** Stops a chapter translated from the reader, or takes a failed one off the panel. */
 export const stopAiChapter = (user: string, novelId: number, index: number) => invoke<boolean>('ai_chapter_stop', { user, novelId, index });
+/** Takes a chapter translated from the reader off the panel, stopping it if it runs; its parts are kept for the next try. */
+export const removeAiChapter = (user: string, novelId: number, index: number) => invoke<boolean>('ai_chapter_remove', { user, novelId, index });
 /** Takes a book's request out of the queue altogether; chapters translated so far stay. */
 export const clearAiTranslation = (user: string, novelId: number) => invoke<number>('ai_clear', { user, novelId });
 /** A chapter to read in the reader as it is translated: its parts replace the raw text as they come. */
@@ -238,6 +240,7 @@ export function aiErrorKey(text: string): MessageKey {
   if (/^llm-http 429/.test(text)) return 'ai.err.limit';
   if (text.startsWith('llm-http')) return 'ai.err.http';
   if (text.startsWith('llm-empty')) return 'ai.err.empty';
+  if (text.startsWith('llm-stopped')) return 'ai.err.stopped';
   return 'ai.err.generic';
 }
 

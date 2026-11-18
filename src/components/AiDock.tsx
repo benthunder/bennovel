@@ -3,7 +3,7 @@ import { ask } from '@tauri-apps/plugin-dialog';
 import { useI18n, useT } from '../i18n';
 import {
   AI_LANGS, aiErrorDetail, aiErrorKey, aiTranslateChapter, clearAiTranslation, getAiChapter, getAiDraft,
-  getAiStatus, onAiMoved, pauseAiTranslation, resumeAiTranslation, stopAiChapter, styleOf, watchLive,
+  getAiStatus, onAiMoved, pauseAiTranslation, removeAiChapter, resumeAiTranslation, stopAiChapter, styleOf, watchLive,
   type AiBookProgress, type AiLang, type AiLive, type AiManual, type AiStage, type AiStatus
 } from '../lib/ai';
 import { IMAGE_MARK, canOpenLocalBooks, openLibraryBook } from '../lib/localBook';
@@ -66,8 +66,8 @@ export function AiDock({ bottom }: { bottom: number }) {
   const live = status?.live ?? null;
   if (!books.length && !chapters.length) return watch ? <DraftSheet user={user} watch={watch} onClose={() => setWatch(null)} onLive={goLive} /> : null;
 
-  const running = books.filter(b => b.queued + b.running > 0).length + chapters.filter(c => !c.error).length;
-  const trouble = books.some(b => b.paused > 0 || (b.failed > 0 && b.queued + b.running === 0)) || chapters.some(c => c.error);
+  const running = books.filter(b => b.queued + b.running > 0).length + chapters.filter(c => !c.error && !c.stopped).length;
+  const trouble = books.some(b => b.paused > 0 || (b.failed > 0 && b.queued + b.running === 0)) || chapters.some(c => c.error || c.stopped);
   const reload = () => getAiStatus(user).then(setStatus).catch(console.warn);
 
   return (
@@ -215,12 +215,20 @@ function ChapterRow({ c, user, onChange, onWatch, onPreview }: { c: AiManual; us
   const langName = useLangName();
   const [busy, setBusy] = useState(false);
   const small = { height: 30, padding: '0 10px', fontSize: 12 };
+  // Stopping shows at once; the chapter stays here to carry on (from the parts it has) or remove.
   const stop = async () => {
     setBusy(true);
     await stopAiChapter(user, c.novelId, c.index).catch(console.warn);
     setBusy(false);
     onChange();
   };
+  const remove = async () => {
+    setBusy(true);
+    await removeAiChapter(user, c.novelId, c.index).catch(console.warn);
+    setBusy(false);
+    onChange();
+  };
+  const running = !c.error && !c.stopped;
   // Tried again from here: the reader shows it once it is saved (marks reload with aiRev).
   const retry = () => {
     void aiTranslateChapter(user, c.novelId, c.index, { lang: c.lang as AiLang, style: styleOf(c.style), dict: c.glossary }, true)
@@ -236,13 +244,19 @@ function ChapterRow({ c, user, onChange, onWatch, onPreview }: { c: AiManual; us
       <div className="muted" style={{ fontSize: 12 }}>
         {t('common.chapter', { n: c.index + 1 })} · {t('pipe.fromReader')} · {langName(c.lang)} · {t(`tr.style.${styleOf(c.style)}`)}
       </div>
-      <Stages live={c} />
+      {running && <Stages live={c} />}
+      {c.stopped && !c.error && <div className="muted" data-stopped style={{ fontSize: 12, marginTop: 6 }}>{t('pipe.stoppedRow')}</div>}
       {c.error && <div className="ai-dock__error" style={{ fontSize: 12, marginTop: 6 }}>{t('pipe.failedError', { reason: errorText(t, c.error) })}</div>}
       <div className="ai-dock__actions">
-        {!c.error && <button className="btn btn-ghost" style={{ ...small, gap: 6 }} onClick={onWatch}><EyeIcon size={14} />{t('pipe.watch')}</button>}
-        {!c.error && <button className="btn btn-ghost" style={small} onClick={onPreview}>{t('pipe.preview')}</button>}
-        {c.error && <button className="btn btn-primary" style={{ ...small, gap: 6 }} onClick={retry}><RefreshIcon size={14} />{t('pipe.retry')}</button>}
-        <button className={`btn btn-ghost${c.error ? ' ai-dock__danger' : ''}`} style={small} disabled={busy} onClick={stop}>{c.error ? t('pipe.clear') : t('pipe.stop')}</button>
+        {running && <button className="btn btn-ghost" style={{ ...small, gap: 6 }} onClick={onWatch}><EyeIcon size={14} />{t('pipe.watch')}</button>}
+        {running && <button className="btn btn-ghost" style={small} onClick={onPreview}>{t('pipe.preview')}</button>}
+        {running && <button className="btn btn-ghost" style={small} disabled={busy} onClick={stop}>{t('pipe.stop')}</button>}
+        {!running && (
+          <button className="btn btn-primary" style={{ ...small, gap: 6 }} onClick={retry}>
+            <RefreshIcon size={14} />{c.error ? t('pipe.retry') : t('pipe.resume')}
+          </button>
+        )}
+        <button className="btn btn-ghost ai-dock__danger" style={small} disabled={busy} onClick={remove}>{t('pipe.remove')}</button>
       </div>
     </div>
   );
