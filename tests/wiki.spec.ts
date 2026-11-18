@@ -22,7 +22,18 @@ async function nativeApp(page: Page) {
       ({ uid, kind, name, names: vi ? { vi } : {}, aliases: [], summaries: summary ? { vi: summary } : {}, rank: null, firstChapter, source: 'ai', updatedAt: 1, ...extra });
     const wiki = {
       entries: [
-        entry('a', 'character', '林动', 'Lâm Động', 'Thiếu niên Lâm gia ở Thanh Dương trấn, tu luyện nhờ thạch phù bí ẩn.', 1, { aliases: ['动少'] }),
+        entry('a', 'character', '林动', 'Lâm Động', 'Thiếu niên Lâm gia ở Thanh Dương trấn, tu luyện nhờ thạch phù bí ẩn.', 1, {
+          aliases: ['动少'],
+          meta: { personality: 'Kiên nhẫn, lì đòn, trọng tình nghĩa.', age: '15 tuổi', origin: 'Con trai Lâm Khiếu, chi thứ của Lâm gia ở Thanh Dương trấn.' }
+        }),
+        entry('h', 'character', '林啸', 'Lâm Khiếu', 'Cha của Lâm Động.', 1),
+        entry('i', 'character', '林琅天', 'Lâm Lang Thiên', 'Thiên tài Lâm gia tông tộc.', 1),
+        entry('j', 'skill', '通背拳', 'Thông Bối Quyền', 'Quyền pháp của Lâm gia, đánh liên hoàn như sóng cuộn.', 1, {
+          meta: { grade: 'Hoàng giai', difficulty: 'Dễ nhập môn, luyện đến tầng cuối rất khó.' }
+        }),
+        entry('k', 'level', '先天', 'Tiên Thiên', '', 7, { rank: 1, meta: { system: 'Võ đạo' } }),
+        entry('l', 'character', '应玄子', 'Ứng Huyền Tử', 'Tông chủ Đạo Tông.', 40),
+        entry('m', 'item', '石符', 'Thạch Phù', 'Phù đá bí ẩn.', 1),
         entry('b', 'character', '小貂', 'Tiểu Điêu', 'Yêu thú trong thạch phù, bạn đồng hành của Lâm Động.', 3),
         entry('c', 'faction', '道宗', 'Đạo Tông', 'Một trong những tông môn lớn nhất Đông Huyền vực, chia thành nhiều mạch như Đan Tông, Phù Tông, Thiên Tông và Hoang Điện. Tông chủ là Ứng Huyền Tử. Mỗi lần thi đấu giữa các mạch, đệ tử ưu tú được vào Hoang Điện tu luyện, nơi cất giữ những bí thuật cổ xưa nhất của tông môn.', 40),
         entry('d', 'place', '青阳镇', 'Thanh Dương trấn', 'Thị trấn nhỏ, quê của Lâm gia.', 1),
@@ -34,7 +45,14 @@ async function nativeApp(page: Page) {
         { uid: 'r1', fromUid: 'b', toUid: 'a', kind: 'bạn đồng hành của', labels: { vi: 'bạn đồng hành của' }, note: 'Gặp nhau trong thạch phù.', firstChapter: 3 },
         { uid: 'r3', fromUid: 'd', toUid: 'e', kind: 'located_in', labels: {}, note: '', firstChapter: 2 },
         { uid: 'r4', fromUid: 'a', toUid: 'g', kind: 'has_level', labels: {}, note: '', firstChapter: 1 },
-        { uid: 'r5', fromUid: 'a', toUid: 'f', kind: 'has_level', labels: {}, note: '', firstChapter: 5 }
+        { uid: 'r5', fromUid: 'a', toUid: 'f', kind: 'has_level', labels: {}, note: '', firstChapter: 5 },
+        { uid: 'r6', fromUid: 'h', toUid: 'a', kind: 'parent_of', labels: {}, note: '', firstChapter: 1 },
+        { uid: 'r7', fromUid: 'i', toUid: 'a', kind: 'enemy_of', labels: {}, note: 'Đánh trọng thương Lâm Khiếu năm xưa.', firstChapter: 1 },
+        { uid: 'r8', fromUid: 'a', toUid: 'j', kind: 'has_skill', labels: {}, note: '', firstChapter: 1 },
+        { uid: 'r9', fromUid: 'k', toUid: 'f', kind: 'equivalent_to', labels: {}, note: '', firstChapter: 7 },
+        { uid: 'r10', fromUid: 'l', toUid: 'c', kind: 'leader_of', labels: {}, note: 'Tông chủ đời thứ ba.', firstChapter: 40 },
+        { uid: 'r11', fromUid: 'a', toUid: 'c', kind: 'leader_of', labels: {}, note: 'Kế nhiệm Ứng Huyền Tử.', firstChapter: 900 },
+        { uid: 'r12', fromUid: 'a', toUid: 'm', kind: 'owns', labels: {}, note: '', firstChapter: 1 }
       ],
       auto: true, lastError: null
     };
@@ -98,10 +116,14 @@ test('the book wiki lists, searches and edits entries', async ({ page }, info) =
   await expect(page.getByRole('radio')).toHaveCount(0);
   await expect(page.getByText('Lâm Động', { exact: true })).toBeVisible();
   await expect(page.locator('[data-entry="林动"]').getByText('林动', { exact: true })).toBeVisible();
-  await expect(page.locator('[data-entry="林动"]').getByText('3 quan hệ')).toBeVisible();
+  await expect(page.locator('[data-entry="林动"]').getByText('8 quan hệ')).toBeVisible();
   // A character shows the level it reached last.
   await expect(page.locator('[data-entry="林动"]').getByText('Địa Nguyên cảnh')).toBeVisible();
   await page.screenshot({ path: `test-results/wiki-${info.project.name}-list.png` });
+  await page.getByRole('tab', { name: 'Cảnh giới' }).click();
+  await expect(page.locator('[data-wiki-equals]').first()).toBeVisible();
+  await page.screenshot({ path: `test-results/wiki-${info.project.name}-ladder.png`, fullPage: true });
+  await page.getByRole('tab', { name: 'Tất cả' }).click();
 
   // Search goes to the native side (names, aliases and notes).
   await page.getByPlaceholder('Tìm tên, tên khác, mô tả…').fill('tông môn');
@@ -128,12 +150,17 @@ test('the book wiki lists, searches and edits entries', async ({ page }, info) =
   // Only Vietnamese words: no tab per language.
   await sheet.getByLabel('Tên khác (cách nhau bằng dấu phẩy)').fill('动少, 林动哥');
   await expect(sheet.getByRole('tab')).toHaveCount(0);
+  // The profile is edited in the same order and saved with the entry.
+  await expect(sheet.getByLabel('Tính cách')).toHaveValue('Kiên nhẫn, lì đòn, trọng tình nghĩa.');
+  await sheet.getByLabel('Kỹ năng').fill('Khắc phù, luyện thể.');
+  await expect(sheet.locator('[data-rel-group="family"]')).toContainText(/con của\s*Lâm Khiếu/);
   await page.screenshot({ path: `test-results/wiki-${info.project.name}-entry.png` });
   await sheet.getByRole('button', { name: 'Lưu' }).click();
   expect((await calls(page)).find(c => c.cmd === 'wiki_save')?.args.entry).toMatchObject({
     uid: 'a', name: '林动', aliases: ['动少', '林动哥'],
     names: { vi: 'Lâm Động' },
-    summaries: { vi: 'Thiếu niên Lâm gia ở Thanh Dương trấn, tu luyện nhờ thạch phù bí ẩn.' }
+    summaries: { vi: 'Thiếu niên Lâm gia ở Thanh Dương trấn, tu luyện nhờ thạch phù bí ẩn.' },
+    meta: { personality: 'Kiên nhẫn, lì đòn, trọng tình nghĩa.', age: '15 tuổi', abilities: 'Khắc phù, luyện thể.' }
   });
   await expect(page.getByText('Đã lưu vào wiki.')).toBeVisible();
 });
@@ -157,12 +184,16 @@ test('the wiki stays Vietnamese whatever the reading language, with levels in or
 
   // Levels in their order, lowest first, with who is at each.
   await page.getByRole('tab', { name: 'Cảnh giới' }).click();
-  const ladder = page.locator('[data-wiki-ladder] > li');
+  // The whole tree: each ladder with its levels, and what matches in the other ladders.
+  expect(await page.locator('[data-ladder]').evaluateAll(els => els.map(e => e.getAttribute('data-ladder')))).toEqual(['Võ đạo', '']);
+  const ladder = page.locator('[data-ladder=""] [data-wiki-ladder] > li');
   await expect(ladder).toHaveCount(2);
   await expect(ladder.nth(0)).toContainText('淬体 (vi)');
   await expect(ladder.nth(1)).toContainText('地元境 (vi)');
-  await expect(ladder.nth(1)).toContainText('林动 (vi)');
-  await expect(ladder.nth(0)).not.toContainText('林动 (vi)');
+  await expect(ladder.nth(1).locator('[data-wiki-equals]')).toContainText('≈ 先天 (vi) · Võ đạo');
+  await expect(page.locator('[data-ladder="Võ đạo"] [data-wiki-equals]')).toContainText('≈ 地元境 (vi)');
+  // Only the levels: who reached them is on the characters' pages.
+  await expect(page.locator('[data-wiki-ladder-tree]')).not.toContainText('林动 (vi)');
 
   // Places nest by "located in".
   await page.getByRole('tab', { name: 'Bản đồ' }).click();
@@ -189,8 +220,28 @@ test('names in a chapter open the whole wiki with its links', async ({ page }, i
   const card = page.getByRole('dialog', { name: 'Lâm Động' });
   await expect(card.getByText('Thiếu niên Lâm gia ở Thanh Dương trấn, tu luyện nhờ thạch phù bí ẩn.')).toBeVisible();
   // The level reached last, and the relationships with their circumstances.
-  await expect(card.getByText('Cảnh giới hiện tại: Địa Nguyên cảnh')).toBeVisible();
+  // A character's profile in order: personality, age, background, skills, level.
+  const profile = card.locator('[data-wiki-profile] [data-profile]');
+  await expect(profile).toHaveCount(6);
+  expect(await profile.evaluateAll(els => els.map(e => e.getAttribute('data-profile')))).toEqual(['personality', 'age', 'origin', 'abilities', 'level', 'items']);
+  await expect(profile.nth(5).locator('[data-wiki-skill]')).toHaveText('Thạch Phù');
+  await expect(profile.nth(0)).toContainText('Tính cách');
+  await expect(profile.nth(0)).toContainText('Kiên nhẫn, lì đòn, trọng tình nghĩa.');
+  await expect(profile.nth(1)).toContainText('15 tuổi');
+  await expect(profile.nth(2)).toContainText('Con trai Lâm Khiếu');
+  await expect(profile.nth(3).locator('[data-wiki-skill]')).toHaveText('Thông Bối Quyền');
+  await expect(profile.nth(4)).toContainText('Địa Nguyên cảnh');
+  await expect(profile.nth(4)).toContainText('trước đó: Thối Thể');
+  // Then the other characters, by kind of relationship; levels and skills are not repeated.
+  const groups = card.locator('[data-wiki-rel-people] [data-rel-group]');
+  expect(await groups.evaluateAll(els => els.map(e => e.getAttribute('data-rel-group')))).toEqual(['family', 'enemy', 'other']);
+  await expect(groups.nth(0)).toContainText('Gia đình');
+  await expect(groups.nth(0)).toContainText(/con của\s*Lâm Khiếu/);
+  await expect(groups.nth(1)).toContainText(/kẻ thù của\s*Lâm Lang Thiên/);
+  await expect(card.locator('[data-relation="has_level"], [data-relation="has_skill"], [data-relation="owns"]')).toHaveCount(0);
+  await expect(card.locator('[data-wiki-rel-more] [data-relation="leader_of"]')).toContainText('Đạo Tông');
   await expect(card.getByText('Gặp nhau trong thạch phù.')).toBeVisible();
+  await page.screenshot({ path: `test-results/wiki-${info.project.name}-character.png`, fullPage: true });
   await card.getByRole('button', { name: /Tiểu Điêu/ }).click();
   await expect(page.getByRole('dialog', { name: 'Tiểu Điêu' })).toBeVisible();
   await page.getByRole('dialog', { name: 'Tiểu Điêu' }).getByRole('button', { name: /Lâm Động/ }).click();
@@ -244,4 +295,40 @@ test('a long wiki description folds to two lines and expands in place', async ({
   // The card itself still opens the entry.
   await card.click({ position: { x: 20, y: 14 } });
   await expect(page.getByRole('dialog', { name: 'Mục wiki' })).toBeVisible();
+});
+
+test('a skill tells its grade and difficulty, a faction its leaders in turn', async ({ page }, info) => {
+  await nativeApp(page);
+  await page.addInitScript(() => {
+    localStorage.setItem('bennovel.aiView.:1', JSON.stringify({ lang: 'vi', style: 'Natural', dict: true, view: 'vi' }));
+  });
+  await page.goto('/');
+  await page.getByText('Võ Động Càn Khôn').filter({ visible: true }).first().click();
+  await page.getByRole('button', { name: /Bắt đầu đọc|Đọc tiếp/ }).filter({ visible: true }).first().click();
+  await page.locator('[data-part="0"] [data-wiki-term="c"]').first().click();
+  const sect = page.getByRole('dialog', { name: 'Đạo Tông' });
+  const leaders = sect.locator('[data-wiki-leaders] [data-leader]');
+  await expect(leaders).toHaveCount(2);
+  await expect(leaders.nth(0)).toContainText('Lần thứ 1');
+  await expect(leaders.nth(0)).toContainText('Ứng Huyền Tử');
+  await expect(leaders.nth(0)).toContainText('Tông chủ đời thứ ba.');
+  await expect(leaders.nth(1)).toContainText('Lần thứ 2');
+  await expect(leaders.nth(1)).toContainText('Lâm Động');
+  await expect(leaders.nth(1)).toContainText('hiện tại');
+  await expect(leaders.nth(1)).toContainText('từ chương 900');
+  await expect(sect.locator('[data-relation="leader_of"]')).toHaveCount(0);
+  await page.waitForTimeout(600);
+  await page.screenshot({ path: `test-results/wiki-${info.project.name}-faction.png` });
+
+  // From the leader to his skill: what it is and how high it ranks, not who knows it.
+  await leaders.nth(1).click();
+  const lam = page.getByRole('dialog', { name: 'Lâm Động' });
+  await lam.locator('[data-profile="abilities"] [data-wiki-skill]').click();
+  const fist = page.getByRole('dialog', { name: 'Thông Bối Quyền' });
+  await expect(fist.getByText('Quyền pháp của Lâm gia, đánh liên hoàn như sóng cuộn.')).toBeVisible();
+  await expect(fist.locator('[data-skill="grade"]')).toContainText('Hoàng giai');
+  await expect(fist.locator('[data-skill="difficulty"]')).toContainText('Dễ nhập môn');
+  await expect(fist.locator('[data-relation]')).toHaveCount(0);
+  await page.waitForTimeout(600);
+  await page.screenshot({ path: `test-results/wiki-${info.project.name}-skill.png` });
 });
