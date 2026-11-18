@@ -66,7 +66,7 @@ async function nativeApp(page: Page, { llm = true, queue = false } = {}) {
             emit('ai-chapter-progress', { novelId: args.novelId, index: args.index, done: 0, total: 3 });
             await new Promise(r => setTimeout(r, 150));
             emit('ai-chapter-progress', { novelId: args.novelId, index: args.index, done: 1, total: 3 });
-            if (w.__hold) await new Promise<void>(r => { release = r; });
+            if (w.__hold) await new Promise<void>(r => { release = r; w.__held = true; });
             await new Promise(r => setTimeout(r, 150));
             const i = Number(args.index);
             done.set(i, (done.get(i) ?? 0) + 1);
@@ -157,7 +157,7 @@ test('each chapter is marked, translated again and switched to its original', as
   await page.screenshot({ path: `test-results/raw-${info.project.name}-missing.png` });
   await expect(first.getByText('Words of section 1.', { exact: true })).toBeVisible();
   await first.getByRole('button', { name: 'Translate into Tiếng Việt with AI' }).click();
-  await expect(page.getByTestId('reader-status')).toContainText('Translating Part 1 of 2…');
+  await expect(page.getByTestId('reader-status')).not.toContainText('Translating');
   await expect(first.getByText('Lời của phần 1 (1).')).toBeVisible();
   await expect(first.getByText('AI · Tiếng Việt · Natural')).toBeVisible();
   const tr = (await calls(page)).find(c => c.cmd === 'ai_translate_chapter');
@@ -195,7 +195,7 @@ test('each chapter is marked, translated again and switched to its original', as
   await expect(sheet.getByRole('button').filter({ has: page.locator('[data-ai-tag]') })).toContainText('Part one');
 });
 
-test('a chapter translates in the status bar while the reader goes on', async ({ page }) => {
+test('a chapter translates with no status line while the reader goes on', async ({ page }) => {
   await nativeApp(page);
   await page.addInitScript(() => { (window as unknown as { __hold: boolean }).__hold = true; });
   await page.goto('/');
@@ -207,7 +207,9 @@ test('a chapter translates in the status bar while the reader goes on', async ({
   await page.getByRole('menuitemradio', { name: /VI · Tiếng Việt/ }).click();
   await first.getByRole('button', { name: 'Translate into Tiếng Việt with AI' }).click();
   const status = page.getByTestId('reader-status');
-  await expect(status).toContainText('Translating Part 1 of 2… · 1/3 parts');
+  // No status line: only the pipeline button says it is translating.
+  await expect(status.getByRole('status')).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __held?: boolean }).__held)).toBe(true);
   // Nothing covers the text: the chapter stays readable and its buttons work.
   await expect(first.getByText('Words of section 1.', { exact: true })).toBeVisible();
   await page.locator('[data-part="1"]').getByRole('button', { name: 'Translate into Tiếng Việt with AI' }).click();

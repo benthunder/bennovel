@@ -83,7 +83,9 @@ test('a chapter being translated into the reading language shows each paragraph 
   await openReader(page);
   await expect(page.getByRole('button', { name: /Xem trực tiếp/ })).toHaveCount(0);
   const part = page.locator('[data-part="0"]');
-  await expect(part.locator('[data-live-banner]')).toContainText('Đang dịch trực tiếp · 1/2 đoạn');
+  // No banner or status line: only the pipeline button says it is translating.
+  await expect(part.locator('[data-live-banner]')).toHaveCount(0);
+  await expect(page.getByText(/Đang dịch Chương/)).toHaveCount(0);
   await expect(part.locator('p[data-live="done"]')).toHaveText('[vi] Lâm Động nhìn người Đạo Tông.');
   await expect(part.locator('p[data-live="raw"]')).toHaveText('动少 笑了。');
   await page.screenshot({ path: `test-results/live-${info.project.name}-reader.png` });
@@ -94,7 +96,6 @@ test('a chapter being translated into the reading language shows each paragraph 
   });
   await emit(page);
   await expect(part.locator('p[data-live="done"]')).toHaveCount(2);
-  await expect(part.locator('[data-live-banner]')).toContainText('2/2 đoạn');
 
   // Saved: the chapter shows its AI version, as any translated chapter does.
   await page.evaluate(() => {
@@ -103,7 +104,7 @@ test('a chapter being translated into the reading language shows each paragraph 
     w.__done = true;
   });
   await emit(page);
-  await expect(part.locator('[data-live-banner]')).toHaveCount(0);
+  await expect(part.locator('p[data-live]')).toHaveCount(0);
   await expect(part.locator('[data-ai-mark="vi.Natural"]')).toBeVisible();
   await expect(part).toContainText('[vi] Động thiếu cười.');
 });
@@ -124,12 +125,11 @@ test('the first part is previewed in a popup to carry on or stop', async ({ page
 test('read raw, a chapter being translated stays raw', async ({ page }) => {
   await openReader(page, 'raw');
   const part = page.locator('[data-part="0"]');
-  await expect(part.locator('[data-live-banner]')).toHaveCount(0);
+  await expect(part.locator('p[data-live]')).toHaveCount(0);
   await expect(part).toContainText('林动 看着 道宗 的 人。');
   // The pipeline panel opens it in the language being translated into.
   await page.locator('.ai-dock__pill').click();
   await page.getByRole('button', { name: 'Mở trong reader' }).click();
-  await expect(part.locator('[data-live-banner]')).toContainText('1/2 đoạn');
   await expect(part.locator('p[data-live="done"]')).toHaveText('[vi] Lâm Động nhìn người Đạo Tông.');
 });
 
@@ -142,7 +142,7 @@ test('a chapter stops at once and stays on the panel, to carry on or remove', as
   await expect(row.getByRole('button', { name: 'Chạy tiếp' })).toBeVisible();
   // Stopped, the chapter in the reader is raw again (the native side says it moved).
   await emit(page);
-  await expect(page.locator('[data-part="0"] [data-live-banner]')).toHaveCount(0);
+  await expect(page.locator('[data-part="0"] p[data-live]')).toHaveCount(0);
   await row.getByRole('button', { name: 'Xóa' }).click();
   expect((await calls(page)).find(c => c.cmd === 'ai_chapter_remove')?.args).toMatchObject({ novelId: 1, index: 0 });
   await expect(page.locator('.ai-dock')).toHaveCount(0);

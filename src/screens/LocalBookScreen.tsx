@@ -10,7 +10,7 @@ import { CONTENT_LANGS, type ContentLang, type ReplaceRule } from '../data/types
 import { useI18n } from '../i18n';
 import {
   AI_LANGS, AiFailure, aiErrorDetail, aiTranslateBook, aiTranslateChapter, aiViewKey, getAiChapter, getAiDraft, getAiMarks, getAiStatus,
-  onAiChapterProgress, onAiMoved, onWatchLive, readingLangOf, styleOf,
+  onAiMoved, onWatchLive, readingLangOf, styleOf,
   type AiChoice, type AiLang, type AiMark, type AiView, type LiveWatch
 } from '../lib/ai';
 import {
@@ -147,8 +147,6 @@ export function LocalBookScreen({ book, place, path, live: liveStart }: { book: 
     if (!list?.length) return null;
     return list.find(m => ai && styleOf(m.style) === ai.style) ?? list[0];
   };
-  /** The chapter being translated (or rewritten) now, shown in the status bar while the reader goes on. */
-  const [aiJob, setAiJob] = useState<{ at: number; kind: 'translate' | 'rewrite'; done: number; total: number; lang: string; style: string } | null>(null);
   /**
    * This book's chapters being translated now (the queue's and the reader's), by index.
    * One being translated into the reading language shows its raw text with each
@@ -182,11 +180,8 @@ export function LocalBookScreen({ book, place, path, live: liveStart }: { book: 
     if (aiRunning.current) { app.showToast(t('ai.busyChapter')); return; }
     aiRunning.current = true;
     if (lay.isPhone) setTools(null);
-    setAiJob({ at, kind: c.lang === lang ? 'rewrite' : 'translate', done: 0, total: 0, lang: c.lang, style: c.style.toLowerCase() });
+    // Its progress shows on the pipeline button; the paragraphs come in place as they are translated.
     const novelId = place.novelId;
-    const stop = onAiChapterProgress(p => {
-      if (p.novelId === novelId && p.index === at) setAiJob(j => j && { ...j, done: p.done, total: p.total });
-    });
     try {
       await aiTranslateChapter(place.user, novelId, at, c, true);
       setAi({ ...c, view: c.lang });
@@ -198,9 +193,7 @@ export function LocalBookScreen({ book, place, path, live: liveStart }: { book: 
     } catch (e) {
       aiFail(e);
     } finally {
-      void stop.then(f => f());
       aiRunning.current = false;
-      setAiJob(null);
     }
   };
 
@@ -558,15 +551,6 @@ export function LocalBookScreen({ book, place, path, live: liveStart }: { book: 
         </div>
       </div>
       <ReaderStatusBar theme={theme}>
-        {aiJob && (
-          <span role="status" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
-            <Spinner size={11} />
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {t(aiJob.kind === 'rewrite' ? 'ai.rewritingName' : 'ai.translatingName', { name: sectionName(book.sections[aiJob.at], aiJob.at, total) })}
-              {aiJob.total > 0 && ` · ${t('ai.parts', { done: aiJob.done, total: aiJob.total })}`}
-            </span>
-          </span>
-        )}
       </ReaderStatusBar>
 
       </div>
@@ -712,7 +696,6 @@ function BookPart({ bookId, index, meta, name, fix, st, color, onReady, onLayout
       </p>
     );
   }), [data, rawLeft, heading, name, bookId, st.gap, st.fontSize, st.lineH, st.align, wikiAt, terms, cardLang, fix]);
-  const liveCount = loaded && rawLeft ? { done: loaded.paragraphs.filter(p => imageKey(p) === null).length - rawLeft.size, total: loaded.paragraphs.filter(p => imageKey(p) === null).length } : null;
   const link: CSSProperties = { border: 'none', background: 'none', font: 'inherit', fontSize: 12, fontWeight: 700, textDecoration: 'underline', cursor: 'pointer', color: 'inherit', padding: 0 };
 
   return (
@@ -721,12 +704,6 @@ function BookPart({ bookId, index, meta, name, fix, st, color, onReady, onLayout
         <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: st.accent }}>{name}</div>
       )}
       <h2 style={{ margin: '4px 0 18px', fontSize: st.headingSize, color }}>{fix(heading)}</h2>
-      {live && (
-        <div role="status" data-live-banner style={{ position: 'sticky', top: 0, zIndex: 1, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 12, fontWeight: 700, marginBottom: 14, padding: '6px 12px', borderRadius: 999, background: 'color-mix(in srgb, var(--color-accent) 18%, transparent)', color: st.accent }}>
-          <Spinner size={11} />
-          <span style={{ flex: 1, minWidth: 0 }}>{liveCount && liveCount.done > 0 ? t('reader.live', liveCount) : t('reader.liveWaiting')}</span>
-        </div>
-      )}
       {q.status === 'loading' && (
         <div role="status" style={{ display: 'flex', alignItems: 'center', gap: 10, opacity: .75 }}><Spinner size={16} />{t('book.loading')}</div>
       )}
