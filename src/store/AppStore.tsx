@@ -3,7 +3,7 @@ import { load, save } from '../lib/storage';
 import type { ContentLang, User } from '../data/types';
 import { useI18n, useT } from '../i18n';
 import type { MessageKey } from '../i18n/en';
-import { aiErrorKey, resumeAiQueue, type AiProgress } from '../lib/ai';
+import { aiErrorKey, resumeAiQueue, type AiProgress, type LiveWatch } from '../lib/ai';
 import { canOpenLocalBooks, libraryUser, type LibraryPlace, type LocalBook } from '../lib/localBook';
 import { runOcr } from '../lib/ocr';
 import { appMode, setAppMode, type AppMode } from '../lib/mode';
@@ -20,7 +20,7 @@ export type Route =
   /** The wiki of a book in the on-device library. */
   | { s: 'bookWiki'; novelId: number; title: string; lang?: string }
   /** `path`: a file opened without saving, which can still be imported from the reader. */
-  | { s: 'book'; book: LocalBook; place?: LibraryPlace; path?: string };
+  | { s: 'book'; book: LocalBook; place?: LibraryPlace; path?: string; live?: LiveWatch };
 
 export type ReaderTheme = 'cream' | 'paper' | 'sage' | 'night' | 'eink';
 export interface ReaderPrefs {

@@ -1,6 +1,6 @@
 [package]
 name = "bennovel"
-version = "0.34.0"
+version = "0.34.1"
 description = "BenNovel — novel reader"
 edition = "2021"
 
@@ -35,7 +35,7 @@ tauri-plugin-background-work = { path = "plugins/background-work" }
 tauri-plugin-deep-link = "2"
 tauri-plugin-opener = "2"
 ureq = { version = "2", default-features = false, features = ["tls"] }
-tokio = { version = "1", features = ["sync", "rt"] }
+tokio = { version = "1", features = ["sync", "rt", "time", "macros"] }
 rust-langgraph = { version = "0.1.1", default-features = false }
 tauri-plugin-notification = "2"
 aho-corasick = "1"

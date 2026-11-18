@@ -1,4 +1,3 @@
-import { DraftSheet } from '../components/AiDock';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { ChapterSheet, useSectionName } from '../components/ChapterSheet';
 import { BookOpenIcon, ChevronLeftIcon, DownloadIcon, ListIcon, SlidersIcon, SparklesIcon } from '../components/Icons';
@@ -10,8 +9,9 @@ import { applyReplaceRules, getBookRules, saveBookRules } from '../data/reposito
 import { CONTENT_LANGS, type ContentLang, type ReplaceRule } from '../data/types';
 import { useI18n } from '../i18n';
 import {
-  AI_LANGS, AiFailure, aiErrorDetail, aiTranslateBook, aiTranslateChapter, aiViewKey, getAiChapter, getAiMarks, onAiChapterProgress, readingLangOf, styleOf,
-  type AiChoice, type AiLang, type AiMark, type AiView
+  AI_LANGS, AiFailure, aiErrorDetail, aiTranslateBook, aiTranslateChapter, aiViewKey, getAiChapter, getAiDraft, getAiMarks, getAiStatus,
+  onAiChapterProgress, onAiMoved, onWatchLive, readingLangOf, styleOf,
+  type AiChoice, type AiLang, type AiMark, type AiView, type LiveWatch
 } from '../lib/ai';
 import {
   bookImageUrl, closeLocalBook, getLocalSection, imageKey, importBookPath, openLibraryBook, saveLibraryProgress,
@@ -46,7 +46,7 @@ const langLabel = (code: string) => `${code.toUpperCase()} · ${LANG_NATIVE[code
 
 export { aiViewKey };
 
-export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?: LibraryPlace; path?: string }) {
+export function LocalBookScreen({ book, place, path, live: liveStart }: { book: LocalBook; place?: LibraryPlace; path?: string; live?: LiveWatch }) {
   const { t, uiLang } = useI18n();
   const app = useApp();
   const lay = useLayout();
@@ -149,8 +149,12 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
   };
   /** The chapter being translated (or rewritten) now, shown in the status bar while the reader goes on. */
   const [aiJob, setAiJob] = useState<{ at: number; kind: 'translate' | 'rewrite'; done: number; total: number; lang: string; style: string } | null>(null);
-  /** The chapter being translated, shown part by part as it comes (DraftSheet). */
-  const [watching, setWatching] = useState<{ novelId: number; index: number; lang: string; style: string; title: string } | null>(null);
+  /**
+   * This book's chapters being translated now (the queue's and the reader's), by index.
+   * One being translated into the reading language shows its raw text with each
+   * paragraph replaced by its translation as the part it is in comes back.
+   */
+  const [running, setRunning] = useState<ReadonlyMap<number, LiveWatch>>(new Map());
   const aiRunning = useRef(false);
   /** Bumped per chapter each time it gets a new AI text, so its part loads it again. */
   const [aiRev, setAiRev] = useState<Record<number, number>>({});
@@ -341,6 +345,56 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
     setGen(g => g + 1);
   };
 
+  /** Goes to chapter `w` being translated, read in its language (the pipeline panel's "open in the reader"). */
+  const goToLive = (w: LiveWatch) => {
+    const into = AI_LANGS.find(x => x.code === w.lang)?.code;
+    if (into && viewLang !== into) setAi({ lang: into, style: styleOf(w.style), dict: ai?.dict ?? true, view: into });
+    if (w.index !== index) jump(w.index);
+  };
+  const goToLiveRef = useRef(goToLive);
+  goToLiveRef.current = goToLive;
+  useEffect(() => (place ? onWatchLive(place.novelId, w => goToLiveRef.current(w)) : undefined), [place?.novelId]);
+  // Opened from the pipeline panel on a chapter being translated.
+  useEffect(() => { if (liveStart) goToLive(liveStart); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Which chapters are being translated, read again each time a translation moves; one
+  // that is done shows its saved version in place of the parts.
+  const runningRef = useRef(running);
+  useEffect(() => {
+    if (!place) return;
+    let gone = false;
+    const load = () => {
+      getAiStatus(place.user).then(s => {
+        if (gone || !s) return;
+        const next = new Map<number, LiveWatch>();
+        const add = (c: { novelId: number; index: number; lang: string; style: string }) => {
+          if (c.novelId === place.novelId) next.set(c.index, { index: c.index, lang: c.lang, style: c.style });
+        };
+        if (s.live) add(s.live);
+        s.chapters.filter(c => !c.error && !c.stopped).forEach(add);
+        const prev = runningRef.current;
+        const over = [...prev.keys()].filter(i => !next.has(i));
+        const same = over.length === 0 && next.size === prev.size
+          && [...next].every(([i, w]) => prev.get(i)?.lang === w.lang && prev.get(i)?.style === w.style);
+        if (same) return;
+        runningRef.current = next;
+        setRunning(next);
+        if (over.length) {
+          setMarksRev(n => n + 1);
+          setAiRev(r => { const o = { ...r }; for (const i of over) o[i] = (o[i] ?? 0) + 1; return o; });
+        }
+      }).catch(e => console.warn(e));
+    };
+    load();
+    const stop = onAiMoved(load, 600);
+    return () => { gone = true; stop(); };
+  }, [place?.user, place?.novelId]);
+  /** The chapter `i` read as it is translated into the reading language, when it is and has no version in it yet. */
+  const liveOf = (i: number) => {
+    const w = running.get(i);
+    return w && place && w.lang === viewLang && !versionOf(i) ? { user: place.user, novelId: place.novelId, watch: w } : null;
+  };
+
   // Every change to the parts on screen is made up for before it is painted.
   const onLayout = useRef(() => {});
   onLayout.current = () => { if (!landing.current) keep(); };
@@ -489,6 +543,7 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
                 return v && place ? { user: place.user, novelId: place.novelId, lang: v.lang, style: styleOf(v.style), others: (marks?.get(i)?.length ?? 1) - 1 } : null;
               })()}
               original={original.has(i)} onShowOriginal={on => showOriginal(i, on)}
+              live={liveOf(i)}
               wiki={place ? { user: place.user, novelId: place.novelId, rev: app.aiRev } : null}
               onWiki={(wiki, entry, l) => setWikiPop({ wiki, entry, lang: l, at: i })}
               onTranslate={place && (versionOf(i) || !rawIsView) ? () => {
@@ -510,19 +565,11 @@ export function LocalBookScreen({ book, place, path }: { book: LocalBook; place?
               {t(aiJob.kind === 'rewrite' ? 'ai.rewritingName' : 'ai.translatingName', { name: sectionName(book.sections[aiJob.at], aiJob.at, total) })}
               {aiJob.total > 0 && ` · ${t('ai.parts', { done: aiJob.done, total: aiJob.total })}`}
             </span>
-            {place && (
-              <button className="text-link" style={{ fontSize: 'inherit', fontWeight: 700, whiteSpace: 'nowrap', color: 'inherit', textDecoration: 'underline' }}
-                onClick={() => setWatching({ novelId: place.novelId, index: aiJob.at, lang: aiJob.lang, style: aiJob.style, title: book.title ?? '' })}>
-                {t('pipe.watch')}
-              </button>
-            )}
           </span>
         )}
       </ReaderStatusBar>
 
       </div>
-
-      {watching && place && <DraftSheet user={place.user} watch={watching} onClose={() => setWatching(null)} />}
 
       {langMenu && (
         <div onClick={() => setLangMenu(null)} style={{ position: 'fixed', inset: 0, zIndex: 40 }}>
@@ -576,7 +623,7 @@ type PartStyle = {
  * One part of the book in the long scroll: its heading, then its text. Marked `data-ready` once its content is in, so the reader knows the
  * height is real before adding the next part.
  */
-function BookPart({ bookId, index, meta, name, fix, st, color, onReady, onLayout, lastH, marksReady, lang, rev, viewLang, ai, original, onShowOriginal, onTranslate, wiki, onWiki }: {
+function BookPart({ bookId, index, meta, name, fix, st, color, onReady, onLayout, lastH, marksReady, lang, rev, viewLang, ai, original, onShowOriginal, onTranslate, wiki, onWiki, live }: {
   bookId: number; index: number; meta: LocalSectionMeta | undefined; name: string;
   fix: (s: string) => string; st: PartStyle; color: string;
   onReady: (index: number) => void;
@@ -602,10 +649,13 @@ function BookPart({ bookId, index, meta, name, fix, st, color, onReady, onLayout
   /** A library book's wiki: its names in this chapter are marked, as known by this chapter. */
   wiki: { user: string; novelId: number; rev: number } | null;
   onWiki: (wiki: Wiki, entry: WikiEntry, lang: string) => void;
+  /** This chapter is read live while it is translated (`watch`): the raw text, each paragraph replaced as its part comes back. */
+  live: { user: string; novelId: number; watch: LiveWatch } | null;
 }) {
   const { t } = useI18n();
-  const showAi = !!ai && !original;
-  const aiKey = showAi ? `${ai.lang}.${ai.style}` : '';
+  const showAi = !!ai && !original && !live;
+  const aiKey = live ? 'live' : showAi ? `${ai.lang}.${ai.style}` : '';
+  const draft = useLiveDraft(live);
   // Goes up when the reader asks to load a failed part again.
   const [retry, setRetry] = useState(0);
   const q = useAsync(async () => {
@@ -635,7 +685,17 @@ function BookPart({ bookId, index, meta, name, fix, st, color, onReady, onLayout
   // reader re-renders (scrolling, the bar, an AI job's progress…).
   const onWikiRef = useRef(onWiki);
   onWikiRef.current = onWiki;
-  const data = q.status === 'ready' ? q.data : null;
+  const loaded = q.status === 'ready' ? q.data : null;
+  // Read live: each paragraph back from the AI in place of the raw one; the rest stay raw, dimmed.
+  const data = useMemo(() => (loaded && draft
+    ? { ...loaded, paragraphs: loaded.paragraphs.map((p, i) => draft.get(i) ?? p) }
+    : loaded), [loaded, draft]);
+  const rawLeft = useMemo(() => {
+    if (!loaded || !draft) return null;
+    const left = new Set<number>();
+    loaded.paragraphs.forEach((p, i) => { if (!draft.has(i) && imageKey(p) === null) left.add(i); });
+    return left;
+  }, [loaded, draft]);
   const body = useMemo<ReactNode>(() => data?.paragraphs.map((para, i) => {
     // The chapter's own first line repeating the heading shown above.
     if (i === 0 && repeatsHeading(para, [heading, name])) return null;
@@ -646,11 +706,13 @@ function BookPart({ bookId, index, meta, name, fix, st, color, onReady, onLayout
         onError={e => { e.currentTarget.style.display = 'none'; }}
         style={{ display: 'block', maxWidth: '100%', height: 'auto', margin: `0 auto ${st.gap}px`, borderRadius: 4 }} />
     ) : (
-      <p key={i} style={{ margin: `0 0 ${st.gap}px`, fontSize: st.fontSize, lineHeight: st.lineH, textAlign: st.align, textWrap: 'pretty' }}>
+      <p key={i} data-live={rawLeft ? (rawLeft.has(i) ? 'raw' : 'done') : undefined}
+        style={{ margin: `0 0 ${st.gap}px`, fontSize: st.fontSize, lineHeight: st.lineH, textAlign: st.align, textWrap: 'pretty', opacity: rawLeft?.has(i) ? .45 : undefined, transition: 'opacity .3s ease' }}>
         {wikiAt ? markWikiTerms(fix(para), terms, e => onWikiRef.current(wikiAt, e, cardLang)) : fix(para)}
       </p>
     );
-  }), [data, heading, name, bookId, st.gap, st.fontSize, st.lineH, st.align, wikiAt, terms, cardLang, fix]);
+  }), [data, rawLeft, heading, name, bookId, st.gap, st.fontSize, st.lineH, st.align, wikiAt, terms, cardLang, fix]);
+  const liveCount = loaded && rawLeft ? { done: loaded.paragraphs.filter(p => imageKey(p) === null).length - rawLeft.size, total: loaded.paragraphs.filter(p => imageKey(p) === null).length } : null;
   const link: CSSProperties = { border: 'none', background: 'none', font: 'inherit', fontSize: 12, fontWeight: 700, textDecoration: 'underline', cursor: 'pointer', color: 'inherit', padding: 0 };
 
   return (
@@ -659,6 +721,12 @@ function BookPart({ bookId, index, meta, name, fix, st, color, onReady, onLayout
         <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: st.accent }}>{name}</div>
       )}
       <h2 style={{ margin: '4px 0 18px', fontSize: st.headingSize, color }}>{fix(heading)}</h2>
+      {live && (
+        <div role="status" data-live-banner style={{ position: 'sticky', top: 0, zIndex: 1, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 12, fontWeight: 700, marginBottom: 14, padding: '6px 12px', borderRadius: 999, background: 'color-mix(in srgb, var(--color-accent) 18%, transparent)', color: st.accent }}>
+          <Spinner size={11} />
+          <span style={{ flex: 1, minWidth: 0 }}>{liveCount && liveCount.done > 0 ? t('reader.live', liveCount) : t('reader.liveWaiting')}</span>
+        </div>
+      )}
       {q.status === 'loading' && (
         <div role="status" style={{ display: 'flex', alignItems: 'center', gap: 10, opacity: .75 }}><Spinner size={16} />{t('book.loading')}</div>
       )}
@@ -672,7 +740,7 @@ function BookPart({ bookId, index, meta, name, fix, st, color, onReady, onLayout
           </button>
         </div>
       )}
-      {q.status === 'ready' && (onTranslate || ai) && (
+      {q.status === 'ready' && !live && (onTranslate || ai) && (
         <div data-ai-mark={isAi ? `${ai!.lang}.${ai!.style}` : 'original'}
           style={{ display: 'flex', alignItems: 'center', gap: '6px 12px', flexWrap: 'wrap', fontSize: 12, marginBottom: 14 }}>
           <span style={{
@@ -700,4 +768,32 @@ function BookPart({ bookId, index, meta, name, fix, st, color, onReady, onLayout
       {body}
     </section>
   );
+}
+
+/**
+ * The parts of a chapter back so far while it is translated, by the position of the raw
+ * block each translates; read again each time the pipeline moves. Null when not live.
+ */
+function useLiveDraft(live: { user: string; novelId: number; watch: LiveWatch } | null): Map<number, string> | null {
+  const [draft, setDraft] = useState<Map<number, string> | null>(null);
+  useEffect(() => {
+    if (!live) { setDraft(null); return; }
+    let gone = false;
+    const w = live.watch;
+    const load = async () => {
+      try {
+        const d = await getAiDraft(live.user, live.novelId, w.index, w.lang, w.style);
+        if (gone) return;
+        const m = new Map<number, string>();
+        d?.positions.forEach((at, k) => { const p = d.paragraphs[k]; if (p?.trim()) m.set(at, p); });
+        setDraft(m);
+      } catch (e) {
+        console.warn(e);
+      }
+    };
+    void load();
+    const stop = onAiMoved(() => { void load(); }, 600);
+    return () => { gone = true; stop(); };
+  }, [live?.user, live?.novelId, live?.watch.index, live?.watch.lang, live?.watch.style]);
+  return draft;
 }

@@ -124,6 +124,7 @@ pub fn run() {
             library::commands::ai_live,
             library::commands::ai_status,
             library::commands::ai_chapter_stop,
+            library::commands::ai_chapter_remove,
             library::commands::ai_clear,
             library::commands::ai_chapter_draft,
             library::commands::ai_cancel,
