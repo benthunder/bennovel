@@ -139,6 +139,8 @@ pub fn run() {
             library::commands::wiki_get,
             library::commands::wiki_at,
             library::commands::wiki_merge,
+            library::commands::wiki_merge_suggest,
+            library::commands::wiki_merge_apply,
             library::commands::ai_prefs_get,
             library::commands::ai_prefs_set,
             library::commands::wiki_search,

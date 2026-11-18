@@ -97,6 +97,16 @@ async function nativeApp(page: Page) {
             wiki.relations.push({ uid: 'r2', fromUid: String(args.fromUid), toUid: String(args.toUid), kind: String(args.kind), labels: {}, note: '', firstChapter: null });
             return 'r2';
           }
+          case 'wiki_merge_suggest': {
+            const by = (u: string) => wiki.entries.find(e => e.uid === u)!;
+            const seol = entry('s1', 'character', 'Seol-Hwi', 'Tuyết Huy', 'Đệ tử Hoa Sơn.', 1);
+            const seol2 = entry('s2', 'character', 'Seol Hwi', 'Seol-Hwi', '', 4);
+            return [
+              { from: seol2, into: seol, reason: 'same_raw', rules: [{ find: 'Seol-Hwi', replace: 'Tuyết Huy' }, { find: 'Seol Hwi', replace: 'Tuyết Huy' }] },
+              { from: by('i'), into: by('a'), reason: 'near_name', rules: [{ find: 'Lâm Lang Thiên', replace: 'Lâm Động' }] }
+            ];
+          }
+          case 'wiki_merge_apply': return { merged: (args.picks as unknown[]).length, rules: 2 };
           case 'ai_marks': case 'ai_progress': case 'ai_versions': return [];
           default: return null;
         }
@@ -331,4 +341,24 @@ test('a skill tells its grade and difficulty, a faction its leaders in turn', as
   await expect(fist.locator('[data-relation]')).toHaveCount(0);
   await page.waitForTimeout(600);
   await page.screenshot({ path: `test-results/wiki-${info.project.name}-skill.png` });
+});
+
+test('smart merge lists pairs to review and merges only the ticked ones', async ({ page }, info) => {
+  await nativeApp(page);
+  await page.goto('/');
+  await page.getByText('Võ Động Càn Khôn').filter({ visible: true }).first().click();
+  await page.getByRole('button', { name: /Wiki truyện/ }).filter({ visible: true }).first().click();
+  await page.getByRole('button', { name: 'Gộp thông minh' }).click();
+  const sheet = page.locator('[data-wiki-smart-merge-sheet]');
+  await expect(sheet.locator('[data-merge-pair]')).toHaveCount(2);
+  // Each pair shows the replace line it adds; a near name is not ticked at first.
+  await expect(sheet.getByText('Thay thế: Seol-Hwi → Tuyết Huy, Seol Hwi → Tuyết Huy')).toBeVisible();
+  const boxes = sheet.locator('input[type=checkbox]');
+  await expect(boxes.nth(0)).toBeChecked();
+  await expect(boxes.nth(1)).not.toBeChecked();
+  await page.screenshot({ path: `test-results/wiki-${info.project.name}-smart-merge.png` });
+  await sheet.getByRole('button', { name: 'Gộp 1 cặp' }).click();
+  await expect(page.getByText('Đã gộp 1 cặp, thêm 2 dòng thay thế.')).toBeVisible();
+  expect((await calls(page)).find(c => c.cmd === 'wiki_merge_apply')?.args).toMatchObject({ novelId: 1, picks: [{ fromUid: 's2', intoUid: 's1' }] });
+  await expect(sheet).toHaveCount(0);
 });

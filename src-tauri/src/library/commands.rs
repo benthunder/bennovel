@@ -1215,9 +1215,34 @@ pub async fn wiki_merge<R: Runtime>(
     let path = db_path(&app, &user)?;
     ai_blocking(move || {
         let conn = db::open(&path)?;
-        wiki::merge(&conn, novel_id, &from_uid, &into_uid, true)
+        Ok(super::smart_merge::merge_with_rules(&conn, novel_id, &from_uid, &into_uid)?.0)
     })
     .await
+}
+
+/// The book's wiki entries that look like one written two ways, for the user to review
+/// before anything is merged.
+#[tauri::command]
+pub async fn wiki_merge_suggest<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+) -> Result<Vec<super::smart_merge::Suggestion>, AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || Ok(super::smart_merge::suggest(&db::open(&path)?, novel_id)?)).await
+}
+
+/// Merges the pairs the user kept from `wiki_merge_suggest`; each merge also adds its
+/// line to the book's replace rules.
+#[tauri::command]
+pub async fn wiki_merge_apply<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+    picks: Vec<super::smart_merge::Pick>,
+) -> Result<super::smart_merge::Applied, AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || super::smart_merge::apply(&db::open(&path)?, novel_id, &picks)).await
 }
 
 /// A book's genre and the user's own instructions for its prompts.

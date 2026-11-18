@@ -710,7 +710,7 @@ fn find(
     .optional()
 }
 
-fn by_uid(conn: &Connection, uid: &str) -> rusqlite::Result<Option<Entry>> {
+pub(crate) fn by_uid(conn: &Connection, uid: &str) -> rusqlite::Result<Option<Entry>> {
     conn.query_row(
         &format!("select {ENTRY_COLS} from wiki_entries e where e.uid = ?1"),
         [uid],
@@ -1101,7 +1101,7 @@ pub fn tidy(conn: &Connection, novel_id: i64) -> rusqlite::Result<usize> {
     Ok(changes)
 }
 
-fn by_uid_live(conn: &Connection, uid: &str) -> bool {
+pub(crate) fn by_uid_live(conn: &Connection, uid: &str) -> bool {
     conn.query_row(
         "select deleted = 0 from wiki_entries where uid = ?1",
         [uid],
