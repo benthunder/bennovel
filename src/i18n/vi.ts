@@ -338,8 +338,6 @@ export const vi: Record<MessageKey, string> = {
   'pipe.goOn': 'Dịch tiếp',
   'pipe.stopHere': 'Dừng dịch',
   'pipe.stopped': 'Đã dừng dịch',
-  'reader.live': 'Đang dịch trực tiếp · {done}/{total} đoạn',
-  'reader.liveWaiting': 'Đang dịch trực tiếp · chờ phần đầu tiên',
   'pipe.stoppedRow': 'Đã dừng · các phần đã dịch được giữ lại',
   'pipe.resume': 'Chạy tiếp',
   'pipe.remove': 'Xóa',
