@@ -32,12 +32,17 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_folder_picker::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_background_work::init())
         .manage(book::commands::Books::default())
         .manage(opened::OpenedFiles::from_args())
         .setup(|_app| {
             use tauri::Manager;
             // AI translation runs in the background, one chapter at a time.
             _app.manage(library::queue::Queue::start(_app.handle().clone()));
+            // Android: a foreground service with the progress keeps it going with the
+            // screen off.
+            #[cfg(target_os = "android")]
+            library::background::start(_app.handle().clone());
             // Android: the WebView starts without view focus, so the first tap on a text
             // field only focuses the WebView itself and the keyboard stays hidden. Give it
             // focus up front so that first tap opens the keyboard.

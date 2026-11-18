@@ -366,6 +366,15 @@ struct StatusEvent {
     user: String,
 }
 
+/// A chapter being translated now (see `Queue::running`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Running {
+    pub db: PathBuf,
+    pub live: Live,
+    /// The book's title for a chapter from the reader; None for the queue's chapter.
+    pub manual_title: Option<String>,
+}
+
 /// Where the worker's state goes: kept in the queue and sent to the app.
 type Report = Arc<dyn Fn(Option<Live>) + Send + Sync>;
 /// Called with the book's title as a request starts its first chapter.
@@ -538,6 +547,7 @@ impl Queue {
 
     /// Tells the app that a chapter from the reader moved.
     pub fn manual_changed<R: Runtime>(app: &AppHandle<R>, user: &str) {
+        super::background::changed();
         let _ = app.emit("ai-status", StatusEvent { user: user.into() });
     }
 
@@ -575,7 +585,37 @@ impl Queue {
         let _ = self.wiki_tx.send(Wake { db, user });
     }
 
-    fn ui_lang(&self, db: &PathBuf) -> String {
+    /// Everything being translated now, for the background notification: the queue's
+    /// chapter of each library file first, then the chapters from the reader that are
+    /// still running (with their book's title).
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    pub fn running(&self) -> Vec<Running> {
+        let mut out: Vec<Running> = self
+            .live
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(db, live)| Running {
+                db: db.clone(),
+                live: live.clone(),
+                manual_title: None,
+            })
+            .collect();
+        for (db, list) in self.manual.lock().unwrap().iter() {
+            out.extend(
+                list.iter()
+                    .filter(|m| m.info.error.is_none() && !m.stop.load(Ordering::SeqCst))
+                    .map(|m| Running {
+                        db: db.clone(),
+                        live: m.info.live.clone(),
+                        manual_title: Some(m.info.title.clone()),
+                    }),
+            );
+        }
+        out
+    }
+
+    pub(crate) fn ui_lang(&self, db: &PathBuf) -> String {
         self.ui_lang
             .lock()
             .unwrap()
@@ -597,6 +637,7 @@ async fn work<R: Runtime>(app: &AppHandle<R>, wake: &Wake) {
                     None => map.remove(&db),
                 };
             }
+            super::background::changed();
             let _ = app.emit(
                 "ai-live",
                 LiveEvent {
