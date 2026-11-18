@@ -11,5 +11,11 @@ tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# The service is reached through JNI, so it can be driven with no activity left (the app
+# swiped away while a translation goes on), when Tauri's plugin calls can't be made.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
+
 [build-dependencies]
 tauri-plugin = { version = "2.7.1", features = ["build"] }

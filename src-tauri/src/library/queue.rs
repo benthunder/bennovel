@@ -178,13 +178,29 @@ pub fn retry(conn: &Connection, novel_id: i64) -> rusqlite::Result<usize> {
 }
 
 /// Stops a book's queue: chapters waiting or paused are taken out, and the one being
-/// translated stops through the queue's stop flag. Chapters done so far stay, and so
-/// do the parts of the unfinished ones, for when the book is asked again.
+/// translated stops through the queue's stop flag. Chapters done so far stay; the
+/// parts and drafts of the unfinished ones go (as with `clear`), so asking for the
+/// book again translates them afresh. Pausing is the way to keep them.
 pub fn cancel(conn: &Connection, novel_id: i64) -> rusqlite::Result<usize> {
+    discard_unfinished(conn, novel_id, "status in ('queued', 'paused', 'running')")?;
     conn.execute(
         "delete from ai_jobs where novel_id = ?1 and status in ('queued', 'paused', 'running')",
         [novel_id],
     )
+}
+
+/// What the book's chapters picked by `which` (a condition on `ai_jobs`) have so far.
+fn discard_unfinished(conn: &Connection, novel_id: i64, which: &str) -> rusqlite::Result<()> {
+    let unfinished: Vec<(i64, String, String)> = conn
+        .prepare(&format!(
+            "select chapter_id, lang, style from ai_jobs where novel_id = ?1 and {which}"
+        ))?
+        .query_map([novel_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (chapter_id, lang, style) in &unfinished {
+        translate::discard(conn, *chapter_id, lang, style)?;
+    }
+    Ok(())
 }
 
 /// One request's state: per book, language and style.
@@ -262,9 +278,17 @@ pub fn progress_all(conn: &Connection) -> rusqlite::Result<Vec<BookProgress>> {
 }
 
 /// Takes a book's request out of the queue altogether: every row, done and failed ones
-/// too, so nothing of it shows any more. The chapters translated so far stay.
+/// too, so nothing of it shows any more. The chapters translated so far stay; what the
+/// unfinished ones had (their parts and drafts) goes, so asking for the book again
+/// translates them afresh. The chapter being translated is thrown away the same way
+/// once it stops (`step`).
 pub fn clear(conn: &Connection, novel_id: i64) -> rusqlite::Result<usize> {
+    discard_unfinished(conn, novel_id, "status <> 'done'")?;
     conn.execute("delete from ai_jobs where novel_id = ?1", [novel_id])
+}
+
+fn exists(conn: &Connection, id: i64) -> rusqlite::Result<bool> {
+    conn.query_row("select exists (select 1 from ai_jobs where id = ?1)", [id], |r| r.get(0))
 }
 
 fn progress_of(conn: &Connection, job: &Job) -> rusqlite::Result<Option<Progress>> {
@@ -550,21 +574,25 @@ impl Queue {
     }
 
     /// Stops a chapter from the reader if it runs and takes it off the list. Returns
-    /// whether there was one.
-    pub fn manual_remove(&self, db: &PathBuf, novel_id: i64, index: i64) -> bool {
+    /// the one taken off, if there was one.
+    pub fn manual_remove(&self, db: &PathBuf, novel_id: i64, index: i64) -> Option<Manual> {
         let mut map = self.manual.lock().unwrap();
-        let Some(list) = map.get_mut(db) else {
-            return false;
-        };
-        let before = list.len();
-        list.retain(|m| {
-            let it = same(&m.info.live, novel_id, index);
-            if it {
-                m.stop.store(true, Ordering::SeqCst);
-            }
-            !it
-        });
-        list.len() != before
+        let list = map.get_mut(db)?;
+        let at = list
+            .iter()
+            .position(|m| same(&m.info.live, novel_id, index))?;
+        let m = list.remove(at);
+        m.stop.store(true, Ordering::SeqCst);
+        Some(m.info)
+    }
+
+    /// Whether a chapter from the reader is on the list (running, failed or stopped).
+    pub fn manual_listed(&self, db: &PathBuf, novel_id: i64, index: i64) -> bool {
+        self.manual
+            .lock()
+            .unwrap()
+            .get(db)
+            .is_some_and(|l| l.iter().any(|m| same(&m.info.live, novel_id, index)))
     }
 
     /// The chapters from the reader of this library file: running, or ended with an error.
@@ -848,6 +876,11 @@ fn step(
     } {
         Ok(_) => finish(&conn, job.id, None)?,
         Err(AiError::Stopped) => {
+            // Stopped or cleared meanwhile (`cancel`, `clear`): what it has goes, now
+            // that nothing more comes back for it.
+            if !exists(&conn, job.id)? {
+                translate::discard(&conn, job.chapter_id, &job.lang, &job.style)?;
+            }
             set_paused(&conn, job.id)?;
             return Ok(Step::Stopped(job.novel_id));
         }
@@ -1002,11 +1035,13 @@ mod tests {
         let failed = q.manual_begin(&db, info(4));
         q.manual_end(&db, 1, 4, &failed, Some("llm-auth".into()), false);
         assert_eq!(q.manual(&db)[0].error.as_deref(), Some("llm-auth"));
-        assert!(q.manual_remove(&db, 1, 4));
+        assert!(q.manual_remove(&db, 1, 4).is_some());
+        assert!(!q.manual_listed(&db, 1, 4));
         assert!(q.manual(&db).is_empty());
         // Removing a running one stops it too.
         let running = q.manual_begin(&db, info(5));
-        assert!(q.manual_remove(&db, 1, 5));
+        assert!(q.manual_listed(&db, 1, 5));
+        assert!(q.manual_remove(&db, 1, 5).is_some());
         assert!(running.load(Ordering::SeqCst));
         assert!(q.manual(&db).is_empty());
     }
@@ -1163,6 +1198,65 @@ mod tests {
         assert_eq!(cancel(&conn, novel).unwrap(), 2);
         set_paused(&conn, job.id).unwrap();
         assert!(statuses(&conn).is_empty());
+    }
+
+    /// A chapter half done: a part back from the LLM and the draft made of it.
+    fn half_done(conn: &Connection, chapter_id: i64, style: &str) {
+        conn.execute(
+            "insert into ai_parts (chapter_id, lang, style, part, reply, created_at)
+             values (?1, 'vi', ?2, 'p0', 'nửa chương', 0)",
+            params![chapter_id, style],
+        )
+        .unwrap();
+        conn.execute(
+            "insert into chapter_translations (chapter_id, lang, style, source, state, title, content)
+             values (?1, 'vi', ?2, 'ai', 'draft', 'Chương', '')",
+            params![chapter_id, style],
+        )
+        .unwrap();
+        crate::library::segments::put(conn, chapter_id, "vi", Some(style), 0, &["nửa chương"])
+            .unwrap();
+    }
+
+    fn kept(conn: &Connection, chapter_id: i64, style: &str) -> (i64, i64, i64) {
+        let count = |sql: &str| -> i64 {
+            conn.query_row(sql, params![chapter_id, style], |r| r.get(0)).unwrap()
+        };
+        (
+            count("select count(*) from ai_parts where chapter_id = ?1 and lang = 'vi' and style = ?2"),
+            count("select count(*) from chapter_translations where chapter_id = ?1 and lang = 'vi' and style = ?2"),
+            count("select count(*) from segments where chapter_id = ?1 and lang = 'vi' and style = ?2"),
+        )
+    }
+
+    #[test]
+    fn clearing_or_cancelling_throws_away_the_unfinished_chapters_so_they_start_afresh() {
+        let (conn, novel) = book("queue-clear");
+        let llm = std::sync::Arc::new(Fake::new("en"));
+        assert_eq!(enqueue(&conn, novel, 0, "vi", "natural", true).unwrap(), 2);
+        // Chapter 11 is done; chapter 10 has a part and a draft.
+        let first = claim(&conn).unwrap().unwrap();
+        let second = claim(&conn).unwrap().unwrap();
+        assert_eq!((first.chapter_id, second.chapter_id), (10, 11));
+        translate::run(&conn, llm.clone(), second.request()).unwrap();
+        finish(&conn, second.id, None).unwrap();
+        half_done(&conn, 10, "natural");
+        assert_eq!(kept(&conn, 10, "natural"), (1, 1, 1));
+
+        assert_eq!(clear(&conn, novel).unwrap(), 2);
+        assert_eq!(kept(&conn, 10, "natural"), (0, 0, 0));
+        // The finished chapter stays.
+        assert!(translate::get(&conn, 11, "vi", "natural").unwrap().is_some());
+        // Asked again, the cleared chapter is queued and starts from nothing.
+        assert_eq!(enqueue(&conn, novel, 0, "vi", "natural", true).unwrap(), 1);
+
+        // Cancelling does the same; pausing keeps what it has.
+        half_done(&conn, 10, "natural");
+        pause(&conn, novel).unwrap();
+        assert_eq!(kept(&conn, 10, "natural"), (1, 1, 1));
+        assert_eq!(cancel(&conn, novel).unwrap(), 1);
+        assert_eq!(kept(&conn, 10, "natural"), (0, 0, 0));
+        assert!(translate::get(&conn, 11, "vi", "natural").unwrap().is_some());
     }
 
     #[test]

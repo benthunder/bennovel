@@ -11,6 +11,16 @@
         <service
             android:name="app.bennovel.backgroundwork.TranslateService"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="dataSync"
+            android:stopWithTask="false" />
+        <!-- Starts the app afresh when it is opened again while a translation went on with
+             no window (see Relaunch.kt). -->
+        <activity
+            android:name="app.bennovel.backgroundwork.Relaunch"
+            android:exported="false"
+            android:process=":relaunch"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
     </application>
 </manifest>

@@ -154,6 +154,14 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building BenNovel")
         .run(|_app, _event| {
+            // Android: the app was swiped away (or closed with Back) while a translation
+            // runs. It stays, with the notification and no window, until the work is done.
+            #[cfg(target_os = "android")]
+            if let tauri::RunEvent::ExitRequested { code: None, api, .. } = &_event {
+                if library::background::keep_for_work(_app) {
+                    api.prevent_exit();
+                }
+            }
             // Android and macOS hand files to open to the running app.
             #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
             if let tauri::RunEvent::Opened { urls } = _event {

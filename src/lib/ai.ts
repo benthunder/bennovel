@@ -83,6 +83,8 @@ export async function setLlmConfig(user: string, config: LlmConfig | null) {
 
 /** Translates (or rewrites, in the book's own language) one chapter now. */
 export async function aiTranslateChapter(user: string, novelId: number, index: number, c: AiChoice, again = false) {
+  // Android 13+ shows the progress notification (and keeps it in the shade) only once allowed.
+  void askNotifyPermission();
   try {
     return await invoke<AiChapter>('ai_translate_chapter', { user, novelId, index, lang: c.lang, style: styleArg(c.style), glossary: c.dict, again });
   } catch (e) {
@@ -213,7 +215,7 @@ export const resumeAiTranslation = (user: string, novelId: number, failed: boole
   invoke<number>('ai_resume_book', { user, novelId, failed, uiLang });
 export const resumeAiQueue = (user: string, uiLang: UiLang) => invoke<void>('ai_resume', { user, uiLang });
 
-/** Lets the "translation done" notification show (Android 13+ and macOS ask once). */
+/** Lets the translation's notifications show: its progress while it runs, and "done" (Android 13+ and macOS ask once). */
 async function askNotifyPermission() {
   try {
     const n = await import('@tauri-apps/plugin-notification');

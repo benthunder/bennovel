@@ -25,7 +25,7 @@ import app.tauri.Logger
  * The service is started while the app is in front (the user just asked for a
  * translation, or the app just opened and carries on its queue); Android 12+ does not let
  * an app start one from the background. Once it runs, new progress only changes its
- * notification.
+ * notification, and it keeps running when the app is swiped away, until the work is done.
  */
 class TranslateService : Service() {
 
@@ -71,6 +71,55 @@ class TranslateService : Service() {
         synchronized(lock) { starting = false }
         Logger.error("Cannot start the translation service: ${ex.message}")
       }
+    }
+
+    /** Called from Rust (background-work's `show`), from any thread: works with no activity left. */
+    @JvmStatic
+    fun showNative(context: Context, title: String, text: String, subText: String, done: Int, total: Int) {
+      show(context.applicationContext, State(title, text, subText, done, total))
+    }
+
+    /** Called from Rust (background-work's `hide`). */
+    @JvmStatic
+    fun hideNative(context: Context) {
+      hide(context.applicationContext)
+    }
+
+    /**
+     * Called from Rust when the app's window went away (the app was swiped off the recent
+     * apps, or closed with Back) while a translation runs: the process carries on with the
+     * service, like a download. When the app is opened again meanwhile, the new screen can't
+     * be joined to the work under way, so the app starts afresh (`Relaunch`) and its queue
+     * carries on from the parts it has.
+     */
+    @JvmStatic
+    fun setHeadless(context: Context, on: Boolean) {
+      synchronized(lock) { headless = on }
+      if (on) watchActivities(context.applicationContext as android.app.Application)
+    }
+
+    /** No window, only the work: set by Rust (`setHeadless`). */
+    @Volatile private var headless = false
+    private var watching = false
+
+    private fun watchActivities(app: android.app.Application) {
+      synchronized(lock) {
+        if (watching) return
+        watching = true
+      }
+      app.registerActivityLifecycleCallbacks(object : android.app.Application.ActivityLifecycleCallbacks {
+        override fun onActivityCreated(activity: android.app.Activity, saved: android.os.Bundle?) {
+          if (!headless || activity is Relaunch) return
+          headless = false
+          Relaunch.start(activity)
+        }
+        override fun onActivityStarted(activity: android.app.Activity) {}
+        override fun onActivityResumed(activity: android.app.Activity) {}
+        override fun onActivityPaused(activity: android.app.Activity) {}
+        override fun onActivityStopped(activity: android.app.Activity) {}
+        override fun onActivitySaveInstanceState(activity: android.app.Activity, out: android.os.Bundle) {}
+        override fun onActivityDestroyed(activity: android.app.Activity) {}
+      })
     }
 
     fun hide(context: Context) {
@@ -122,9 +171,12 @@ class TranslateService : Service() {
     finish()
   }
 
-  /** The app was swiped away: the queue carries on the next time it opens. */
+  /**
+   * The app was swiped off the recent apps: the service, and the translation with it, carry
+   * on (the app keeps its process while the work lasts, see `setHeadless`), the way a
+   * download or music does. It stops once the work is done.
+   */
   override fun onTaskRemoved(rootIntent: Intent?) {
-    finish()
     super.onTaskRemoved(rootIntent)
   }
 

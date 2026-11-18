@@ -1710,6 +1710,25 @@ fn save(
 /// translates.
 pub type DraftText = (String, Vec<(i64, String)>);
 
+/// Throws away what an unfinished chapter has so far: the parts back from the LLM
+/// (`ai_parts`) and the draft made of them, so the next try starts afresh. A
+/// published AI text stays.
+pub fn discard(conn: &Connection, chapter_id: i64, lang: &str, style: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "delete from ai_parts where chapter_id = ?1 and lang = ?2 and style = ?3",
+        params![chapter_id, lang, style],
+    )?;
+    let removed = conn.execute(
+        "delete from chapter_translations
+         where chapter_id = ?1 and lang = ?2 and style = ?3 and source = 'ai' and state = 'draft'",
+        params![chapter_id, lang, style],
+    )?;
+    if removed > 0 {
+        super::segments::clear(conn, chapter_id, lang, Some(style))?;
+    }
+    Ok(())
+}
+
 /// What a chapter being translated has so far: the draft's title and the paragraphs
 /// of the parts back from the LLM, in the original's order. None when there is no
 /// draft (nothing back yet, or a published chapter being made again).

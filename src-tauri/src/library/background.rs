@@ -9,6 +9,10 @@
 //! plugin, at most a few times a second (Android drops faster updates anyway). Between
 //! two chapters the worker is idle for a moment, so the service stops only once nothing
 //! ran for a few seconds. On other systems `changed` does nothing.
+//!
+//! Swiping the app off the recent apps (or closing it with Back) ends its window; while
+//! something is being translated the app then stays without one (`keep_for_work`), the
+//! way a download or music goes on, and ends once the work is done.
 
 // The notification is built on Android only; tests build it everywhere.
 #![cfg_attr(not(target_os = "android"), allow(dead_code, unused_imports))]
@@ -22,6 +26,50 @@ pub use tauri_plugin_background_work::Notice;
 
 #[cfg(target_os = "android")]
 static WAKE: OnceLock<mpsc::Sender<()>> = OnceLock::new();
+
+/// The app's window went away (swiped off the recent apps, closed with Back) while a
+/// translation ran: the process stays for the work, and ends once it is done.
+#[cfg(target_os = "android")]
+static HEADLESS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether something is being translated now (the queue or a chapter from the reader).
+pub fn busy<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
+    use tauri::Manager;
+    app.try_state::<Queue>()
+        .is_some_and(|q| !q.running().is_empty())
+}
+
+/// The last window is closing. Returns whether the app should stay for the work under
+/// way: it then goes on with the notification and no window, like a download, and the
+/// app ends once it is done. Opened again meanwhile, the app starts afresh and its
+/// queue carries on from the parts it has (the plugin's Relaunch).
+#[cfg(target_os = "android")]
+pub fn keep_for_work<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
+    use std::sync::atomic::Ordering;
+    use tauri::Manager;
+    use tauri_plugin_background_work::BackgroundWork;
+    if !busy(app) {
+        return false;
+    }
+    let Some(work) = app.try_state::<BackgroundWork<R>>() else {
+        return false;
+    };
+    if let Err(e) = work.set_headless(true) {
+        eprintln!("background work: {e}");
+        return false;
+    }
+    HEADLESS.store(true, Ordering::SeqCst);
+    changed();
+    true
+}
+
+/// The work is over with no window left: the app ends (see `keep_for_work`).
+#[cfg(target_os = "android")]
+fn end_if_headless() {
+    if HEADLESS.load(std::sync::atomic::Ordering::SeqCst) {
+        std::process::exit(0);
+    }
+}
 
 /// Something being translated moved, started or ended.
 pub fn changed() {
@@ -82,12 +130,24 @@ pub fn start<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
                                 }
                                 shown = None;
                                 cache = Cache::default();
+                                end_if_headless();
                             } else {
                                 continue;
                             }
                         }
                     },
-                    None => {}
+                    None => match rx.recv_timeout(HIDE_AFTER) {
+                        // Nothing shown and nothing running: with no window, the app ends.
+                        Ok(()) => continue,
+                        Err(RecvTimeoutError::Disconnected) => return,
+                        Err(RecvTimeoutError::Timeout) => {
+                            if current(&mut cache).is_none() {
+                                end_if_headless();
+                            } else {
+                                continue;
+                            }
+                        }
+                    },
                 }
                 std::thread::sleep(THROTTLE);
                 if rx.try_recv().is_err() {

@@ -648,6 +648,7 @@ pub async fn ai_translate_chapter<R: Runtime>(
     let path = db_path(&app, &user)?;
     let at = index as i64;
     let db_file = path.clone();
+    let (lang2, style2) = (lang.clone(), style.clone());
     let (app2, user2) = (app.clone(), user.clone());
     // The run's stop flag, once it is on the panel.
     let (flag_tx, flag_rx) = std::sync::mpsc::channel::<Arc<AtomicBool>>();
@@ -732,6 +733,7 @@ pub async fn ai_translate_chapter<R: Runtime>(
     // own and are kept for the next try; nothing more is asked and nothing is saved.
     let mut work = work;
     let mut flag: Option<Arc<AtomicBool>> = None;
+    let mut ended = false;
     let result = loop {
         if flag.is_none() {
             flag = flag_rx.try_recv().ok();
@@ -740,10 +742,30 @@ pub async fn ai_translate_chapter<R: Runtime>(
             break Err(AiError::Stopped);
         }
         tokio::select! {
-            r = &mut work => break r.map_err(|e| AiError::Other(e.to_string())).and_then(|r| r),
+            r = &mut work => {
+                ended = true;
+                break r.map_err(|e| AiError::Other(e.to_string())).and_then(|r| r);
+            }
             _ = tokio::time::sleep(std::time::Duration::from_millis(150)) => {}
         }
     };
+    // Taken off the panel (`ai_chapter_remove`) while its parts in flight were still
+    // coming: once they are in, they go too, unless the chapter was asked again since.
+    if flag.is_some() && !ended {
+        let (app, path, lang, style) = (app2.clone(), path.clone(), lang2, style2);
+        tauri::async_runtime::spawn(async move {
+            let _ = work.await;
+            if app.state::<Queue>().manual_listed(&path, novel_id, at) {
+                return;
+            }
+            let _ = ai_blocking(move || {
+                let conn = db::open(&path)?;
+                let chapter_id = chapter_id(&conn, novel_id, index)?;
+                Ok(translate::discard(&conn, chapter_id, &lang, &style)?)
+            })
+            .await;
+        });
+    }
     if let Some(flag) = &flag {
         let (error, stopped) = match &result {
             Ok(_) => (None, false),
@@ -800,9 +822,9 @@ pub fn ai_chapter_stop<R: Runtime>(
 }
 
 /// Takes a chapter translated from the reader off the panel, stopping it if it runs.
-/// The parts it has are kept for the next try.
+/// The parts and draft it has go: translated again, it starts afresh.
 #[tauri::command]
-pub fn ai_chapter_remove<R: Runtime>(
+pub async fn ai_chapter_remove<R: Runtime>(
     app: AppHandle<R>,
     queue: State<'_, Queue>,
     user: String,
@@ -812,7 +834,18 @@ pub fn ai_chapter_remove<R: Runtime>(
     let path = db_path(&app, &user)?;
     let found = queue.manual_remove(&path, novel_id, index);
     Queue::manual_changed(&app, &user);
-    Ok(found)
+    // What it had goes, so translating it again starts afresh; a run still finishing
+    // its parts in flight throws them away once it ends (`ai_translate_chapter`).
+    if let Some(m) = &found {
+        let (lang, style) = (m.live.lang.clone(), m.live.style.clone());
+        ai_blocking(move || {
+            let conn = db::open(&path)?;
+            let chapter_id = chapter_id(&conn, novel_id, index as usize)?;
+            Ok(translate::discard(&conn, chapter_id, &lang, &style)?)
+        })
+        .await?;
+    }
+    Ok(found.is_some())
 }
 
 /// Takes a book's request out of the queue altogether (the chapter being translated
