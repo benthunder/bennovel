@@ -336,8 +336,6 @@ export const en = {
   'pipe.goOn': 'Carry on',
   'pipe.stopHere': 'Stop translating',
   'pipe.stopped': 'Translation stopped',
-  'reader.live': 'Translating live · {done}/{total} paragraphs',
-  'reader.liveWaiting': 'Translating live · waiting for the first part',
   'pipe.stoppedRow': 'Stopped · the parts translated are kept',
   'pipe.resume': 'Carry on',
   'pipe.remove': 'Remove',
