@@ -229,8 +229,6 @@ export const en = {
   'ai.custom': 'Custom',
   'ai.baseUrl': 'Base URL',
   'ai.baseUrlHint': 'The part before /chat/completions, e.g. http://localhost:11434/v1',
-  'ai.embedModel': 'Embedding model (optional)',
-  'ai.embedHint': "Fills the vector table of the book's proper nouns (original → translation → kind) so names written two ways are merged. Same API and key.",
   'ai.genre': 'Genre',
   'ai.genre.none': 'Not set',
   'ai.genre.wuxia': 'Wuxia (martial arts)',

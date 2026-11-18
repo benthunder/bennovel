@@ -2018,7 +2018,6 @@ pub(crate) mod tests {
                 base_url: "http://x/v1/".into(),
                 api_key: "sk".into(),
                 model: "m".into(),
-                embed_model: String::new(),
             }),
         )
         .unwrap();

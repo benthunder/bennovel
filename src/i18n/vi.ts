@@ -231,8 +231,6 @@ export const vi: Record<MessageKey, string> = {
   'ai.custom': 'Tự nhập',
   'ai.baseUrl': 'Base URL',
   'ai.baseUrlHint': 'Phần đứng trước /chat/completions, ví dụ http://localhost:11434/v1',
-  'ai.embedModel': 'Model embedding (tuỳ chọn)',
-  'ai.embedHint': 'Dùng cho bảng vector tên riêng của truyện (tên gốc → tên dịch → loại) để gộp các tên viết khác nhau của cùng một người. Dùng chung API và key.',
   'ai.genre': 'Thể loại',
   'ai.genre.none': 'Chưa chọn',
   'ai.genre.wuxia': 'Kiếm hiệp',
