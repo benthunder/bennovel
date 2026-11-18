@@ -461,7 +461,7 @@ fn rules(
     lang: &str,
 ) -> rusqlite::Result<(String, String, Vec<Suffix>)> {
     let names = if lang == "vi" {
-        "\nTên riêng: địa danh, tên người, môn phái của Trung Quốc viết bằng Hán Việt (Sichuan / 사천 / 四川 → Tứ Xuyên); địa danh, tên người, tổ chức của Nhật, Hàn, phương Tây giữ nguyên tên gốc viết chữ Latin (東京 → Tokyo, 서울 → Seoul, California).\n"
+        "\nTên riêng: tên người, môn phái, địa danh trong bối cảnh Trung Hoa viết bằng Hán Việt, kể cả truyện võ hiệp Hàn Quốc dù bản gốc ghi tên theo tiếng Hàn hay phiên âm Latin (Sichuan / 사천 / 四川 → Tứ Xuyên; Namgung / 남궁 → Nam Cung; Demonic Sect / 마교 → Ma giáo); một người giữ đúng một tên Hán Việt suốt truyện. Chỉ địa danh, tên người, tổ chức của chính nước Nhật, Hàn, phương Tây (truyện hiện đại, bối cảnh ở đó) mới giữ nguyên tên gốc viết chữ Latin (東京 → Tokyo, 서울 → Seoul, California).\n"
     } else {
         "\nNames: Chinese places, people and sects in pinyin or their usual English name; Japanese and Korean ones in their usual romanisation (Tokyo, Seoul).\n"
     };
