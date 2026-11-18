@@ -5,7 +5,7 @@ import { useI18n } from '../i18n';
 import { DEFAULT_READER_PREFS, READER_THEMES, useApp, type ReaderPrefs } from '../store/AppStore';
 import { AiPrefsFields } from './AiPrefsFields';
 import { BookIcon, SparklesIcon, XIcon } from './Icons';
-import { getAiPrefs, setAiPrefs, type AiPrefs } from '../lib/ai';
+import { DEFAULT_STYLE, getAiPrefs, setAiPrefs, type AiPrefs } from '../lib/ai';
 import { Checkbox, Segmented, Spinner } from './ui';
 import { useLayout } from '../lib/useLayout';
 
@@ -279,7 +279,7 @@ export const TRANSLATE_TO: readonly string[] = ['vi', 'en'];
 
 /** First choice of target language: Vietnamese, or English when reading Vietnamese. */
 export const defaultTranslation = (current: ContentLang | null): Translation =>
-  ({ lang: current === 'vi' ? 'en' : 'vi', style: 'Natural', dict: true });
+  ({ lang: current === 'vi' ? 'en' : 'vi', style: DEFAULT_STYLE, dict: true });
 
 /** Target language, style and glossary switch for an AI translation. */
 export function TranslateFields({ value, onChange, glossaryCount, langs = CONTENT_LANG_INFO }: {

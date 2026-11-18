@@ -440,36 +440,44 @@ pub fn load_from(conn: &Connection, genre: &str, lang: &str) -> rusqlite::Result
             entries.push((term, value));
         }
     }
-    let rules = rules(conn, genre, lang)?;
+    let (rules, suffix_head, suffixes) = rules(conn, genre, lang)?;
     Ok(Terms {
         lang: lang.to_string(),
         entries,
         rules,
+        suffix_head,
+        suffixes,
         matcher: OnceLock::new(),
     })
 }
 
 /// What every part of a book gets besides the terms it names: how foreign names are
-/// written and, in a martial genre, how each kind of organisation is called.
-fn rules(conn: &Connection, genre: &str, lang: &str) -> rusqlite::Result<String> {
-    let mut s = String::new();
-    if lang == "vi" {
-        s.push_str("\nTên riêng: địa danh, tên người, môn phái của Trung Quốc viết bằng Hán Việt (Sichuan / 사천 / 四川 → Tứ Xuyên); địa danh, tên người, tổ chức của Nhật, Hàn, phương Tây giữ nguyên tên gốc viết chữ Latin (東京 → Tokyo, 서울 → Seoul, California).\n");
+/// written and, in a martial genre, how each kind of organisation is called (the
+/// header, then one line per kind with the endings that mark it; a part gets only the
+/// lines of the kinds it names, `Terms::prompt`).
+fn rules(
+    conn: &Connection,
+    genre: &str,
+    lang: &str,
+) -> rusqlite::Result<(String, String, Vec<Suffix>)> {
+    let names = if lang == "vi" {
+        "\nTên riêng: tên người, môn phái, địa danh trong bối cảnh Trung Hoa viết bằng Hán Việt, kể cả truyện võ hiệp Hàn Quốc dù bản gốc ghi tên theo tiếng Hàn hay phiên âm Latin (Sichuan / 사천 / 四川 → Tứ Xuyên; Namgung / 남궁 → Nam Cung; Demonic Sect / 마교 → Ma giáo); một người giữ đúng một tên Hán Việt suốt truyện. Chỉ địa danh, tên người, tổ chức của chính nước Nhật, Hàn, phương Tây (truyện hiện đại, bối cảnh ở đó) mới giữ nguyên tên gốc viết chữ Latin (東京 → Tokyo, 서울 → Seoul, California).\n"
     } else {
-        s.push_str("\nNames: Chinese places, people and sects in pinyin or their usual English name; Japanese and Korean ones in their usual romanisation (Tokyo, Seoul).\n");
-    }
+        "\nNames: Chinese places, people and sects in pinyin or their usual English name; Japanese and Korean ones in their usual romanisation (Tokyo, Seoul).\n"
+    };
     if !SUFFIX_GENRES.contains(&genre) {
-        return Ok(s);
+        return Ok((names.to_string(), String::new(), Vec::new()));
     }
+    let head = if lang == "vi" {
+        "Loại tổ chức theo chữ cuối tên gốc (tên không có trong danh sách thì dịch theo bảng này, giữ đúng loại, không đổi phái thành tông hay ngược lại):\n"
+    } else {
+        "Kinds of organisation by the end of the original name:\n"
+    };
     let mut stmt = conn.prepare("select vi, en, zh, ko, ja, meaning from org_suffixes order by id")?;
     let rows = stmt.query_map([], |r| {
         Ok((0..6).map(|i| r.get::<_, String>(i)).collect::<rusqlite::Result<Vec<_>>>())
     })?;
-    s.push_str(if lang == "vi" {
-        "Loại tổ chức theo chữ cuối tên gốc (tên không có trong danh sách thì dịch theo bảng này, giữ đúng loại, không đổi phái thành tông hay ngược lại):\n"
-    } else {
-        "Kinds of organisation by the end of the original name:\n"
-    });
+    let mut out = Vec::new();
     for r in rows {
         let r = r??;
         let mut from: Vec<&str> = Vec::new();
@@ -480,13 +488,72 @@ fn rules(conn: &Connection, genre: &str, lang: &str) -> rusqlite::Result<String>
                 }
             }
         }
-        if lang == "vi" {
-            s.push_str(&format!("- {} → {}: {}\n", from.join(" / "), r[0], r[5]));
+        let line = if lang == "vi" {
+            format!("- {} → {}: {}\n", from.join(" / "), r[0], r[5])
         } else {
-            s.push_str(&format!("- {} → {}\n", from.join(" / "), r[1].replace('|', " / ")));
+            format!("- {} → {}\n", from.join(" / "), r[1].replace('|', " / "))
+        };
+        let mut forms: Vec<String> = from.iter().map(|f| f.to_string()).collect();
+        for c in [&r[0], &r[1]] {
+            for p in c.split('|').filter(|p| !p.trim().is_empty()) {
+                forms.push(p.trim().to_string());
+            }
         }
+        out.push(Suffix { forms, line });
     }
-    Ok(s)
+    Ok((names.to_string(), head.to_string(), out))
+}
+
+/// A kind of organisation: the endings that mark it in the source (or in a convert
+/// or English text) and its line of the prompt.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct Suffix {
+    forms: Vec<String>,
+    line: String,
+}
+
+impl Suffix {
+    /// Whether `text` names an organisation of this kind: the ending closes a longer
+    /// Chinese or Japanese word (武当派), a Korean word of three syllables or more
+    /// (화산파, not 질문 or 학교), or follows a capitalised word in a spaced script
+    /// (Wudang Sect, Võ Đang phái). A bare 派, "sect" or "phái" is not a name.
+    fn named_in(&self, text: &str) -> bool {
+        self.forms.iter().any(|f| {
+            let Some(first) = f.chars().next() else { return false };
+            if !is_cjk(first) {
+                return after_a_name(text, f);
+            }
+            let need = if is_hangul(first) { 2 } else { 1 };
+            text.match_indices(f.as_str()).any(|(i, _)| {
+                text[..i].chars().rev().take_while(|&c| is_cjk(c)).count() >= need
+            })
+        })
+    }
+}
+
+/// Whether `word` (Latin or Vietnamese, any case) stands as a whole word right after a
+/// word that starts with a capital.
+fn after_a_name(text: &str, word: &str) -> bool {
+    let lower = text.to_lowercase();
+    let w = word.to_lowercase();
+    if lower.len() != text.len() {
+        // Lower-casing moved the offsets: fall back to the text as written.
+        return text.contains(word);
+    }
+    lower.match_indices(w.as_str()).any(|(i, m)| {
+        if !whole_word(&lower, i, i + m.len()) {
+            return false;
+        }
+        let before = text[..i].trim_end();
+        if before.len() == text[..i].len() {
+            return false;
+        }
+        before
+            .split_whitespace()
+            .next_back()
+            .and_then(|p| p.chars().next())
+            .is_some_and(|c| c.is_uppercase())
+    })
 }
 
 /// A genre's terms for one target language, found in a part's text.
@@ -497,6 +564,11 @@ pub struct Terms {
     entries: Vec<(String, String)>,
     /// Put in every part's prompt (`rules`).
     rules: String,
+    /// The kinds of organisation, put in the prompt of a part that names one.
+    #[serde(default)]
+    suffix_head: String,
+    #[serde(default)]
+    suffixes: Vec<Suffix>,
     #[serde(skip)]
     matcher: OnceLock<Option<AhoCorasick>>,
 }
@@ -641,6 +713,13 @@ impl Terms {
     pub fn prompt(&self, part: &str) -> String {
         let found: Vec<(&str, &str)> = self.found(part).into_iter().take(MAX_PER_PART).collect();
         let mut s = self.rules.clone();
+        let kinds: Vec<&Suffix> = self.suffixes.iter().filter(|k| k.named_in(part)).collect();
+        if !kinds.is_empty() {
+            s.push_str(&self.suffix_head);
+            for k in kinds {
+                s.push_str(&k.line);
+            }
+        }
         if found.is_empty() {
             return s;
         }
@@ -735,6 +814,10 @@ fn whole_word(hay: &str, start: usize, end: usize) -> bool {
     let ok_start = !first.is_some_and(spaced) || !before.is_some_and(spaced);
     let ok_end = !last.is_some_and(spaced) || !after.is_some_and(spaced);
     ok_start && ok_end
+}
+
+fn is_hangul(c: char) -> bool {
+    matches!(c as u32, 0xAC00..=0xD7AF)
 }
 
 /// Chinese, Japanese and Korean letters, written without spaces between words.
@@ -884,7 +967,17 @@ mod tests {
         );
         let prompt = terms.prompt("Người của Võ Đang tông tới.");
         assert!(prompt.contains("- Võ Đang tông → Võ Đang phái"), "{prompt}");
-        assert!(prompt.contains("→ phái:"), "wuxia gets the suffix rules: {prompt}");
+        assert!(prompt.contains("→ tông:"), "wuxia gets the suffix rules: {prompt}");
+        // Only the kinds the part names, and none for a part that names no organisation.
+        assert!(!prompt.contains("→ bang:"), "{prompt}");
+        assert!(terms.prompt("武当派弟子").contains("→ phái:"));
+        assert!(terms.prompt("화산파의 검수").contains("→ phái:"));
+        assert!(terms.prompt("the Wudang Sect").contains("→ phái:"));
+        for plain in ["Hắn rút kiếm.", "그는 질문을 했다. 학교 앞 상점.", "the sect"] {
+            let p = terms.prompt(plain);
+            assert!(!p.contains("Loại tổ chức"), "{plain}: {p}");
+            assert!(p.contains("Tokyo"), "{p}");
+        }
         assert!(prompt.contains("Tokyo"), "{prompt}");
         // English, and the book's own glossary wins.
         let en = load_from(&conn, "wuxia", "en").unwrap();

@@ -4,7 +4,9 @@ name: E2E
 on:
   pull_request:
   push:
-    branches: [main, develop]
+    # main only gets code through a PR that already ran E2E, so a push there
+    # would just run it again beside the release build.
+    branches: [develop]
   workflow_dispatch:
 
 concurrency:
