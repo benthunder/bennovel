@@ -9,7 +9,7 @@
 //! show the kept name without being translated again.
 
 use super::genre_terms::{embed, fold};
-use super::llm::AiError;
+use super::llm::{AiError, Chat};
 use super::rules::{self, Rule};
 use super::wiki::{self, Entry, WIKI_LANG};
 use rusqlite::Connection;
@@ -33,6 +33,8 @@ pub enum Reason {
     SameRaw,
     /// Names that differ by a letter or a mark. Not picked until the user ticks it.
     NearName,
+    /// The AI read the names, aliases and descriptions and found them one (`suggest_ai`).
+    Ai,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -45,6 +47,8 @@ pub struct Suggestion {
     pub reason: Reason,
     /// The replace rules the merge will add (find → replace).
     pub rules: Vec<Rule>,
+    /// Why the AI thought so, for `Reason::Ai`.
+    pub note: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -185,12 +189,146 @@ pub fn suggest(conn: &Connection, novel_id: i64) -> rusqlite::Result<Vec<Suggest
                 from: from.clone(),
                 into: into.clone(),
                 reason,
+                note: String::new(),
             });
         }
     }
     out.sort_by(|x, y| x.reason.cmp(&y.reason));
     out.truncate(MAX);
     Ok(out)
+}
+
+/// Entries sent to the AI in one request at most.
+const AI_BATCH: usize = 120;
+/// A description is cut to this many letters for the AI.
+const AI_SUMMARY: usize = 140;
+
+/// The prompt of the AI step (one kind of entry at a time).
+pub fn ai_prompt(kind: &str) -> String {
+    format!(
+        "Bạn là biên tập viên wiki của một bộ truyện. Người dùng gửi danh sách các mục wiki cùng loại \"{kind}\", mỗi dòng: số thứ tự. tên tiếng Việt | gốc: tên trong nguyên tác | khác: các tên gọi khác | mô tả.\n\
+Nhiệm vụ: tìm những cặp mục thực chất là MỘT nhân vật / một nơi / một vật bị tách làm hai, ví dụ:\n\
+- cùng một tên viết khác nhau (phiên âm Latin và Hán Việt, có hay không gạch nối, sai một chữ hay một dấu: Seol-Hwi / Tuyết Huy, Tuyết Hui / Tuyết Huy);\n\
+- tên thật và danh hiệu, biệt danh, cách gọi của cùng một người khi mô tả cho thấy rõ là một (Chưởng môn Hoa Sơn và tên vị chưởng môn đó).\n\
+KHÔNG gộp: người thân cùng họ, thầy trò, hai người khác nhau có tên gần giống, một môn phái và chưởng môn của nó, một nơi và nơi nằm trong nó. Chỉ chọn khi chắc chắn; không chắc thì bỏ qua.\n\
+Với mỗi cặp, \"into\" là mục giữ lại: mục có tên tiếng Việt đúng và đầy đủ nhất (ưu tiên tên Hán Việt hơn phiên âm Latin), \"from\" là mục gộp vào nó.\n\
+Chỉ trả về đúng một JSON, không giải thích thêm: {{\"pairs\":[{{\"from\":số,\"into\":số,\"why\":\"lý do ngắn bằng tiếng Việt\"}}]}}. Không có cặp nào thì trả {{\"pairs\":[]}}."
+    )
+}
+
+/// One line of an entry in the AI's list.
+fn ai_line(n: usize, e: &Entry) -> String {
+    let mut line = format!("{n}. {}", shown(e));
+    if e.name.trim() != shown(e) {
+        line.push_str(&format!(" | gốc: {}", e.name.trim()));
+    }
+    if !e.aliases.is_empty() {
+        line.push_str(&format!(" | khác: {}", e.aliases.join(", ")));
+    }
+    let sum = e
+        .summaries
+        .get(WIKI_LANG)
+        .or_else(|| e.summaries.values().next())
+        .map(|s| s.trim())
+        .unwrap_or("");
+    if !sum.is_empty() {
+        let cut: String = sum.chars().take(AI_SUMMARY).collect();
+        line.push_str(&format!(" | {cut}"));
+    }
+    line
+}
+
+#[derive(Deserialize)]
+struct AiPairs {
+    #[serde(default)]
+    pairs: Vec<AiPair>,
+}
+
+#[derive(Deserialize)]
+struct AiPair {
+    from: usize,
+    into: usize,
+    #[serde(default)]
+    why: String,
+}
+
+/// The pairs the AI finds one, kind by kind, in batches of `AI_BATCH` entries sorted by
+/// name (so names written alike are sent together). Pairs `suggest` already has are
+/// left out; two of the user's own entries are never paired, and a user's entry is the
+/// one kept.
+pub fn suggest_ai(
+    conn: &Connection,
+    llm: &dyn Chat,
+    novel_id: i64,
+) -> Result<Vec<Suggestion>, AiError> {
+    let all = wiki::entries(conn, novel_id)?;
+    let known: Vec<(String, String)> = suggest(conn, novel_id)?
+        .into_iter()
+        .map(|s| (s.from.uid, s.into.uid))
+        .collect();
+    let mut kinds: Vec<&str> = all.iter().map(|e| e.kind.as_str()).collect();
+    kinds.sort();
+    kinds.dedup();
+    let mut out: Vec<Suggestion> = Vec::new();
+    for kind in kinds {
+        let mut group: Vec<&Entry> = all.iter().filter(|e| e.kind == kind).collect();
+        if group.len() < 2 {
+            continue;
+        }
+        group.sort_by_key(|e| fold(shown(e)));
+        for batch in group.chunks(AI_BATCH) {
+            if batch.len() < 2 {
+                continue;
+            }
+            let list: Vec<String> = batch
+                .iter()
+                .enumerate()
+                .map(|(i, e)| ai_line(i + 1, e))
+                .collect();
+            let reply = llm.chat(&ai_prompt(kind), &list.join("\n"))?;
+            let Some(parsed) = parse_pairs(&reply) else {
+                continue;
+            };
+            for p in parsed.pairs {
+                let (Some(a), Some(b)) = (
+                    p.from.checked_sub(1).and_then(|i| batch.get(i)),
+                    p.into.checked_sub(1).and_then(|i| batch.get(i)),
+                ) else {
+                    continue;
+                };
+                if a.uid == b.uid || (a.source == "user" && b.source == "user") {
+                    continue;
+                }
+                // The user's entry stays whatever the AI said.
+                let (from, into) = if a.source == "user" {
+                    (*b, *a)
+                } else {
+                    (*a, *b)
+                };
+                let seen = |x: &str, y: &str| {
+                    (x == from.uid && y == into.uid) || (x == into.uid && y == from.uid)
+                };
+                if known.iter().any(|(x, y)| seen(x, y))
+                    || out.iter().any(|s| seen(&s.from.uid, &s.into.uid))
+                {
+                    continue;
+                }
+                out.push(Suggestion {
+                    rules: rules_for(from, into, &all),
+                    from: from.clone(),
+                    into: into.clone(),
+                    reason: Reason::Ai,
+                    note: p.why.trim().to_string(),
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn parse_pairs(reply: &str) -> Option<AiPairs> {
+    let (a, b) = (reply.find('{')?, reply.rfind('}')?);
+    serde_json::from_str(reply.get(a..=b)?).ok()
 }
 
 fn distance(a: &[f32], b: &[f32]) -> f32 {
@@ -429,5 +567,54 @@ mod tests {
         let get = |u: &str| all.iter().find(|e| e.uid == u).unwrap();
         assert!(rules_for(get(&b), get(&a), &all).is_empty());
         assert!(rules_for(get(&c), get(&a), &all).is_empty());
+    }
+
+    struct Judge(String, std::sync::Mutex<Vec<String>>);
+
+    impl Chat for Judge {
+        fn chat(&self, system: &str, user: &str) -> Result<String, AiError> {
+            assert!(system.contains("pairs"));
+            self.1.lock().unwrap().push(user.to_string());
+            Ok(self.0.clone())
+        }
+        fn model(&self) -> &str {
+            "judge"
+        }
+    }
+
+    #[test]
+    fn the_ai_finds_a_title_and_a_name_as_one() {
+        let (conn, novel) = book("smart-merge-ai");
+        let lead = add(
+            &conn,
+            novel,
+            "character",
+            "Mount Hua Sect Leader",
+            "Chưởng môn Hoa Sơn",
+        );
+        let li = add(&conn, novel, "character", "Lee Soo", "Lý Tú");
+        add(&conn, novel, "faction", "Mount Hua Sect", "Hoa Sơn phái");
+        // Sorted by name the list is "Chưởng môn Hoa Sơn", "Lý Tú"; the reply also has a
+        // number that is not in the list.
+        let judge = Judge(
+            "Đây: {\"pairs\":[{\"from\":1,\"into\":2,\"why\":\"Lý Tú là chưởng môn\"},{\"from\":5,\"into\":1}]}".into(),
+            Default::default(),
+        );
+        let s = suggest_ai(&conn, &judge, novel).unwrap();
+        assert_eq!(s.len(), 1);
+        assert_eq!(
+            (s[0].from.uid.as_str(), s[0].into.uid.as_str()),
+            (lead.as_str(), li.as_str())
+        );
+        assert_eq!(s[0].reason, Reason::Ai);
+        assert_eq!(s[0].note, "Lý Tú là chưởng môn");
+        // One request for the characters; the lone faction is not sent.
+        let sent = judge.1.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        assert!(
+            sent[0].starts_with("1. Chưởng môn Hoa Sơn | gốc: Mount Hua Sect Leader"),
+            "{}",
+            sent[0]
+        );
     }
 }

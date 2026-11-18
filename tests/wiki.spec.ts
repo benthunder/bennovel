@@ -102,9 +102,13 @@ async function nativeApp(page: Page) {
             const seol = entry('s1', 'character', 'Seol-Hwi', 'Tuyết Huy', 'Đệ tử Hoa Sơn.', 1);
             const seol2 = entry('s2', 'character', 'Seol Hwi', 'Seol-Hwi', '', 4);
             return [
-              { from: seol2, into: seol, reason: 'same_raw', rules: [{ find: 'Seol-Hwi', replace: 'Tuyết Huy' }, { find: 'Seol Hwi', replace: 'Tuyết Huy' }] },
-              { from: by('i'), into: by('a'), reason: 'near_name', rules: [{ find: 'Lâm Lang Thiên', replace: 'Lâm Động' }] }
+              { from: seol2, into: seol, reason: 'same_raw', rules: [{ find: 'Seol-Hwi', replace: 'Tuyết Huy' }, { find: 'Seol Hwi', replace: 'Tuyết Huy' }], note: '' },
+              { from: by('i'), into: by('a'), reason: 'near_name', rules: [{ find: 'Lâm Lang Thiên', replace: 'Lâm Động' }], note: '' }
             ];
+          }
+          case 'wiki_merge_suggest_ai': {
+            const by = (u: string) => wiki.entries.find(e => e.uid === u)!;
+            return [{ from: by('l'), into: by('h'), reason: 'ai', rules: [], note: 'Mô tả cho thấy là một người.' }];
           }
           case 'wiki_merge_apply': return { merged: (args.picks as unknown[]).length, rules: 2 };
           case 'ai_marks': case 'ai_progress': case 'ai_versions': return [];
@@ -357,8 +361,14 @@ test('smart merge lists pairs to review and merges only the ticked ones', async 
   await expect(boxes.nth(0)).toBeChecked();
   await expect(boxes.nth(1)).not.toBeChecked();
   await page.screenshot({ path: `test-results/wiki-${info.project.name}-smart-merge.png` });
-  await sheet.getByRole('button', { name: 'Gộp 1 cặp' }).click();
-  await expect(page.getByText('Đã gộp 1 cặp, thêm 2 dòng thay thế.')).toBeVisible();
-  expect((await calls(page)).find(c => c.cmd === 'wiki_merge_apply')?.args).toMatchObject({ novelId: 1, picks: [{ fromUid: 's2', intoUid: 's1' }] });
+  // The AI finds more from the descriptions; what it finds is ticked, with its reason.
+  await sheet.getByRole('button', { name: 'Hỏi AI tìm thêm' }).click();
+  await expect(sheet.locator('[data-merge-pair]')).toHaveCount(3);
+  await expect(sheet.getByText('Mô tả cho thấy là một người.')).toBeVisible();
+  await expect(boxes.nth(2)).toBeChecked();
+  await page.screenshot({ path: `test-results/wiki-${info.project.name}-smart-merge-ai.png` });
+  await sheet.getByRole('button', { name: 'Gộp 2 cặp' }).click();
+  await expect(page.getByText('Đã gộp 2 cặp, thêm 2 dòng thay thế.')).toBeVisible();
+  expect((await calls(page)).find(c => c.cmd === 'wiki_merge_apply')?.args).toMatchObject({ novelId: 1, picks: [{ fromUid: 's2', intoUid: 's1' }, { fromUid: 'l', intoUid: 'h' }] });
   await expect(sheet).toHaveCount(0);
 });

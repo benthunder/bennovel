@@ -1232,6 +1232,25 @@ pub async fn wiki_merge_suggest<R: Runtime>(
     ai_blocking(move || Ok(super::smart_merge::suggest(&db::open(&path)?, novel_id)?)).await
 }
 
+/// More pairs for smart merge, found by the user's LLM from the names, aliases and
+/// descriptions (a title and the name of the one who holds it).
+#[tauri::command]
+pub async fn wiki_merge_suggest_ai<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+) -> Result<Vec<super::smart_merge::Suggestion>, AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || {
+        let conn = db::open(&path)?;
+        let model = llm::load(&conn)?
+            .map(llm::OpenAi::new)
+            .ok_or(AiError::NotSet)?;
+        super::smart_merge::suggest_ai(&conn, &model, novel_id)
+    })
+    .await
+}
+
 /// Merges the pairs the user kept from `wiki_merge_suggest`; each merge also adds its
 /// line to the book's replace rules.
 #[tauri::command]

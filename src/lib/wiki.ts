@@ -156,7 +156,7 @@ export const wikiMissingIn = (e: WikiEntry, lang: string) =>
   lang !== RAW && (!e.names[lang] || (Object.keys(e.summaries).length > 0 && !e.summaries[lang]));
 
 /** Why smart merge thinks two entries are one. */
-export type MergeReason = 'same_name' | 'same_raw' | 'near_name';
+export type MergeReason = 'same_name' | 'same_raw' | 'near_name' | 'ai';
 
 /** A pair smart merge found, for the user to review: `from` goes into `into`, with the replace rules that adds. */
 export interface MergeSuggestion {
@@ -164,12 +164,23 @@ export interface MergeSuggestion {
   into: WikiEntry;
   reason: MergeReason;
   rules: { find: string; replace: string }[];
+  /** Why the AI thought so (reason `ai`). */
+  note: string;
 }
 
 /** The book's entries that look like one written two ways (nothing is merged yet). */
 export async function suggestWikiMerges(user: string, novelId: number) {
   try {
     return await invoke<MergeSuggestion[]>('wiki_merge_suggest', { user, novelId });
+  } catch (e) {
+    throw new AiFailure(e);
+  }
+}
+
+/** More pairs found by the user's LLM from names, aliases and descriptions (a title and its holder). */
+export async function suggestWikiMergesAi(user: string, novelId: number) {
+  try {
+    return await invoke<MergeSuggestion[]>('wiki_merge_suggest_ai', { user, novelId });
   } catch (e) {
     throw new AiFailure(e);
   }
