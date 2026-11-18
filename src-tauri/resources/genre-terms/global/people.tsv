@@ -1,0 +1,80 @@
+kind	vi	en	zh	ko	ja	convert	note
+# Nhân vật lịch sử, văn hóa, thần thoại Trung Quốc → Hán Việt. Người Nhật, Hàn, phương Tây giữ nguyên tên gốc.
+# Cột ko/zh bỏ trống khi trùng một từ thường (vd 손자 "cháu", 孙子 "cháu", 유방 "ngực", 황제 "hoàng đế").
+# Tam Quốc
+history	Tào Tháo	Cao Cao	曹操	조조	曹操
+history	Lưu Bị	Liu Bei	刘备|劉備	유비	劉備
+history	Quan Vũ	Guan Yu	关羽|關羽	관우	関羽
+history	Quan Công	Lord Guan	关公|關公	관공	関公
+history	Trương Phi	Zhang Fei	张飞|張飛		張飛		bỏ ko 장비 vì trùng "trang bị"
+history	Gia Cát Lượng	Zhuge Liang	诸葛亮|諸葛亮	제갈량	諸葛亮	Chư Cát Lượng
+history	Khổng Minh	Kongming	孔明		孔明		bỏ ko 공명 vì trùng "cộng hưởng"
+history	Triệu Vân	Zhao Yun	赵云|趙雲	조운	趙雲
+history	Tôn Quyền	Sun Quan	孙权|孫權	손권	孫権
+history	Chu Du	Zhou Yu	周瑜	주유	周瑜		ko 주유 trùng "đổ xăng" (ít gặp)
+history	Lữ Bố	Lü Bu|Lu Bu	吕布|呂布	여포	呂布
+history	Đổng Trác	Dong Zhuo	董卓	동탁	董卓
+history	Tư Mã Ý	Sima Yi	司马懿|司馬懿	사마의	司馬懿
+history	Điêu Thuyền	Diaochan	貂蝉|貂蟬	초선	貂蟬
+# Các triều đại
+history	Tần Thủy Hoàng	Qin Shi Huang|the First Emperor	秦始皇	진시황	秦の始皇帝|始皇帝
+history	Hạng Vũ	Xiang Yu	项羽|項羽	항우	項羽
+history	Lưu Bang	Liu Bang	刘邦|劉邦		劉邦		ko 유방 trùng "ngực"
+history	Hàn Tín	Han Xin	韩信|韓信	한신	韓信
+history	Trương Lương	Zhang Liang	张良|張良	장량	張良
+history	Hán Vũ Đế	Emperor Wu of Han	汉武帝|漢武帝	한무제	漢の武帝
+history	Đường Thái Tông	Emperor Taizong of Tang	唐太宗	당태종	唐の太宗
+history	Võ Tắc Thiên	Wu Zetian	武则天|武則天	측천무후	武則天|則天武后
+history	Dương Quý Phi	Yang Guifei	杨贵妃|楊貴妃	양귀비	楊貴妃		ko 양귀비 cũng là "hoa anh túc"
+history	Tây Thi	Xi Shi	西施	서시	西施
+history	Nhạc Phi	Yue Fei	岳飞|岳飛	악비	岳飛
+history	Bao Chửng	Bao Zheng	包拯	포증	包拯
+history	Bao Thanh Thiên	Judge Bao	包青天	포청천	包青天
+history	Thành Cát Tư Hãn	Genghis Khan	成吉思汗	칭기즈 칸|칭기스칸	チンギス・カン
+history	Hốt Tất Liệt	Kublai Khan	忽必烈	쿠빌라이	クビライ
+history	Chu Nguyên Chương	Zhu Yuanzhang	朱元璋	주원장	朱元璋
+history	Khang Hy	Kangxi Emperor	康熙	강희	康熙
+history	Càn Long	Qianlong Emperor	乾隆	건륭	乾隆
+history	Trịnh Hòa	Zheng He	郑和|鄭和		鄭和		bỏ ko 정화 vì trùng "thanh lọc"
+# Tư tưởng, văn chương, y học
+history	Khổng Tử	Confucius	孔子	공자	孔子
+history	Mạnh Tử	Mencius	孟子	맹자	孟子
+history	Lão Tử	Laozi|Lao Tzu		노자	老子		bỏ zh 老子 vì còn nghĩa "ông đây"
+history	Trang Tử	Zhuangzi|Chuang Tzu	庄子|莊子		荘子		ko 장자 trùng "con trưởng"
+history	Tôn Tử	Sun Tzu|Sun Wu			孫子		zh 孙子, ko 손자 trùng "cháu"
+history	Lý Bạch	Li Bai|Li Po	李白		李白		bỏ ko 이백 vì trùng "hai trăm"
+history	Đỗ Phủ	Du Fu	杜甫	두보	杜甫
+history	Tô Đông Pha	Su Dongpo|Su Shi	苏东坡|蘇東坡	소동파	蘇東坡
+history	Hoa Đà	Hua Tuo	华佗|華佗	화타	華佗
+history	Biển Thước	Bian Que	扁鹊|扁鵲	편작	扁鵲
+history	Đạt Ma	Bodhidharma	达摩|達摩	달마	達磨
+history	Huyền Trang	Xuanzang	玄奘		玄奘		ko 현장 trùng "hiện trường"
+# Thần thoại, Tây Du, Phong Thần
+myth	Ngọc Hoàng Đại Đế	the Jade Emperor	玉皇大帝	옥황상제	玉皇大帝
+myth	Thái Thượng Lão Quân	Taishang Laojun	太上老君	태상노군	太上老君
+myth	Nguyên Thủy Thiên Tôn	Yuanshi Tianzun	元始天尊	원시천존	元始天尊
+myth	Quan Âm Bồ Tát	Guanyin Bodhisattva	观音菩萨|觀音菩薩	관음보살	観音菩薩
+myth	Như Lai Phật Tổ	Buddha Tathagata	如来佛祖|如來佛祖	여래불|석가여래	如来
+myth	Tây Vương Mẫu	the Queen Mother of the West	西王母	서왕모	西王母
+myth	Nữ Oa	Nüwa|Nuwa	女娲|女媧	여와	女媧
+myth	Bàn Cổ	Pangu	盘古|盤古	반고	盤古
+myth	Phục Hy	Fuxi	伏羲	복희	伏羲
+myth	Thần Nông	Shennong	神农|神農	신농	神農
+myth	Hoàng Đế	the Yellow Emperor	黄帝|黃帝		黄帝		ko 황제 trùng "hoàng đế"
+myth	Hậu Nghệ	Hou Yi	后羿		后羿		bỏ ko 후예 vì trùng "hậu duệ"
+myth	Hằng Nga	Chang'e	嫦娥	항아	嫦娥
+myth	Na Tra	Nezha	哪吒	나타	哪吒
+myth	Nhị Lang Thần	Erlang Shen	二郎神	이랑신	二郎神
+myth	Dương Tiễn	Yang Jian	杨戬|楊戩	양전	楊戩
+myth	Khương Tử Nha	Jiang Ziya	姜子牙	강자아	姜子牙
+myth	Khương Thái Công	Jiang Taigong	姜太公	강태공	太公望
+myth	Đát Kỷ	Daji	妲己	달기	妲己
+myth	Chung Quỳ	Zhong Kui	钟馗|鍾馗	종규	鍾馗
+myth	Diêm Vương	King Yama|Yama	阎王|閻王|阎罗王|閻羅王	염라대왕|염라	閻魔
+myth	Mạnh Bà	Meng Po	孟婆	맹파	孟婆
+myth	Tôn Ngộ Không	Sun Wukong|the Monkey King	孙悟空|孫悟空	손오공	孫悟空
+myth	Tề Thiên Đại Thánh	Great Sage Equal to Heaven	齐天大圣|齊天大聖	제천대성	斉天大聖
+myth	Trư Bát Giới	Zhu Bajie|Pigsy	猪八戒|豬八戒	저팔계	猪八戒
+myth	Sa Ngộ Tĩnh	Sha Wujing|Sandy	沙悟净|沙悟淨	사오정	沙悟浄
+myth	Đường Tăng	Tang Sanzang|the Tang Monk	唐僧|唐三藏	삼장법사	三蔵法師
+myth	Ngưu Ma Vương	the Bull Demon King	牛魔王	우마왕	牛魔王

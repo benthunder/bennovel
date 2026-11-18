@@ -1,13 +1,21 @@
-//! The shared terms of each genre, for the AI translation: how a sect, a realm, a title
-//! is written in the target language whatever the book ("Võ Đang tông" → "Võ Đang
-//! phái" in wuxia). Unlike a book's own glossary (`glossary_entries`), these come with
-//! the app.
+//! The shared terms the AI translation must write one way, whatever the book: sects,
+//! places, famous people, realms, titles ("Võ Đang tông" → "Võ Đang phái",
+//! "Sichuan" / "사천" → "Tứ Xuyên"). Unlike a book's own glossary (`glossary_entries`),
+//! these come with the app.
 //!
-//! The data is `resources/genre-terms/*.tsv` (one file per genre, `common.tsv` for every
-//! book), built into the app. It is kept as its own SQLite file,
-//! `<app data>/rag/genre-terms.sqlite`, rebuilt when the app ships another version of
-//! the data (`version.txt`, or the data itself changed). A chapter's part gets only the
-//! terms that part names (`Terms::prompt`).
+//! The data is `resources/genre-terms/`: `global/` for every book, and one folder per
+//! style (genre: `wuxia`, `xianxia`, …) whose terms win over the global ones. It is
+//! built into the app and kept as its own SQLite file, `<app data>/rag/genre-terms.sqlite`,
+//! rebuilt when the app ships another version of the data (`version.txt`, or the data
+//! itself changed). Before a chapter's part goes to the LLM, the part's text is compared
+//! with the table and the part gets only the terms it names (`Terms::prompt`).
+//!
+//! Two shapes of TSV file (README.md there):
+//! - a term file (header has `term`): one source spelling per row, one column per target
+//!   language;
+//! - a name file (header has no `term`): one sect / place / person per row, its target
+//!   names (`vi`, `en`) and its spellings in each source language (`zh`, `ko`, `ja`, `en`,
+//!   `convert` = Vietnamese convert text), several split by `|`.
 
 use aho_corasick::{AhoCorasick, MatchKind};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
@@ -18,32 +26,40 @@ use std::sync::{Mutex, OnceLock};
 /// The data's version: raise it with every change to the TSV files.
 const VERSION: &str = include_str!("../../resources/genre-terms/version.txt");
 
-/// (genre, TSV). `common` holds for every book, with a genre or not.
-const SOURCES: &[(&str, &str)] = &[
-    (
-        "common",
-        include_str!("../../resources/genre-terms/common.tsv"),
-    ),
-    (
-        "wuxia",
-        include_str!("../../resources/genre-terms/wuxia.tsv"),
-    ),
-    (
-        "xianxia",
-        include_str!("../../resources/genre-terms/xianxia.tsv"),
-    ),
-    (
-        "supernatural",
-        include_str!("../../resources/genre-terms/supernatural.tsv"),
-    ),
-    (
-        "politics",
-        include_str!("../../resources/genre-terms/politics.tsv"),
-    ),
+macro_rules! tsv {
+    ($genre:literal, $file:literal) => {
+        (
+            $genre,
+            concat!($genre, "/", $file),
+            include_str!(concat!("../../resources/genre-terms/", $genre, "/", $file)),
+        )
+    };
+}
+
+/// (genre, file, TSV). `global` holds for every book, with a genre or not.
+const SOURCES: &[(&str, &str, &str)] = &[
+    tsv!("global", "address.tsv"),
+    tsv!("global", "sects.tsv"),
+    tsv!("global", "places.tsv"),
+    tsv!("global", "people.tsv"),
+    tsv!("wuxia", "terms.tsv"),
+    tsv!("wuxia", "people.tsv"),
+    tsv!("xianxia", "terms.tsv"),
+    tsv!("supernatural", "terms.tsv"),
+    tsv!("politics", "terms.tsv"),
 ];
 
+/// How a sect, a gang, a clan… is called by the end of its name (派 → phái, 宗 → tông).
+const SUFFIXES: &str = include_str!("../../resources/genre-terms/global/org-suffixes.tsv");
+/// The genres whose prompts get the suffix rules.
+const SUFFIX_GENRES: &[&str] = &["wuxia", "xianxia"];
+
 /// The genre whose terms every book gets.
-const COMMON: &str = "common";
+const GLOBAL: &str = "global";
+/// Target languages a name file has a column for.
+const TARGETS: &[&str] = &["vi", "en"];
+/// Source columns of a name file besides the targets, and the language each stands for.
+const SOURCE_COLS: &[(&str, &str)] = &[("zh", "zh"), ("ko", "ko"), ("ja", "ja"), ("convert", "vi")];
 /// Terms put in one part's prompt at most.
 const MAX_PER_PART: usize = 60;
 /// The file, under the app's data folder.
@@ -51,86 +67,193 @@ const FILE: &str = "rag/genre-terms.sqlite";
 
 const SCHEMA: &str = "
 create table meta (key text primary key, value text not null);
+-- One source spelling of a term and the name to use for it in one target language.
 create table terms (
   id     integer primary key,
   genre  text not null,
   term   text not null,
+  src    text not null,
   kind   text not null default 'term',
   lang   text not null,
   value  text not null,
   note   text,
+  file   text not null,
   unique (genre, term, lang)
 );
 create index terms_genre_lang on terms (genre, lang);
+-- How a kind of organisation is called by the end of its name.
+create table org_suffixes (
+  id      integer primary key,
+  vi      text not null,
+  en      text not null,
+  zh      text not null,
+  ko      text not null,
+  ja      text not null,
+  meaning text not null
+);
 ";
 
-/// One row of a TSV file: the term, its kind, its note and its value per language.
+/// One term: a source spelling (in `src`), its kind and note, and its name per target.
 #[derive(Debug, PartialEq)]
 struct Row {
     term: String,
+    src: String,
     kind: String,
     note: String,
     values: Vec<(String, String)>,
 }
 
-/// Reads one TSV file. The header names the columns: `term`, `kind`, `note` and one
-/// column per target language.
-fn parse(genre: &str, tsv: &str) -> Result<Vec<Row>, String> {
+/// The lines of a TSV that are not empty or comments, with their line numbers, and the
+/// header's columns.
+fn table(tsv: &str) -> (Vec<String>, Vec<(usize, Vec<&str>)>) {
     let mut lines = tsv
         .lines()
         .enumerate()
         .filter(|(_, l)| !l.trim().is_empty() && !l.trim_start().starts_with('#'));
-    let Some((_, head)) = lines.next() else {
-        return Ok(Vec::new());
-    };
-    let head: Vec<&str> = head.split('\t').map(str::trim).collect();
-    let col = |name: &str| head.iter().position(|h| *h == name);
-    let term_col = col("term").ok_or(format!("{genre}.tsv: no term column"))?;
-    let (kind_col, note_col) = (col("kind"), col("note"));
-    let langs: Vec<(usize, &str)> = head
-        .iter()
-        .enumerate()
-        .filter(|(_, h)| !matches!(**h, "term" | "kind" | "note"))
-        .map(|(i, h)| (i, *h))
+    let head = lines
+        .next()
+        .map(|(_, h)| h.split('\t').map(|c| c.trim().to_string()).collect())
+        .unwrap_or_default();
+    let rows = lines
+        .map(|(n, l)| (n + 1, l.split('\t').map(str::trim).collect()))
         .collect();
+    (head, rows)
+}
+
+/// The language a spelling is written in, as far as its letters tell.
+fn script(text: &str) -> &'static str {
+    if text.chars().any(|c| ('\u{AC00}'..='\u{D7AF}').contains(&c)) {
+        "ko"
+    } else if text.chars().any(|c| ('\u{3040}'..='\u{30FF}').contains(&c)) {
+        "ja"
+    } else if text.chars().any(is_cjk) {
+        "zh"
+    } else {
+        "vi"
+    }
+}
+
+/// Reads one TSV file of either shape into terms.
+fn parse(file: &str, tsv: &str) -> Result<Vec<Row>, String> {
+    let (head, lines) = table(tsv);
+    if head.is_empty() {
+        return Ok(Vec::new());
+    }
+    let col = |name: &str| head.iter().position(|h| h == name);
+    let (kind_col, note_col) = (col("kind"), col("note"));
     let mut rows = Vec::new();
-    for (n, line) in lines {
-        let cells: Vec<&str> = line.split('\t').map(str::trim).collect();
+    for (n, cells) in lines {
         if cells.len() > head.len() {
-            return Err(format!("{genre}.tsv line {}: too many columns", n + 1));
+            return Err(format!("{file} line {n}: too many columns"));
         }
         let cell = |i: Option<usize>| i.and_then(|i| cells.get(i)).copied().unwrap_or("");
-        let term = cell(Some(term_col));
-        if term.is_empty() {
-            return Err(format!("{genre}.tsv line {}: no term", n + 1));
+        let kind = match cell(kind_col) {
+            "" => "term",
+            k => k,
         }
-        let values: Vec<(String, String)> = langs
+        .to_string();
+        let note = cell(note_col).to_string();
+        if let Some(term_col) = col("term") {
+            // A term file: the term, then a column per target language.
+            let term = cell(Some(term_col));
+            if term.is_empty() {
+                return Err(format!("{file} line {n}: no term"));
+            }
+            let values: Vec<(String, String)> = head
+                .iter()
+                .enumerate()
+                .filter(|(_, h)| !matches!(h.as_str(), "term" | "kind" | "note"))
+                .map(|(i, h)| (h.clone(), cell(Some(i)).to_string()))
+                .filter(|(_, v)| !v.is_empty())
+                .collect();
+            if values.is_empty() {
+                return Err(format!("{file} line {n}: {term} has no translation"));
+            }
+            rows.push(Row {
+                term: term.to_string(),
+                src: script(term).to_string(),
+                kind,
+                note,
+                values,
+            });
+            continue;
+        }
+        // A name file: the names to use, then the spellings of the sources.
+        let first = |c: &str| cell(col(c)).split('|').next().unwrap_or("").trim().to_string();
+        let targets: Vec<(String, String)> = TARGETS
             .iter()
-            .map(|(i, lang)| (lang.to_string(), cell(Some(*i)).to_string()))
+            .map(|t| (t.to_string(), first(t)))
             .filter(|(_, v)| !v.is_empty())
             .collect();
-        if values.is_empty() {
-            return Err(format!(
-                "{genre}.tsv line {}: {term} has no translation",
-                n + 1
-            ));
+        let Some((_, vi)) = targets.iter().find(|(t, _)| t == "vi") else {
+            return Err(format!("{file} line {n}: no vi name"));
+        };
+        let spellings = |c: &str| {
+            cell(col(c))
+                .split('|')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        };
+        let mut count = 0;
+        for (c, src) in SOURCE_COLS {
+            for term in spellings(c) {
+                if term.to_lowercase() == vi.to_lowercase() {
+                    continue;
+                }
+                count += 1;
+                rows.push(Row {
+                    term,
+                    src: src.to_string(),
+                    kind: kind.clone(),
+                    note: note.clone(),
+                    values: targets.clone(),
+                });
+            }
         }
-        let kind = cell(kind_col);
-        rows.push(Row {
-            term: term.to_string(),
-            kind: if kind.is_empty() { "term" } else { kind }.to_string(),
-            note: cell(note_col).to_string(),
-            values,
-        });
+        // English spellings, for an English book read in Vietnamese.
+        for term in spellings("en") {
+            count += 1;
+            rows.push(Row {
+                term,
+                src: "en".into(),
+                kind: kind.clone(),
+                note: note.clone(),
+                values: vec![("vi".into(), vi.clone())],
+            });
+        }
+        if count == 0 {
+            return Err(format!("{file} line {n}: {vi} has no source spelling"));
+        }
     }
     Ok(rows)
+}
+
+/// The org suffix rows: (vi, en, zh, ko, ja, meaning).
+fn suffixes() -> Result<Vec<[String; 6]>, String> {
+    let (head, lines) = table(SUFFIXES);
+    let col = |name: &str| head.iter().position(|h| h == name);
+    let cols = ["vi", "en", "zh", "ko", "ja", "meaning"].map(col);
+    lines
+        .into_iter()
+        .map(|(n, cells)| {
+            let r = cols.map(|i| i.and_then(|i| cells.get(i)).copied().unwrap_or("").to_string());
+            if r[0].is_empty() || r[2].is_empty() {
+                return Err(format!("global/org-suffixes.tsv line {n}: needs vi and zh"));
+            }
+            Ok(r)
+        })
+        .collect()
 }
 
 /// The data the app carries, to tell a file built from older data.
 fn data_hash() -> String {
     let h = SOURCES
         .iter()
-        .flat_map(|(g, t)| g.bytes().chain([0]).chain(t.bytes()).chain([0]))
+        .flat_map(|(_, f, t)| [*f, *t])
+        .chain([SUFFIXES])
+        .flat_map(|s| s.bytes().chain([0]))
         .fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
             (h ^ b as u64).wrapping_mul(0x0100_0000_01b3)
         });
@@ -150,37 +273,48 @@ pub fn build(path: &Path) -> Result<(), String> {
     let tmp = path.with_extension("sqlite.tmp");
     let _ = std::fs::remove_file(&tmp);
     let r = (|| -> Result<(), String> {
-        let mut conn = Connection::open(&tmp).map_err(|e| e.to_string())?;
-        let tx = conn.transaction().map_err(|e| e.to_string())?;
-        tx.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
+        let e = |e: rusqlite::Error| e.to_string();
+        let mut conn = Connection::open(&tmp).map_err(e)?;
+        let tx = conn.transaction().map_err(e)?;
+        tx.execute_batch(SCHEMA).map_err(e)?;
         {
+            // The first row of a term in a genre is kept: a file lists it once.
             let mut put = tx
                 .prepare(
-                    "insert into terms (genre, term, kind, lang, value, note) values (?1, ?2, ?3, ?4, ?5, nullif(?6, ''))
-                     on conflict (genre, term, lang) do update set value = excluded.value",
+                    "insert into terms (genre, term, src, kind, lang, value, note, file)
+                     values (?1, ?2, ?3, ?4, ?5, ?6, nullif(?7, ''), ?8)
+                     on conflict (genre, term, lang) do nothing",
                 )
-                .map_err(|e| e.to_string())?;
-            for (genre, tsv) in SOURCES {
-                for row in parse(genre, tsv)? {
+                .map_err(e)?;
+            for (genre, file, tsv) in SOURCES {
+                for row in parse(file, tsv)? {
                     for (lang, value) in &row.values {
-                        put.execute(params![genre, row.term, row.kind, lang, value, row.note])
-                            .map_err(|e| e.to_string())?;
+                        put.execute(params![
+                            genre, row.term, row.src, row.kind, lang, value, row.note, file
+                        ])
+                        .map_err(e)?;
                     }
                 }
             }
+            let mut suf = tx
+                .prepare("insert into org_suffixes (vi, en, zh, ko, ja, meaning) values (?1, ?2, ?3, ?4, ?5, ?6)")
+                .map_err(e)?;
+            for r in suffixes()? {
+                suf.execute(rusqlite::params_from_iter(r.iter())).map_err(e)?;
+            }
             let mut meta = tx
                 .prepare("insert into meta (key, value) values (?1, ?2)")
-                .map_err(|e| e.to_string())?;
+                .map_err(e)?;
             for (k, v) in [
                 ("version", version().to_string()),
                 ("data_hash", data_hash()),
                 ("app_version", env!("CARGO_PKG_VERSION").to_string()),
             ] {
-                meta.execute(params![k, v]).map_err(|e| e.to_string())?;
+                meta.execute(params![k, v]).map_err(e)?;
             }
         }
-        tx.commit().map_err(|e| e.to_string())?;
-        conn.close().map_err(|(_, e)| e.to_string())
+        tx.commit().map_err(e)?;
+        conn.close().map_err(|(_, err)| err.to_string())
     })();
     if let Err(e) = r {
         let _ = std::fs::remove_file(&tmp);
@@ -237,8 +371,8 @@ fn ready() -> Result<Option<&'static Path>, String> {
     Ok(Some(path.as_path()))
 }
 
-/// The terms of `genre` (and `common`) for a translation into `lang`, from the app's
-/// file. Empty when the file cannot be had: a translation goes on without it.
+/// The terms of `genre` (and the global ones) for a translation into `lang`, from the
+/// app's file. Empty when the file cannot be had: a translation goes on without it.
 pub fn load(genre: &str, lang: &str) -> Terms {
     let r = ready().and_then(|path| {
         let Some(path) = path else {
@@ -254,13 +388,13 @@ pub fn load(genre: &str, lang: &str) -> Terms {
     })
 }
 
-/// `load` from an open file. The genre's own term wins over `common`'s.
+/// `load` from an open file. The genre's own term wins over the global one.
 pub fn load_from(conn: &Connection, genre: &str, lang: &str) -> rusqlite::Result<Terms> {
     let mut stmt = conn.prepare(
         "select term, value from terms where lang = ?2 and genre in (?1, ?3)
          order by genre = ?3, term",
     )?;
-    let rows = stmt.query_map(params![genre, lang, COMMON], |r| {
+    let rows = stmt.query_map(params![genre, lang, GLOBAL], |r| {
         Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
     })?;
     let mut entries: Vec<(String, String)> = Vec::new();
@@ -271,11 +405,53 @@ pub fn load_from(conn: &Connection, genre: &str, lang: &str) -> rusqlite::Result
             entries.push((term, value));
         }
     }
+    let rules = rules(conn, genre, lang)?;
     Ok(Terms {
         lang: lang.to_string(),
         entries,
+        rules,
         matcher: OnceLock::new(),
     })
+}
+
+/// What every part of a book gets besides the terms it names: how foreign names are
+/// written and, in a martial genre, how each kind of organisation is called.
+fn rules(conn: &Connection, genre: &str, lang: &str) -> rusqlite::Result<String> {
+    let mut s = String::new();
+    if lang == "vi" {
+        s.push_str("\nTên riêng: địa danh, tên người, môn phái của Trung Quốc viết bằng Hán Việt (Sichuan / 사천 / 四川 → Tứ Xuyên); địa danh, tên người, tổ chức của Nhật, Hàn, phương Tây giữ nguyên tên gốc viết chữ Latin (東京 → Tokyo, 서울 → Seoul, California).\n");
+    } else {
+        s.push_str("\nNames: Chinese places, people and sects in pinyin or their usual English name; Japanese and Korean ones in their usual romanisation (Tokyo, Seoul).\n");
+    }
+    if !SUFFIX_GENRES.contains(&genre) {
+        return Ok(s);
+    }
+    let mut stmt = conn.prepare("select vi, en, zh, ko, ja, meaning from org_suffixes order by id")?;
+    let rows = stmt.query_map([], |r| {
+        Ok((0..6).map(|i| r.get::<_, String>(i)).collect::<rusqlite::Result<Vec<_>>>())
+    })?;
+    s.push_str(if lang == "vi" {
+        "Loại tổ chức theo chữ cuối tên gốc (tên không có trong danh sách thì dịch theo bảng này, giữ đúng loại, không đổi phái thành tông hay ngược lại):\n"
+    } else {
+        "Kinds of organisation by the end of the original name:\n"
+    });
+    for r in rows {
+        let r = r??;
+        let mut from: Vec<&str> = Vec::new();
+        for c in [&r[2], &r[3], &r[4]] {
+            for p in c.split('|').filter(|p| !p.is_empty()) {
+                if !from.contains(&p) {
+                    from.push(p);
+                }
+            }
+        }
+        if lang == "vi" {
+            s.push_str(&format!("- {} → {}: {}\n", from.join(" / "), r[0], r[5]));
+        } else {
+            s.push_str(&format!("- {} → {}\n", from.join(" / "), r[1].replace('|', " / ")));
+        }
+    }
+    Ok(s)
 }
 
 /// A genre's terms for one target language, found in a part's text.
@@ -284,6 +460,8 @@ pub struct Terms {
     lang: String,
     /// (term as the source writes it, the name to use).
     entries: Vec<(String, String)>,
+    /// Put in every part's prompt (`rules`).
+    rules: String,
     #[serde(skip)]
     matcher: OnceLock<Option<AhoCorasick>>,
 }
@@ -311,9 +489,9 @@ impl Terms {
     }
 
     /// The terms `text` names, in the order they first appear. A term in a script with
-    /// spaces between words ("Võ Đang tông") must stand as whole words; a Chinese one
-    /// may sit anywhere. A term found inside a longer one found at the same place
-    /// ("武当" in "武当派") is left out.
+    /// spaces between words ("Võ Đang tông", "Sichuan") must stand as whole words; a
+    /// Chinese, Japanese or Korean one may sit anywhere. A term found inside a longer
+    /// one ("武当" in "武当派") is left out.
     pub fn found(&self, text: &str) -> Vec<(&str, &str)> {
         let Some(ac) = self.matcher() else {
             return Vec::new();
@@ -342,17 +520,18 @@ impl Terms {
         out
     }
 
-    /// The part of a part's prompt with the terms it names, or '' when none.
+    /// The part of a part's prompt: the rules, then the terms it names.
     pub fn prompt(&self, part: &str) -> String {
         let found: Vec<(&str, &str)> = self.found(part).into_iter().take(MAX_PER_PART).collect();
+        let mut s = self.rules.clone();
         if found.is_empty() {
-            return String::new();
+            return s;
         }
-        let mut s = if self.lang == "vi" {
-            "\nThuật ngữ chung của thể loại (dịch đúng như sau, trừ khi danh sách tên riêng của truyện ghi khác):\n".to_string()
+        s.push_str(if self.lang == "vi" {
+            "\nThuật ngữ có trong đoạn này (dịch đúng như sau, trừ khi danh sách tên riêng của truyện ghi khác):\n"
         } else {
-            "\nCommon terms of this genre (always write them this way, unless the book's own names say otherwise):\n".to_string()
-        };
+            "\nTerms in this text (always write them this way, unless the book's own names say otherwise):\n"
+        });
         for (t, v) in found {
             s.push_str(&format!("- {t} → {v}\n"));
         }
@@ -392,60 +571,92 @@ mod tests {
         std::env::temp_dir().join(format!("bennovel-gt-{name}-{nanos}/genre-terms.sqlite"))
     }
 
+    /// Writes the data as a readable table, for review:
+    /// `GENRE_TERMS_REVIEW=out.md cargo test --lib genre_terms::tests::review`.
     #[test]
-    fn every_tsv_reads_and_has_no_twice_named_term() {
-        for (genre, tsv) in SOURCES {
-            let rows = parse(genre, tsv).unwrap_or_else(|e| panic!("{e}"));
-            assert!(!rows.is_empty(), "{genre}.tsv is empty");
-            let mut seen = std::collections::HashSet::new();
-            for r in &rows {
-                assert!(
-                    seen.insert(r.term.to_lowercase()),
-                    "{genre}.tsv: {} twice",
-                    r.term
-                );
-                assert!(
-                    r.values.iter().any(|(l, _)| l == "vi"),
-                    "{genre}.tsv: {} has no vi",
-                    r.term
-                );
+    fn review() {
+        let Ok(out) = std::env::var("GENRE_TERMS_REVIEW") else {
+            return;
+        };
+        let mut s = format!("# Bảng thuật ngữ dùng khi dịch (version {})\n", version());
+        for (_, file, tsv) in SOURCES.iter().copied().chain([("global", "global/org-suffixes.tsv", SUFFIXES)]) {
+            let (head, rows) = table(tsv);
+            s.push_str(&format!("\n## {file} ({} dòng)\n\n| {} |\n|{}\n", rows.len(), head.join(" | "), "---|".repeat(head.len())));
+            for (_, cells) in rows {
+                let cells: Vec<String> = (0..head.len())
+                    .map(|i| cells.get(i).copied().unwrap_or("").replace('|', " / "))
+                    .collect();
+                s.push_str(&format!("| {} |\n", cells.join(" | ")));
             }
         }
-        assert!(
-            version().parse::<u32>().is_ok(),
-            "version.txt must be a number"
-        );
+        std::fs::write(out, s).unwrap();
     }
 
     #[test]
-    fn parse_reads_columns_by_header() {
-        let rows = parse(
-            "x",
-            "term\tkind\ten\tvi\n# c\n\nA tông\tsect\tA Sect\tA phái\nB\t\t\tb\n",
-        )
-        .unwrap();
+    fn every_tsv_reads_and_no_term_means_two_things() {
+        let mut seen: std::collections::HashMap<(String, String, String), (String, String)> =
+            Default::default();
+        for (genre, file, tsv) in SOURCES {
+            let rows = parse(file, tsv).unwrap_or_else(|e| panic!("{e}"));
+            assert!(!rows.is_empty(), "{file} is empty");
+            for r in &rows {
+                for (lang, v) in &r.values {
+                    let key = (genre.to_string(), r.term.to_lowercase(), lang.clone());
+                    if let Some((f, old)) = seen.insert(key, (file.to_string(), v.clone())) {
+                        assert_eq!(&old, v, "{}: {} is {old} in {f} but {v} in {file}", genre, r.term);
+                    }
+                }
+                assert!(r.values.iter().any(|(l, _)| l == "vi") || r.src == "en", "{file}: {} has no vi", r.term);
+            }
+        }
+        assert!(suffixes().unwrap().len() > 20);
+        assert!(version().parse::<u32>().is_ok(), "version.txt must be a number");
+    }
+
+    #[test]
+    fn parse_reads_both_shapes() {
+        let rows = parse("x", "term\tkind\ten\tvi\n# c\n\nA tông\tsect\tA Sect\tA phái\n").unwrap();
         assert_eq!(
             rows,
-            vec![
-                Row {
-                    term: "A tông".into(),
-                    kind: "sect".into(),
-                    note: "".into(),
-                    values: vec![
-                        ("en".into(), "A Sect".into()),
-                        ("vi".into(), "A phái".into())
-                    ],
-                },
-                Row {
-                    term: "B".into(),
-                    kind: "term".into(),
-                    note: "".into(),
-                    values: vec![("vi".into(), "b".into())],
-                },
-            ]
+            vec![Row {
+                term: "A tông".into(),
+                src: "vi".into(),
+                kind: "sect".into(),
+                note: "".into(),
+                values: vec![("en".into(), "A Sect".into()), ("vi".into(), "A phái".into())],
+            }]
         );
         assert!(parse("x", "term\tvi\nA\t\n").is_err());
         assert!(parse("x", "term\tvi\nA\tb\tc\n").is_err());
+        let rows = parse(
+            "x",
+            "kind\tvi\ten\tzh\tko\tja\tconvert\nsect\tVõ Đang phái\tWudang Sect|Wudang Clan\t武当派|武當派\t무당파\t武当派\tVõ Đang tông\n",
+        )
+        .unwrap();
+        let got: Vec<(&str, &str, Vec<(&str, &str)>)> = rows
+            .iter()
+            .map(|r| {
+                (
+                    r.term.as_str(),
+                    r.src.as_str(),
+                    r.values.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect(),
+                )
+            })
+            .collect();
+        let both = vec![("vi", "Võ Đang phái"), ("en", "Wudang Sect")];
+        assert_eq!(
+            got,
+            vec![
+                ("武当派", "zh", both.clone()),
+                ("武當派", "zh", both.clone()),
+                ("무당파", "ko", both.clone()),
+                ("武当派", "ja", both.clone()),
+                ("Võ Đang tông", "vi", both.clone()),
+                ("Wudang Sect", "en", vec![("vi", "Võ Đang phái")]),
+                ("Wudang Clan", "en", vec![("vi", "Võ Đang phái")]),
+            ]
+        );
+        assert!(parse("x", "kind\tvi\tzh\nsect\t\t武当派\n").is_err());
     }
 
     #[test]
@@ -454,18 +665,13 @@ mod tests {
         ensure(&path).unwrap();
         let conn = Connection::open(&path).unwrap();
         let v: String = conn
-            .query_row("select value from meta where key = 'version'", [], |r| {
-                r.get(0)
-            })
+            .query_row("select value from meta where key = 'version'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(v, version());
-        let n: i64 = conn
-            .query_row("select count(*) from terms", [], |r| r.get(0))
-            .unwrap();
-        assert!(n > 100);
+        let n: i64 = conn.query_row("select count(*) from terms", [], |r| r.get(0)).unwrap();
+        assert!(n > 500, "{n}");
         // An older file is built again.
-        conn.execute("update meta set value = 'old' where key = 'data_hash'", [])
-            .unwrap();
+        conn.execute("update meta set value = 'old' where key = 'data_hash'", []).unwrap();
         drop(conn);
         ensure(&path).unwrap();
         assert_eq!(stamp(&path), Some((version().to_string(), data_hash())));
@@ -473,35 +679,40 @@ mod tests {
     }
 
     #[test]
-    fn a_wuxia_part_gets_the_terms_it_names() {
-        let path = temp("wuxia");
+    fn a_part_gets_the_terms_it_names_in_every_source_language() {
+        let path = temp("find");
         build(&path).unwrap();
         let conn = Connection::open(&path).unwrap();
         let terms = load_from(&conn, "wuxia", "vi").unwrap();
-        let found = terms.found("Chưởng môn võ đang tông cùng sư phụ đến. 武当派弟子 và 师兄.");
+        let found = terms.found("Chưởng môn võ đang tông tới. 武当派弟子 và 师兄. 사천당가의 무당파. He left Sichuan for the Wudang Sect.");
         assert_eq!(
             found,
             vec![
                 ("Võ Đang tông", "Võ Đang phái"),
                 ("武当派", "Võ Đang phái"),
                 ("师兄", "sư huynh"),
+                ("사천당가", "Tứ Xuyên Đường gia"),
+                ("무당파", "Võ Đang phái"),
+                ("Sichuan", "Tứ Xuyên"),
+                ("Wudang Sect", "Võ Đang phái"),
             ]
         );
         let prompt = terms.prompt("Người của Võ Đang tông tới.");
         assert!(prompt.contains("- Võ Đang tông → Võ Đang phái"), "{prompt}");
-        assert_eq!(terms.prompt("Không có gì."), "");
+        assert!(prompt.contains("→ phái:"), "wuxia gets the suffix rules: {prompt}");
+        assert!(prompt.contains("Tokyo"), "{prompt}");
         // English, and the book's own glossary wins.
         let en = load_from(&conn, "wuxia", "en").unwrap();
         assert_eq!(en.found("少林寺"), vec![("少林寺", "Shaolin Temple")]);
         let mine = en.without(&[("少林寺".into(), "Shaolin Monastery".into())]);
-        assert_eq!(mine.found("少林寺"), vec![("少林", "Shaolin")]);
-        // Another genre does not get wuxia's terms, but gets the common ones.
+        assert!(mine.found("少林寺").is_empty());
+        // Another genre gets the global names but not wuxia's own terms nor the suffixes.
+        let romance = load_from(&conn, "romance", "vi").unwrap();
+        assert!(romance.found("内功").is_empty());
+        assert_eq!(romance.found("四川"), vec![("四川", "Tứ Xuyên")]);
+        assert!(!romance.prompt("x").contains("→ phái:"));
         let xx = load_from(&conn, "xianxia", "vi").unwrap();
-        assert!(xx.found("Võ Đang tông").is_empty());
-        assert_eq!(
-            xx.found("筑基 师兄"),
-            vec![("筑基", "Trúc Cơ"), ("师兄", "sư huynh")]
-        );
+        assert_eq!(xx.found("筑基 师兄"), vec![("筑基", "Trúc Cơ"), ("师兄", "sư huynh")]);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
@@ -510,7 +721,7 @@ mod tests {
         let t = Terms {
             lang: "vi".into(),
             entries: vec![("Hoa Sơn tông".into(), "Hoa Sơn phái".into())],
-            matcher: OnceLock::new(),
+            ..Default::default()
         };
         assert!(t.found("Hoa Sơn tôngx").is_empty());
         assert!(t.found("xHoa Sơn tông").is_empty());
