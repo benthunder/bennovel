@@ -331,6 +331,226 @@ fn parse_pairs(reply: &str) -> Option<AiPairs> {
     serde_json::from_str(reply.get(a..=b)?).ok()
 }
 
+/// An original name the translation wrote as an entry's name (or close to it).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RawName {
+    /// As the original writes it.
+    pub raw: String,
+    /// As the translation wrote it.
+    pub translated: String,
+    /// Chapters where the translation wrote it so, by number, the first ones.
+    pub chapters: Vec<i64>,
+    /// The entry whose name or alias it is, when one has it.
+    pub entry_uid: Option<String>,
+    /// The translation wrote exactly the entry's name (else a near spelling of it).
+    pub exact: bool,
+}
+
+/// Smart merge for one entry: the original names translated as its name, and the
+/// entries that look like it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntryMerge {
+    pub raws: Vec<RawName>,
+    pub pairs: Vec<Suggestion>,
+}
+
+/// Chapters listed per original name at most.
+const CHAPTERS_SHOWN: usize = 5;
+
+/// Whether the translated name `b` is close to `a` (as `suggest` judges a near name).
+fn near(a: &str, b: &str) -> bool {
+    let (ka, kb) = (key(a), key(b));
+    if ka == kb {
+        return true;
+    }
+    let wa: Vec<String> = fold(&ka).split_whitespace().map(String::from).collect();
+    let wb: Vec<String> = fold(&kb).split_whitespace().map(String::from).collect();
+    wa.len() >= 2
+        && wa.len() == wb.len()
+        && wa.iter().any(|w| wb.contains(w))
+        && distance(&embed(a), &embed(b)) < NEAR
+}
+
+/// What smart merge finds for entry `uid`: the original names the translations (and
+/// the wiki) wrote as its name or close to it, and the pairs with this entry, from
+/// `suggest` and from those names when another entry of the same kind has them.
+pub fn for_entry(conn: &Connection, novel_id: i64, uid: &str) -> rusqlite::Result<EntryMerge> {
+    let all = wiki::entries(conn, novel_id)?;
+    let Some(me) = all.iter().find(|e| e.uid == uid) else {
+        return Ok(EntryMerge {
+            raws: vec![],
+            pairs: vec![],
+        });
+    };
+    let name = shown(me).to_string();
+    let owner = |raw: &str| {
+        all.iter()
+            .find(|e| e.name.trim() == raw || e.aliases.iter().any(|a| a.trim() == raw))
+            .map(|e| e.uid.clone())
+    };
+    let mut raws: Vec<RawName> = Vec::new();
+    let mut add = |raw: &str, tr: &str, chapter: Option<i64>| {
+        if !near(&name, tr) {
+            return;
+        }
+        let exact = key(&name) == key(tr);
+        match raws.iter_mut().find(|r| r.raw == raw && r.translated == tr) {
+            Some(r) => {
+                if let Some(c) = chapter {
+                    if !r.chapters.contains(&c) && r.chapters.len() < CHAPTERS_SHOWN {
+                        r.chapters.push(c);
+                    }
+                }
+            }
+            None => raws.push(RawName {
+                raw: raw.to_string(),
+                translated: tr.to_string(),
+                chapters: chapter.into_iter().collect(),
+                entry_uid: owner(raw),
+                exact,
+            }),
+        }
+    };
+    for (raw, tr, chapter) in wiki::found_names(conn, novel_id, WIKI_LANG)? {
+        add(&raw, &tr, Some(chapter));
+    }
+    for e in &all {
+        let tr = shown(e).to_string();
+        for raw in std::iter::once(&e.name).chain(e.aliases.iter()) {
+            add(raw.trim(), &tr, None);
+        }
+    }
+    raws.sort_by_key(|r| (!r.exact, r.entry_uid.as_deref() != Some(uid)));
+    let mut pairs: Vec<Suggestion> = suggest(conn, novel_id)?
+        .into_iter()
+        .filter(|s| s.from.uid == uid || s.into.uid == uid)
+        .collect();
+    for r in &raws {
+        let Some(other) = r
+            .entry_uid
+            .as_deref()
+            .and_then(|u| all.iter().find(|e| e.uid == u))
+        else {
+            continue;
+        };
+        if other.uid == uid
+            || other.kind != me.kind
+            || (other.source == "user" && me.source == "user")
+            || pairs
+                .iter()
+                .any(|s| s.from.uid == other.uid || s.into.uid == other.uid)
+        {
+            continue;
+        }
+        let (from, into) = if keep_first(me, other) {
+            (other, me)
+        } else {
+            (me, other)
+        };
+        pairs.push(Suggestion {
+            rules: rules_for(from, into, &all),
+            from: from.clone(),
+            into: into.clone(),
+            reason: if r.exact {
+                Reason::SameName
+            } else {
+                Reason::NearName
+            },
+            note: String::new(),
+        });
+    }
+    Ok(EntryMerge { raws, pairs })
+}
+
+/// Entries of the same kind sent to the AI with one entry at most: the closest names.
+const AI_FOR_ENTRY: usize = 80;
+
+/// The pairs the AI finds for entry `uid`: it is sent first, then the entries of its
+/// kind with the closest names, and only pairs with it are kept.
+pub fn suggest_ai_for(
+    conn: &Connection,
+    llm: &dyn Chat,
+    novel_id: i64,
+    uid: &str,
+) -> Result<Vec<Suggestion>, AiError> {
+    let all = wiki::entries(conn, novel_id)?;
+    let Some(me) = all.iter().find(|e| e.uid == uid) else {
+        return Ok(vec![]);
+    };
+    let v = embed(shown(me));
+    let mut others: Vec<(&Entry, f32)> = all
+        .iter()
+        .filter(|e| e.kind == me.kind && e.uid != me.uid)
+        .map(|e| (e, distance(&v, &embed(shown(e)))))
+        .collect();
+    others.sort_by(|a, b| a.1.total_cmp(&b.1));
+    let batch: Vec<&Entry> = std::iter::once(me)
+        .chain(others.into_iter().take(AI_FOR_ENTRY).map(|(e, _)| e))
+        .collect();
+    if batch.len() < 2 {
+        return Ok(vec![]);
+    }
+    let known: Vec<String> = for_entry(conn, novel_id, uid)?
+        .pairs
+        .into_iter()
+        .map(|s| {
+            if s.from.uid == uid {
+                s.into.uid
+            } else {
+                s.from.uid
+            }
+        })
+        .collect();
+    let list: Vec<String> = batch
+        .iter()
+        .enumerate()
+        .map(|(i, e)| ai_line(i + 1, e))
+        .collect();
+    let system = format!(
+        "{}\nChỉ xét các cặp có mục số 1, bỏ qua các cặp khác.",
+        ai_prompt(&me.kind)
+    );
+    let reply = llm.chat(&system, &list.join("\n"))?;
+    let mut out: Vec<Suggestion> = Vec::new();
+    for p in parse_pairs(&reply).map(|x| x.pairs).unwrap_or_default() {
+        let (Some(a), Some(b)) = (
+            p.from.checked_sub(1).and_then(|i| batch.get(i)),
+            p.into.checked_sub(1).and_then(|i| batch.get(i)),
+        ) else {
+            continue;
+        };
+        if a.uid == b.uid || (a.uid != uid && b.uid != uid) {
+            continue;
+        }
+        if a.source == "user" && b.source == "user" {
+            continue;
+        }
+        let other = if a.uid == uid { b } else { a };
+        if known.contains(&other.uid)
+            || out
+                .iter()
+                .any(|s| s.from.uid == other.uid || s.into.uid == other.uid)
+        {
+            continue;
+        }
+        let (from, into) = if a.source == "user" {
+            (*b, *a)
+        } else {
+            (*a, *b)
+        };
+        out.push(Suggestion {
+            rules: rules_for(from, into, &all),
+            from: from.clone(),
+            into: into.clone(),
+            reason: Reason::Ai,
+            note: p.why.trim().to_string(),
+        });
+    }
+    Ok(out)
+}
+
 fn distance(a: &[f32], b: &[f32]) -> f32 {
     let (mut dot, mut na, mut nb) = (0.0f32, 0.0f32, 0.0f32);
     for (x, y) in a.iter().zip(b) {
@@ -615,6 +835,45 @@ mod tests {
             sent[0].starts_with("1. Chưởng môn Hoa Sơn | gốc: Mount Hua Sect Leader"),
             "{}",
             sent[0]
+        );
+    }
+
+    #[test]
+    fn an_entry_lists_the_original_names_translated_as_its_name() {
+        let (conn, novel) = book("smart-merge-entry");
+        let a = add(&conn, novel, "character", "Seol-Hwi", "Tuyết Huy");
+        let b = add(&conn, novel, "character", "雪辉", "Tuyết Hui");
+        add(&conn, novel, "character", "Gu Dae-yeom", "Cừu Đại Diễm");
+        // Chapter 2 wrote "Seol-Hwi" for a name nobody has yet, and another name as Tuyết Huy.
+        conn.execute(
+            "insert into chapter_wiki_facts (chapter_id, lang, facts, created_at) values (11, 'vi', ?1, 0)",
+            [serde_json::to_string(&vec![
+                r#"{"entries":[{"name":"Seol Hwi","translated":"Tuyết Huy"},{"name":"Gu Dae-yeom","translated":"Cừu Đại Diễm"}]}"#,
+            ])
+            .unwrap()],
+        )
+        .unwrap();
+        let m = for_entry(&conn, novel, &a).unwrap();
+        let raws: Vec<(&str, &str, bool)> = m
+            .raws
+            .iter()
+            .map(|r| (r.raw.as_str(), r.translated.as_str(), r.exact))
+            .collect();
+        assert_eq!(
+            raws,
+            vec![
+                ("Seol-Hwi", "Tuyết Huy", true),
+                ("Seol Hwi", "Tuyết Huy", true),
+                ("雪辉", "Tuyết Hui", false)
+            ],
+        );
+        assert_eq!(m.raws[1].chapters, vec![2]);
+        assert_eq!(m.raws[1].entry_uid, None);
+        assert_eq!(m.raws[2].entry_uid.as_deref(), Some(b.as_str()));
+        assert_eq!(m.pairs.len(), 1);
+        assert_eq!(
+            (m.pairs[0].from.uid.as_str(), m.pairs[0].into.uid.as_str()),
+            (b.as_str(), a.as_str())
         );
     }
 }

@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ask } from '@tauri-apps/plugin-dialog';
 import { Modal } from '../components/Modal';
+import { SmartMergeSheet } from '../components/SmartMergeSheet';
 import { GroupedRelations, equivalentsOf, levelOf, relWords, useWikiT } from '../components/WikiPopup';
 import { ChevronLeftIcon, ChevronRightIcon, PencilIcon, SparklesIcon, XIcon } from '../components/Icons';
 import { Checkbox, SearchField, Spinner } from '../components/ui';
@@ -11,7 +12,7 @@ import { useLayout } from '../lib/useLayout';
 import { useThrottledValue } from '../lib/useThrottledValue';
 import {
   PROFILE_FIELDS, RAW, REL_TYPES, SKILL_FIELDS, WIKI_KINDS, WIKI_LANG, addWikiRelation, getWiki, getWikiMissing, mergeWikiEntry, removeWikiEntry, removeWikiRelation, saveWikiEntry,
-  searchWiki, setWikiAuto, suggestWikiMerges, suggestWikiMergesAi, applyWikiMerges, type MergeSuggestion, translateWiki, wikiChapter, wikiLabel, wikiSummary,
+  searchWiki, setWikiAuto,  translateWiki, wikiChapter, wikiLabel, wikiSummary,
   type ProfileField, type SkillField, type Wiki, type WikiEntry, type WikiKind, metaStage } from '../lib/wiki';
 import { useApp } from '../store/AppStore';
 
@@ -380,6 +381,7 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
   const [relWordsIn, setRelWordsIn] = useState('');
   const [relNote, setRelNote] = useState('');
   const [mergeInto, setMergeInto] = useState('');
+  const [smart, setSmart] = useState(false);
   const [rels, setRels] = useState(() => wiki.relations.filter(r => entry && (r.fromUid === entry.uid || r.toUid === entry.uid)));
 
   const byUid = useMemo(() => new Map(wiki.entries.map(e => [e.uid, e])), [wiki]);
@@ -470,7 +472,10 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
   const level = saved && saved.kind === 'character' ? levelOf(wiki, saved.uid) : null;
 
   return (
-    <Modal onClose={busy ? undefined : onClose}>
+    smart && saved ? (
+      <SmartMergeSheet novelId={novelId} lang={lang} entry={saved} onClose={() => setSmart(false)}
+        onMerged={() => { onChanged(); onClose(); }} />
+    ) : <Modal onClose={busy ? undefined : onClose}>
       <form className="dialog dialog--sheet" role="dialog" aria-modal="true" aria-label={t(saved ? 'wiki.editTitle' : 'wiki.newTitle')}
         onClick={e => e.stopPropagation()} onSubmit={submit}>
         <div className="dialog-title" style={{ fontSize: 22 }}>{saved ? wikiLabel(saved, lang) : t('wiki.newTitle')}</div>
@@ -605,7 +610,12 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
 
         {saved && others.length > 0 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <div style={{ fontSize: 12, fontWeight: 700 }}>{t('wiki.mergeTitle')}</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, flex: 1 }}>{t('wiki.mergeTitle')}</div>
+              <button type="button" className="btn btn-secondary" data-entry-smart-merge style={{ height: 34, padding: '0 12px', gap: 6, fontSize: 13 }} disabled={busy} onClick={() => setSmart(true)}>
+                <SparklesIcon size={13} />{t('wiki.smartMerge')}
+              </button>
+            </div>
             <div className="muted" style={{ fontSize: 12 }}>{t('wiki.mergeSub')}</div>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
               <select className="input" style={{ height: 38, flex: '1 1 180px' }} aria-label={t('wiki.mergeInto')} value={mergeInto} onChange={e => setMergeInto(e.target.value)}>
@@ -627,118 +637,6 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
           </button>
         </div>
       </form>
-    </Modal>
-  );
-}
-
-/**
- * Smart merge: lists the entries that look like one written two ways, for the user to
- * review first. Same names are ticked, near ones are not; each pair shows the line it
- * adds to the replace rules, so chapters translated before show the kept name.
- */
-function SmartMergeSheet({ novelId, lang, onClose, onMerged }: { novelId: number; lang: string; onClose: () => void; onMerged: () => void }) {
-  const { t } = useI18n();
-  const app = useApp();
-  const user = app.libKey;
-  const q = useAsync(() => suggestWikiMerges(user, novelId), [user, novelId]);
-  const [fromAi, setFromAi] = useState<MergeSuggestion[]>([]);
-  const [asking, setAsking] = useState(false);
-  const list = q.status === 'ready' ? [...q.data, ...fromAi] : null;
-  const id = (s: MergeSuggestion) => `${s.from.uid}>${s.into.uid}`;
-  // The AI also reads the descriptions: a title and the name of the one who holds it.
-  const askAi = async () => {
-    if (asking) return;
-    setAsking(true);
-    try {
-      const more = await suggestWikiMergesAi(user, novelId);
-      const fresh = more.filter(s => !list?.some(x => id(x) === id(s)));
-      setFromAi(f => [...f, ...fresh]);
-      setPicked(p => new Set([...(p ?? []), ...fresh.map(id)]));
-      app.showToast(t('wiki.smartMergeAiFound', { n: fresh.length }));
-    } catch (e) {
-      console.error(e);
-      const f = e instanceof AiFailure ? e : null;
-      app.showToast(f ? `${t(f.key)} ${f.key === 'ai.err.generic' || f.key === 'ai.err.http' ? aiErrorDetail(f.message) : ''}` : String(e));
-    } finally {
-      setAsking(false);
-    }
-  };
-  const [picked, setPicked] = useState<Set<string> | null>(null);
-  useEffect(() => {
-    if (list && !picked) setPicked(new Set(list.filter(s => s.reason !== 'near_name').map(id)));
-  }, [list, picked]);
-  const [busy, setBusy] = useState(false);
-  const chosen = list?.filter(s => picked?.has(id(s))) ?? [];
-  const toggle = (s: MergeSuggestion) => setPicked(p => {
-    const n = new Set(p ?? []);
-    if (n.has(id(s))) n.delete(id(s)); else n.add(id(s));
-    return n;
-  });
-  const apply = async () => {
-    if (!chosen.length || busy) return;
-    setBusy(true);
-    try {
-      const done = await applyWikiMerges(user, novelId, chosen.map(s => ({ fromUid: s.from.uid, intoUid: s.into.uid })));
-      app.showToast(t('wiki.smartMerged', { n: done.merged, rules: done.rules }));
-      onMerged();
-      onClose();
-    } catch (e) {
-      console.error(e);
-      app.showToast(e instanceof AiFailure ? t(e.key) : String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-  const label = (e: WikiEntry) => {
-    const l = wikiLabel(e, lang);
-    return l !== e.name ? `${l} (${e.name})` : l;
-  };
-  return (
-    <Modal onClose={busy ? undefined : onClose}>
-      <div className="dialog dialog--sheet" role="dialog" aria-modal="true" aria-label={t('wiki.smartMerge')} data-wiki-smart-merge-sheet onClick={e => e.stopPropagation()}>
-        <div className="dialog-title" style={{ fontSize: 22 }}>{t('wiki.smartMerge')}</div>
-        <div className="muted" style={{ fontSize: 12, marginTop: -8 }}>{t('wiki.smartMergeSub')}</div>
-        {q.status === 'failed' && <p role="alert">{String(q.error)}</p>}
-        {!list && q.status === 'loading' && <Spinner size={18} />}
-        {list && (
-          <button type="button" className="btn btn-secondary" data-smart-merge-ai style={{ height: 38, padding: '0 14px', gap: 6, alignSelf: 'flex-start' }} disabled={asking || busy} onClick={askAi}>
-            {asking ? <Spinner size={13} /> : <SparklesIcon size={14} />}
-            {asking ? t('wiki.smartMergeAiAsking') : t('wiki.smartMergeAi')}
-          </button>
-        )}
-        {list && list.length === 0 && <p className="muted" style={{ fontSize: 14 }}>{t('wiki.smartMergeNone')}</p>}
-        {list && list.length > 0 && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: '55vh', overflowY: 'auto' }}>
-            {list.map(s => (
-              <div key={id(s)} data-merge-pair style={{ padding: '10px 12px', borderRadius: 16, background: 'var(--frost)' }}>
-                <Checkbox checked={!!picked?.has(id(s))} onChange={() => toggle(s)} size={20}>
-                  <span style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 }}>
-                    <span style={{ fontSize: 14, overflowWrap: 'anywhere' }}>
-                      {label(s.from)} <span className="muted">→</span> <b>{label(s.into)}</b>
-                    </span>
-                    <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                      <span className="tag tag-neutral" style={{ fontSize: 11 }}>{t(`wiki.kind.${s.into.kind}`)}</span>
-                      <span className={`tag ${s.reason === 'near_name' ? 'tag-neutral' : 'tag-accent-2'}`} style={{ fontSize: 11 }}>{t(`wiki.reason.${s.reason}`)}</span>
-                    </span>
-                    {s.note && <span style={{ fontSize: 12, overflowWrap: 'anywhere' }}>{s.note}</span>}
-                    {s.rules.length > 0 && (
-                      <span className="muted" style={{ fontSize: 12, overflowWrap: 'anywhere' }}>
-                        {t('wiki.smartMergeRules')}: {s.rules.map(r => `${r.find} → ${r.replace}`).join(', ')}
-                      </span>
-                    )}
-                  </span>
-                </Checkbox>
-              </div>
-            ))}
-          </div>
-        )}
-        <div className="dialog-actions">
-          <button type="button" className="btn btn-secondary" style={{ height: 44, padding: '0 18px' }} disabled={busy} onClick={onClose}>{t('common.cancel')}</button>
-          <button type="button" className="btn btn-primary" style={{ height: 44, padding: '0 22px' }} disabled={busy || asking || !chosen.length} onClick={apply}>
-            {busy ? <Spinner size={14} /> : t('wiki.smartMergeApply', { n: chosen.length })}
-          </button>
-        </div>
-      </div>
     </Modal>
   );
 }

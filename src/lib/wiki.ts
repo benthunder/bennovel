@@ -186,6 +186,35 @@ export async function suggestWikiMergesAi(user: string, novelId: number) {
   }
 }
 
+/** An original name the translation wrote as an entry's name (or close to it). */
+export interface RawName {
+  raw: string;
+  translated: string;
+  /** Chapters where it was written so, the first ones. */
+  chapters: number[];
+  /** The entry whose name or alias it is, if any. */
+  entryUid: string | null;
+  exact: boolean;
+}
+
+/** Smart merge for one entry: the original names translated as its name, and the entries that look like it. */
+export async function entryWikiMerges(user: string, novelId: number, uid: string) {
+  try {
+    return await invoke<{ raws: RawName[]; pairs: MergeSuggestion[] }>('wiki_merge_entry', { user, novelId, uid });
+  } catch (e) {
+    throw new AiFailure(e);
+  }
+}
+
+/** More pairs for one entry, found by the user's LLM. */
+export async function entryWikiMergesAi(user: string, novelId: number, uid: string) {
+  try {
+    return await invoke<MergeSuggestion[]>('wiki_merge_entry_ai', { user, novelId, uid });
+  } catch (e) {
+    throw new AiFailure(e);
+  }
+}
+
 /** Merges the pairs the user kept; each merge also adds its line to the book's replace rules. */
 export async function applyWikiMerges(user: string, novelId: number, picks: { fromUid: string; intoUid: string }[]) {
   try {

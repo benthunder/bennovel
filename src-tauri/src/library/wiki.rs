@@ -2765,6 +2765,37 @@ pub fn keep_found(
     Ok(())
 }
 
+/// Every name the translation requests found in the book's chapters in `lang`, as
+/// (original, translated, chapter number), from the facts kept per chapter.
+pub fn found_names(
+    conn: &Connection,
+    novel_id: i64,
+    lang: &str,
+) -> rusqlite::Result<Vec<(String, String, i64)>> {
+    let mut stmt = conn.prepare(
+        "select c.number, f.facts from chapter_wiki_facts f
+         join chapters c on c.id = f.chapter_id
+         where c.novel_id = ?1 and f.lang = ?2
+         order by c.number",
+    )?;
+    let rows: Vec<(i64, String)> = stmt
+        .query_map(params![novel_id, lang], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut out = Vec::new();
+    for (number, facts) in rows {
+        let found: Vec<String> = serde_json::from_str(&facts).unwrap_or_default();
+        for answer in found.iter().filter_map(|f| parse_object::<AiAnswer>(f)) {
+            for item in answer.entries {
+                let (raw, tr) = (item.name.trim(), item.translated.trim());
+                if !raw.is_empty() && !tr.is_empty() {
+                    out.push((raw.to_string(), tr.to_string(), number));
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Fills the wiki from the facts kept for the book's chapters not read into it yet,
 /// in reading order, with no request; returns the changes made.
 pub fn learn_kept(conn: &Connection, novel_id: i64) -> rusqlite::Result<usize> {
