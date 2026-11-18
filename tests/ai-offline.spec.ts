@@ -35,7 +35,7 @@ async function nativeApp(page: Page, { llm = true, queue = false } = {}) {
     w.__release = () => release();
     // The background queue on chapter 2 of a request into Vietnamese; `__live(…)` moves it.
     let queueState = { queued: 0, running: 1, paused: 0, error: null as string | null };
-    let live: unknown = queue ? { novelId: 1, lang: 'vi', style: 'natural', index: 1, stage: 'recall', partsDone: 0, partsTotal: 0 } : null;
+    let live: unknown = queue ? { novelId: 1, lang: 'vi', style: 'literary', index: 1, stage: 'recall', partsDone: 0, partsTotal: 0 } : null;
     w.__live = (l: unknown) => { live = l; emit('ai-live', { user: '', live: l }); };
     w.isTauri = true;
     w.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => undefined };
@@ -74,14 +74,14 @@ async function nativeApp(page: Page, { llm = true, queue = false } = {}) {
           }
           case 'ai_chapter': {
             const i = Number(args.index);
-            return done.has(i) && args.lang === 'vi' && args.style === 'natural'
+            return done.has(i) && args.lang === 'vi' && args.style === 'literary'
               ? { title: 'Phần một', paragraphs: [`Lời của phần ${i + 1} (${done.get(i)}).`], mode: 'translate', model: 'gpt-4o-mini' } : null;
           }
           case 'ai_marks':
-            return [...done.keys()].map(index => ({ index, lang: 'vi', style: 'natural', model: 'gpt-4o-mini' }));
+            return [...done.keys()].map(index => ({ index, lang: 'vi', style: 'literary', model: 'gpt-4o-mini' }));
           case 'ai_translate_book': return { queued: 2, mode: 'translate' };
           case 'ai_progress':
-            return queue ? [{ novelId: 1, lang: 'vi', style: 'natural', total: 2, done: 1, failed: 0, ...queueState }] : [];
+            return queue ? [{ novelId: 1, lang: 'vi', style: 'literary', total: 2, done: 1, failed: 0, ...queueState }] : [];
           case 'ai_pause':
             queueState = { queued: 0, running: 0, paused: 1, error: null };
             live = null;
@@ -159,9 +159,9 @@ test('each chapter is marked, translated again and switched to its original', as
   await first.getByRole('button', { name: 'Translate into Tiếng Việt with AI' }).click();
   await expect(page.getByTestId('reader-status')).not.toContainText('Translating');
   await expect(first.getByText('Lời của phần 1 (1).')).toBeVisible();
-  await expect(first.getByText('AI · Tiếng Việt · Natural')).toBeVisible();
+  await expect(first.getByText('AI · Tiếng Việt · Literary')).toBeVisible();
   const tr = (await calls(page)).find(c => c.cmd === 'ai_translate_chapter');
-  expect(tr?.args).toMatchObject({ novelId: 1, index: 0, lang: 'vi', style: 'natural', glossary: true, again: true });
+  expect(tr?.args).toMatchObject({ novelId: 1, index: 0, lang: 'vi', style: 'literary', glossary: true, again: true });
   // The second chapter has no AI version: it says so on its own.
   await expect(page.locator('[data-part="1"]').getByText('No Tiếng Việt version yet')).toBeVisible();
   // Translating the same chapter again makes a new version.
@@ -234,7 +234,7 @@ test('the whole book goes to the background queue from its page', async ({ page 
   const prefs = (await calls(page)).find(c => c.cmd === 'ai_prefs_set');
   expect(prefs?.args).toMatchObject({ novelId: 1, prefs: { genre: 'xianxia', instructions: 'Gọi nhân vật chính là Lâm thiếu.' } });
   const req = (await calls(page)).find(c => c.cmd === 'ai_translate_book');
-  expect(req?.args).toMatchObject({ novelId: 1, fromIndex: 0, lang: 'vi', style: 'natural', uiLang: 'en' });
+  expect(req?.args).toMatchObject({ novelId: 1, fromIndex: 0, lang: 'vi', style: 'literary', uiLang: 'en' });
 });
 
 test('the book page shows the chapter the queue is on', async ({ page }, info) => {
@@ -244,7 +244,7 @@ test('the book page shows the chapter the queue is on', async ({ page }, info) =
   const status = page.getByText(/^Translating Part 2 of 2 · Part two/).filter({ visible: true }).first();
   await expect(status).toBeVisible();
   await page.evaluate(() => (window as unknown as { __live: (l: unknown) => void }).__live(
-    { novelId: 1, lang: 'vi', style: 'natural', index: 1, stage: 'translate', partsDone: 2, partsTotal: 5 }));
+    { novelId: 1, lang: 'vi', style: 'literary', index: 1, stage: 'translate', partsDone: 2, partsTotal: 5 }));
   await expect(status).toContainText('2/5 parts');
   await page.screenshot({ path: `test-results/pipeline-${info.project.name}.png` });
   await page.evaluate(() => (window as unknown as { __live: (l: unknown) => void }).__live(null));
