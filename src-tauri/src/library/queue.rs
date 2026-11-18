@@ -351,6 +351,10 @@ pub struct Manual {
     pub title: String,
     pub glossary: bool,
     pub error: Option<String>,
+    /// Stopped by the user: it stays on the panel with the parts it has, to carry on
+    /// or remove.
+    #[serde(default)]
+    pub stopped: bool,
 }
 
 struct ManualRun {
@@ -364,6 +368,15 @@ struct ManualRun {
 #[serde(rename_all = "camelCase")]
 struct StatusEvent {
     user: String,
+}
+
+/// A chapter being translated now (see `Queue::running`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Running {
+    pub db: PathBuf,
+    pub live: Live,
+    /// The book's title for a chapter from the reader; None for the queue's chapter.
+    pub manual_title: Option<String>,
 }
 
 /// Where the worker's state goes: kept in the queue and sent to the app.
@@ -490,40 +503,68 @@ impl Queue {
 
     /// A chapter from the reader ended: gone when it was done or stopped, kept with its
     /// error otherwise.
-    pub fn manual_end(&self, db: &PathBuf, novel_id: i64, index: i64, error: Option<String>) {
+    /// A chapter from the reader is over: done (off the list), failed or stopped (it
+    /// stays, to carry on or remove). `run` is its stop flag: a run that was started
+    /// again since is left alone.
+    pub fn manual_end(
+        &self,
+        db: &PathBuf,
+        novel_id: i64,
+        index: i64,
+        run: &Arc<AtomicBool>,
+        error: Option<String>,
+        stopped: bool,
+    ) {
         let mut map = self.manual.lock().unwrap();
         let Some(list) = map.get_mut(db) else { return };
-        match error {
-            Some(e) => {
-                if let Some(m) = list
-                    .iter_mut()
-                    .find(|m| same(&m.info.live, novel_id, index))
-                {
-                    m.info.error = Some(e);
-                }
-            }
-            None => list.retain(|m| !same(&m.info.live, novel_id, index)),
+        let Some(at) = list
+            .iter()
+            .position(|m| same(&m.info.live, novel_id, index) && Arc::ptr_eq(&m.stop, run))
+        else {
+            return;
+        };
+        if stopped {
+            list[at].info.stopped = true;
+        } else if let Some(e) = error {
+            list[at].info.error = Some(e);
+        } else {
+            list.remove(at);
         }
     }
 
-    /// Stops a chapter from the reader (it keeps the parts it has), or takes one that
-    /// ended with an error off the list. Returns whether there was one.
+    /// Stops a chapter from the reader at once: it shows as stopped right away, keeps
+    /// the parts it has and stays on the list. Returns whether there was one.
     pub fn manual_stop(&self, db: &PathBuf, novel_id: i64, index: i64) -> bool {
+        let mut map = self.manual.lock().unwrap();
+        let Some(m) = map
+            .get_mut(db)
+            .and_then(|l| l.iter_mut().find(|m| same(&m.info.live, novel_id, index)))
+        else {
+            return false;
+        };
+        m.stop.store(true, Ordering::SeqCst);
+        if m.info.error.is_none() {
+            m.info.stopped = true;
+        }
+        true
+    }
+
+    /// Stops a chapter from the reader if it runs and takes it off the list. Returns
+    /// whether there was one.
+    pub fn manual_remove(&self, db: &PathBuf, novel_id: i64, index: i64) -> bool {
         let mut map = self.manual.lock().unwrap();
         let Some(list) = map.get_mut(db) else {
             return false;
         };
-        let Some(at) = list
-            .iter()
-            .position(|m| same(&m.info.live, novel_id, index))
-        else {
-            return false;
-        };
-        list[at].stop.store(true, Ordering::SeqCst);
-        if list[at].info.error.is_some() {
-            list.remove(at);
-        }
-        true
+        let before = list.len();
+        list.retain(|m| {
+            let it = same(&m.info.live, novel_id, index);
+            if it {
+                m.stop.store(true, Ordering::SeqCst);
+            }
+            !it
+        });
+        list.len() != before
     }
 
     /// The chapters from the reader of this library file: running, or ended with an error.
@@ -538,6 +579,7 @@ impl Queue {
 
     /// Tells the app that a chapter from the reader moved.
     pub fn manual_changed<R: Runtime>(app: &AppHandle<R>, user: &str) {
+        super::background::changed();
         let _ = app.emit("ai-status", StatusEvent { user: user.into() });
     }
 
@@ -575,7 +617,37 @@ impl Queue {
         let _ = self.wiki_tx.send(Wake { db, user });
     }
 
-    fn ui_lang(&self, db: &PathBuf) -> String {
+    /// Everything being translated now, for the background notification: the queue's
+    /// chapter of each library file first, then the chapters from the reader that are
+    /// still running (with their book's title).
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    pub fn running(&self) -> Vec<Running> {
+        let mut out: Vec<Running> = self
+            .live
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(db, live)| Running {
+                db: db.clone(),
+                live: live.clone(),
+                manual_title: None,
+            })
+            .collect();
+        for (db, list) in self.manual.lock().unwrap().iter() {
+            out.extend(
+                list.iter()
+                    .filter(|m| m.info.error.is_none() && !m.stop.load(Ordering::SeqCst))
+                    .map(|m| Running {
+                        db: db.clone(),
+                        live: m.info.live.clone(),
+                        manual_title: Some(m.info.title.clone()),
+                    }),
+            );
+        }
+        out
+    }
+
+    pub(crate) fn ui_lang(&self, db: &PathBuf) -> String {
         self.ui_lang
             .lock()
             .unwrap()
@@ -597,6 +669,7 @@ async fn work<R: Runtime>(app: &AppHandle<R>, wake: &Wake) {
                     None => map.remove(&db),
                 };
             }
+            super::background::changed();
             let _ = app.emit(
                 "ai-live",
                 LiveEvent {
@@ -896,6 +969,7 @@ mod tests {
             title: "Book".into(),
             glossary: true,
             error: None,
+            stopped: false,
         };
         let stop = q.manual_begin(&db, info(3));
         q.manual_update(&db, 1, 3, |l| {
@@ -910,16 +984,30 @@ mod tests {
             ),
             (1, translate::Stage::Translate, 1)
         );
-        // Stopping sets the flag the run checks.
+        // Stopping sets the flag the run checks and shows at once; the chapter stays,
+        // to carry on or remove.
         assert!(q.manual_stop(&db, 1, 3));
         assert!(stop.load(Ordering::SeqCst));
-        q.manual_end(&db, 1, 3, None);
+        assert!(q.manual(&db)[0].stopped);
+        q.manual_end(&db, 1, 3, &stop, None, true);
+        assert!(q.manual(&db)[0].stopped);
+        // Carried on: a new run takes its place, and the old one ending leaves it alone.
+        let again = q.manual_begin(&db, info(3));
+        assert!(!q.manual(&db)[0].stopped);
+        q.manual_end(&db, 1, 3, &stop, None, true);
+        assert!(!q.manual(&db)[0].stopped);
+        q.manual_end(&db, 1, 3, &again, None, false);
         assert!(q.manual(&db).is_empty());
-        // A failed one stays with its error until it is cleared.
-        q.manual_begin(&db, info(4));
-        q.manual_end(&db, 1, 4, Some("llm-auth".into()));
+        // A failed one stays with its error until it is removed.
+        let failed = q.manual_begin(&db, info(4));
+        q.manual_end(&db, 1, 4, &failed, Some("llm-auth".into()), false);
         assert_eq!(q.manual(&db)[0].error.as_deref(), Some("llm-auth"));
-        assert!(q.manual_stop(&db, 1, 4));
+        assert!(q.manual_remove(&db, 1, 4));
+        assert!(q.manual(&db).is_empty());
+        // Removing a running one stops it too.
+        let running = q.manual_begin(&db, info(5));
+        assert!(q.manual_remove(&db, 1, 5));
+        assert!(running.load(Ordering::SeqCst));
         assert!(q.manual(&db).is_empty());
     }
 

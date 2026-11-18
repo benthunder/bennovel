@@ -242,7 +242,7 @@ checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
 name = "bennovel"
-version = "0.34.0"
+version = "0.34.1"
 dependencies = [
  "aho-corasick",
  "chardetng",
@@ -262,6 +262,7 @@ dependencies = [
  "sqlite-vec",
  "tauri",
  "tauri-build",
+ "tauri-plugin-background-work",
  "tauri-plugin-deep-link",
  "tauri-plugin-dialog",
  "tauri-plugin-folder-picker",
@@ -4182,6 +4183,16 @@ dependencies = [
  "serde_json",
  "tauri-utils",
  "walkdir",
+]
+
+[[package]]
+name = "tauri-plugin-background-work"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
 ]
 
 [[package]]

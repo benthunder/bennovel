@@ -556,6 +556,8 @@ pub async fn replace_rules_set<R: Runtime>(
 use super::llm::{self, AiError};
 use super::queue::{self, Queue};
 use super::translate;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 impl From<BookError> for AiError {
     fn from(e: BookError) -> Self {
@@ -647,7 +649,9 @@ pub async fn ai_translate_chapter<R: Runtime>(
     let at = index as i64;
     let db_file = path.clone();
     let (app2, user2) = (app.clone(), user.clone());
-    let result = ai_blocking(move || {
+    // The run's stop flag, once it is on the panel.
+    let (flag_tx, flag_rx) = std::sync::mpsc::channel::<Arc<AtomicBool>>();
+    let work = tauri::async_runtime::spawn_blocking(move || {
         let conn = db::open(&db_file)?;
         let chapter_id = chapter_id(&conn, novel_id, index)?;
         if !again {
@@ -657,7 +661,7 @@ pub async fn ai_translate_chapter<R: Runtime>(
         }
         let model = std::sync::Arc::new(llm_for(&conn)?);
         let queue = app.state::<Queue>();
-        // Listed in the pipeline panel while it runs, and after it if it fails.
+        // Listed in the pipeline panel while it runs, and after it if it fails or is stopped.
         let stop = queue.manual_begin(
             &db_file,
             queue::Manual {
@@ -673,8 +677,10 @@ pub async fn ai_translate_chapter<R: Runtime>(
                 title: queue::book_title(&conn, novel_id)?.unwrap_or_default(),
                 glossary,
                 error: None,
+                stopped: false,
             },
         );
+        let _ = flag_tx.send(stop.clone());
         Queue::manual_changed(&app, &user);
         let progress: translate::OnProgress = {
             let (app, user, db) = (app.clone(), user.clone(), db_file.clone());
@@ -721,13 +727,32 @@ pub async fn ai_translate_chapter<R: Runtime>(
                 ..Default::default()
             },
         )
-    })
-    .await;
-    let error = match &result {
-        Ok(_) | Err(AiError::Stopped) => None,
-        Err(e) => Some(e.to_string()),
+    });
+    // Stopped: the answer comes at once. The parts already asked for finish on their
+    // own and are kept for the next try; nothing more is asked and nothing is saved.
+    let mut work = work;
+    let mut flag: Option<Arc<AtomicBool>> = None;
+    let result = loop {
+        if flag.is_none() {
+            flag = flag_rx.try_recv().ok();
+        }
+        if flag.as_ref().is_some_and(|f| f.load(Ordering::SeqCst)) {
+            break Err(AiError::Stopped);
+        }
+        tokio::select! {
+            r = &mut work => break r.map_err(|e| AiError::Other(e.to_string())).and_then(|r| r),
+            _ = tokio::time::sleep(std::time::Duration::from_millis(150)) => {}
+        }
     };
-    app2.state::<Queue>().manual_end(&path, novel_id, at, error);
+    if let Some(flag) = &flag {
+        let (error, stopped) = match &result {
+            Ok(_) => (None, false),
+            Err(AiError::Stopped) => (None, true),
+            Err(e) => (Some(e.to_string()), false),
+        };
+        app2.state::<Queue>()
+            .manual_end(&path, novel_id, at, flag, error, stopped);
+    }
     Queue::manual_changed(&app2, &user2);
     result
 }
@@ -758,7 +783,8 @@ pub async fn ai_status<R: Runtime>(
     })
 }
 
-/// Stops a chapter translated from the reader, or takes one that failed off the panel.
+/// Stops a chapter translated from the reader at once; it stays on the panel, to
+/// carry on from the parts it has or to remove.
 #[tauri::command]
 pub fn ai_chapter_stop<R: Runtime>(
     app: AppHandle<R>,
@@ -769,6 +795,22 @@ pub fn ai_chapter_stop<R: Runtime>(
 ) -> Result<bool, AiError> {
     let path = db_path(&app, &user)?;
     let found = queue.manual_stop(&path, novel_id, index);
+    Queue::manual_changed(&app, &user);
+    Ok(found)
+}
+
+/// Takes a chapter translated from the reader off the panel, stopping it if it runs.
+/// The parts it has are kept for the next try.
+#[tauri::command]
+pub fn ai_chapter_remove<R: Runtime>(
+    app: AppHandle<R>,
+    queue: State<'_, Queue>,
+    user: String,
+    novel_id: i64,
+    index: i64,
+) -> Result<bool, AiError> {
+    let path = db_path(&app, &user)?;
+    let found = queue.manual_remove(&path, novel_id, index);
     Queue::manual_changed(&app, &user);
     Ok(found)
 }
@@ -816,6 +858,9 @@ pub async fn ai_chapter<R: Runtime>(
 pub struct AiDraft {
     title: String,
     paragraphs: Vec<String>,
+    /// Where each paragraph goes in the chapter: the position of the raw block it
+    /// translates, so the reader can put each one in place as it comes.
+    positions: Vec<i64>,
 }
 
 #[tauri::command]
@@ -831,8 +876,16 @@ pub async fn ai_chapter_draft<R: Runtime>(
     ai_blocking(move || {
         let conn = db::open(&path)?;
         let chapter_id = chapter_id(&conn, novel_id, index)?;
-        Ok(translate::draft(&conn, chapter_id, &lang, &style)?
-            .map(|(title, paragraphs)| AiDraft { title, paragraphs }))
+        Ok(
+            translate::draft(&conn, chapter_id, &lang, &style)?.map(|(title, blocks)| {
+                let (positions, paragraphs) = blocks.into_iter().unzip();
+                AiDraft {
+                    title,
+                    paragraphs,
+                    positions,
+                }
+            }),
+        )
     })
     .await
 }
