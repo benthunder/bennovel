@@ -4,6 +4,7 @@
 //! through the same windowed reader as a book file (`DbBook`).
 
 pub mod blocks;
+pub mod background;
 pub mod cast;
 pub mod commands;
 pub mod db;
