@@ -120,6 +120,10 @@ test('the book wiki lists, searches and edits entries', async ({ page }, info) =
   // A character shows the level it reached last.
   await expect(page.locator('[data-entry="林动"]').getByText('Địa Nguyên cảnh')).toBeVisible();
   await page.screenshot({ path: `test-results/wiki-${info.project.name}-list.png` });
+  await page.getByRole('tab', { name: 'Cảnh giới' }).click();
+  await expect(page.locator('[data-wiki-equals]').first()).toBeVisible();
+  await page.screenshot({ path: `test-results/wiki-${info.project.name}-ladder.png`, fullPage: true });
+  await page.getByRole('tab', { name: 'Tất cả' }).click();
 
   // Search goes to the native side (names, aliases and notes).
   await page.getByPlaceholder('Tìm tên, tên khác, mô tả…').fill('tông môn');
@@ -190,7 +194,6 @@ test('the wiki stays Vietnamese whatever the reading language, with levels in or
   await expect(page.locator('[data-ladder="Võ đạo"] [data-wiki-equals]')).toContainText('≈ 地元境 (vi)');
   // Only the levels: who reached them is on the characters' pages.
   await expect(page.locator('[data-wiki-ladder-tree]')).not.toContainText('林动 (vi)');
-  await page.screenshot({ path: `test-results/wiki-${info.project.name}-ladder.png`, fullPage: true });
 
   // Places nest by "located in".
   await page.getByRole('tab', { name: 'Bản đồ' }).click();
@@ -314,6 +317,7 @@ test('a skill tells its grade and difficulty, a faction its leaders in turn', as
   await expect(leaders.nth(1)).toContainText('hiện tại');
   await expect(leaders.nth(1)).toContainText('từ chương 900');
   await expect(sect.locator('[data-relation="leader_of"]')).toHaveCount(0);
+  await page.waitForTimeout(600);
   await page.screenshot({ path: `test-results/wiki-${info.project.name}-faction.png` });
 
   // From the leader to his skill: what it is and how high it ranks, not who knows it.
@@ -325,5 +329,6 @@ test('a skill tells its grade and difficulty, a faction its leaders in turn', as
   await expect(fist.locator('[data-skill="grade"]')).toContainText('Hoàng giai');
   await expect(fist.locator('[data-skill="difficulty"]')).toContainText('Dễ nhập môn');
   await expect(fist.locator('[data-relation]')).toHaveCount(0);
+  await page.waitForTimeout(600);
   await page.screenshot({ path: `test-results/wiki-${info.project.name}-skill.png` });
 });
