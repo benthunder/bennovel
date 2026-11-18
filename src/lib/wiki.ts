@@ -156,7 +156,7 @@ export const wikiMissingIn = (e: WikiEntry, lang: string) =>
   lang !== RAW && (!e.names[lang] || (Object.keys(e.summaries).length > 0 && !e.summaries[lang]));
 
 /** Why smart merge thinks two entries are one. */
-export type MergeReason = 'same_name' | 'same_raw' | 'near_name' | 'ai';
+export type MergeReason = 'same_name' | 'same_raw' | 'near_name';
 
 /** A pair smart merge found, for the user to review: `from` goes into `into`, with the replace rules that adds. */
 export interface MergeSuggestion {
@@ -164,7 +164,15 @@ export interface MergeSuggestion {
   into: WikiEntry;
   reason: MergeReason;
   rules: { find: string; replace: string }[];
-  /** Why the AI thought so (reason `ai`). */
+  note: string;
+}
+
+/** A group the AI found: `members` go into `into`, which takes the final `name` (no members: only a better name). */
+export interface MergeGroup {
+  members: WikiEntry[];
+  into: WikiEntry;
+  name: string;
+  rules: { find: string; replace: string }[];
   note: string;
 }
 
@@ -177,10 +185,10 @@ export async function suggestWikiMerges(user: string, novelId: number) {
   }
 }
 
-/** More pairs found by the user's LLM from names, aliases and descriptions (a title and its holder). */
+/** The AI's groups for the whole wiki, block by block (about 10k letters each, never cutting an entry), with their final names. */
 export async function suggestWikiMergesAi(user: string, novelId: number) {
   try {
-    return await invoke<MergeSuggestion[]>('wiki_merge_suggest_ai', { user, novelId });
+    return await invoke<MergeGroup[]>('wiki_merge_suggest_ai', { user, novelId });
   } catch (e) {
     throw new AiFailure(e);
   }
@@ -206,19 +214,20 @@ export async function entryWikiMerges(user: string, novelId: number, uid: string
   }
 }
 
-/** More pairs for one entry, found by the user's LLM. */
+/** The AI's group for one entry, with the final name, from everything known about it and its candidates. */
 export async function entryWikiMergesAi(user: string, novelId: number, uid: string) {
   try {
-    return await invoke<MergeSuggestion[]>('wiki_merge_entry_ai', { user, novelId, uid });
+    return await invoke<MergeGroup[]>('wiki_merge_entry_ai', { user, novelId, uid });
   } catch (e) {
     throw new AiFailure(e);
   }
 }
 
 /** Merges the pairs the user kept; each merge also adds its line to the book's replace rules. */
-export async function applyWikiMerges(user: string, novelId: number, picks: { fromUid: string; intoUid: string }[]) {
+export async function applyWikiMerges(user: string, novelId: number, picks: { fromUid: string; intoUid: string }[],
+  groups: { intoUid: string; fromUids: string[]; name: string }[] = []) {
   try {
-    return await invoke<{ merged: number; rules: number }>('wiki_merge_apply', { user, novelId, picks });
+    return await invoke<{ merged: number; rules: number; renamed: number }>('wiki_merge_apply', { user, novelId, picks, groups });
   } catch (e) {
     throw new AiFailure(e);
   }

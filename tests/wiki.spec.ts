@@ -108,7 +108,7 @@ async function nativeApp(page: Page) {
           }
           case 'wiki_merge_suggest_ai': {
             const by = (u: string) => wiki.entries.find(e => e.uid === u)!;
-            return [{ from: by('l'), into: by('h'), reason: 'ai', rules: [], note: 'Mô tả cho thấy là một người.' }];
+            return [{ members: [by('l')], into: by('h'), name: 'Lâm Khiếu', rules: [{ find: 'Ứng Huyền Tử', replace: 'Lâm Khiếu' }], note: 'Mô tả cho thấy là một người.' }];
           }
           case 'wiki_merge_entry': {
             const by = (u: string) => wiki.entries.find(e => e.uid === u)!;
@@ -121,8 +121,11 @@ async function nativeApp(page: Page) {
               pairs: [{ from: by('i'), into: by('a'), reason: 'near_name', rules: [], note: '' }]
             };
           }
-          case 'wiki_merge_entry_ai': return [];
-          case 'wiki_merge_apply': return { merged: (args.picks as unknown[]).length, rules: 2 };
+          case 'wiki_merge_entry_ai': {
+            const by = (u: string) => wiki.entries.find(e => e.uid === u)!;
+            return [{ members: [by('i')], into: by('a'), name: 'Lâm Động', rules: [{ find: 'Lâm Lang Thiên', replace: 'Lâm Động' }, { find: 'Lâm Đống', replace: 'Lâm Động' }], note: 'Cùng một người.' }];
+          }
+          case 'wiki_merge_apply': return { merged: (args.picks as unknown[]).length + ((args.groups as { fromUids: string[] }[]) ?? []).reduce((n, g) => n + g.fromUids.length, 0), rules: 2, renamed: 0 };
           case 'ai_marks': case 'ai_progress': case 'ai_versions': return [];
           default: return null;
         }
@@ -386,13 +389,19 @@ test('smart merge lists pairs to review and merges only the ticked ones', async 
   await page.screenshot({ path: `test-results/wiki-${info.project.name}-smart-merge.png` });
   // The AI finds more from the descriptions; what it finds is ticked, with its reason.
   await sheet.getByRole('button', { name: 'Hỏi AI tìm thêm' }).click();
-  await expect(sheet.locator('[data-merge-pair]')).toHaveCount(3);
+  const group = sheet.locator('[data-merge-group]');
+  await expect(group).toHaveCount(1);
   await expect(sheet.getByText('Mô tả cho thấy là một người.')).toBeVisible();
-  await expect(boxes.nth(2)).toBeChecked();
+  await expect(group.locator('input[type=checkbox]')).toBeChecked();
+  // The final name can be changed before merging.
+  await group.locator('[data-final-name]').fill('Lâm Khiếu lão gia');
+  await expect(group.getByText('Thay thế: Ứng Huyền Tử → Lâm Khiếu lão gia')).toBeVisible();
   await page.screenshot({ path: `test-results/wiki-${info.project.name}-smart-merge-ai.png` });
-  await sheet.getByRole('button', { name: 'Gộp 2 cặp' }).click();
-  await expect(page.getByText('Đã gộp 2 cặp, thêm 2 dòng thay thế.')).toBeVisible();
-  expect((await calls(page)).find(c => c.cmd === 'wiki_merge_apply')?.args).toMatchObject({ novelId: 1, picks: [{ fromUid: 's2', intoUid: 's1' }, { fromUid: 'l', intoUid: 'h' }] });
+  await sheet.getByRole('button', { name: 'Gộp 2 mục chọn' }).click();
+  await expect(page.getByText('Đã gộp 2 mục, thêm 2 dòng thay thế.')).toBeVisible();
+  expect((await calls(page)).find(c => c.cmd === 'wiki_merge_apply')?.args).toMatchObject({
+    novelId: 1, picks: [{ fromUid: 's2', intoUid: 's1' }], groups: [{ intoUid: 'h', fromUids: ['l'], name: 'Lâm Khiếu lão gia' }]
+  });
   await expect(sheet).toHaveCount(0);
 
   // One entry's own smart merge, from its sheet: it takes the sheet's place, Cancel brings it back.
@@ -400,6 +409,13 @@ test('smart merge lists pairs to review and merges only the ticked ones', async 
   await page.locator('[data-entry-smart-merge]').click();
   await expect(sheet.locator('[data-merge-raw]')).toHaveCount(3);
   await expect(page.locator('form.dialog')).toHaveCount(0);
+  await expect(sheet.locator('[data-merge-pair]')).toHaveCount(1);
+  await sheet.getByRole('button', { name: 'Hỏi AI tìm thêm' }).click();
+  // The AI's group holds the device's pair, so the pair is shown there only.
+  await expect(sheet.locator('[data-merge-group]')).toHaveCount(1);
+  await expect(sheet.locator('[data-merge-pair]')).toHaveCount(0);
+  await expect(sheet.locator('[data-final-name]')).toHaveValue('Lâm Động');
+  await page.screenshot({ path: `test-results/wiki-${info.project.name}-entry-merge-ai.png` });
   await sheet.getByRole('button', { name: 'Hủy' }).click();
   await expect(page.locator('form.dialog')).toBeVisible();
 });

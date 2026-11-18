@@ -17,6 +17,7 @@ pub mod queue;
 pub mod rules;
 pub mod segments;
 pub mod smart_merge;
+pub mod smart_merge_ai;
 pub mod sync;
 pub mod translate;
 pub mod wiki;
