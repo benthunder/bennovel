@@ -298,6 +298,9 @@ fn graph(
             async move {
                 let r = (|| {
                     let conn = super::db::open(std::path::Path::new(&f.db))?;
+                    // Spellings of the shared terms the table has no exact match for,
+                    // found through its vector table.
+                    f.genre_terms.near(llm.as_ref(), &f.paragraphs.join("\n\n"));
                     super::wiki::index_names(&conn, None, f.req.novel_id, &f.req.lang)?;
                     f.recall = super::wiki::recall(
                         &conn,

@@ -1727,7 +1727,7 @@ struct Recalled {
 
 /// Words that start with a capital letter, one to four in a row: what may be a name in
 /// a text in a cased script ("Vương thành", "Lâm Động ca"). Not for Chinese and the like.
-fn name_phrases(text: &str) -> Vec<String> {
+pub(crate) fn name_phrases(text: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut add = |run: &[&str]| {
         for n in (1..=run.len().min(4)).rev() {
