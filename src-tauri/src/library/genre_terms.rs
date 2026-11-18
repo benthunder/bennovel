@@ -53,6 +53,8 @@ const SOURCES: &[(&str, &str, &str)] = &[
     tsv!("global", "people.tsv"),
     tsv!("wuxia", "terms.tsv"),
     tsv!("wuxia", "people.tsv"),
+    tsv!("wuxia", "skills.tsv"),
+    tsv!("wuxia", "places.tsv"),
     tsv!("xianxia", "terms.tsv"),
     tsv!("supernatural", "terms.tsv"),
     tsv!("politics", "terms.tsv"),
@@ -977,6 +979,31 @@ mod tests {
         let n = *llm.0.lock().unwrap() - first;
         assert!(n < 10, "{n} {:?}", &terms.entries[terms.entries.len() - added..]);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// How long finding terms takes with a big table:
+    /// `cargo test --release --lib genre_terms::tests::speed -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn speed() {
+        let entries: Vec<(String, String)> = (0..100_000)
+            .map(|i| (format!("门派{i}号"), format!("Môn phái {i}")))
+            .chain((0..100_000).map(|i| (format!("Sect Name {i}"), format!("Phái {i}"))))
+            .collect();
+        let t = Terms { lang: "vi".into(), entries, ..Default::default() };
+        let start = std::time::Instant::now();
+        t.matcher();
+        let built = start.elapsed();
+        let chapter = "武当派弟子从四川赶来，与丐帮长老在洛阳会合。门派42号 Sect Name 7 ".repeat(300);
+        let start = std::time::Instant::now();
+        let found = t.found(&chapter);
+        println!(
+            "200000 terms: build {:?}, chapter of {} chars: {:?}, {} found",
+            built,
+            chapter.chars().count(),
+            start.elapsed(),
+            found.len()
+        );
     }
 
     #[test]
