@@ -66,20 +66,21 @@ async function nativeApp(page: Page) {
 const calls = (page: Page) => page.evaluate(() => (window as unknown as { __calls: Calls }).__calls);
 const emit = (page: Page) => page.evaluate(() => (window as unknown as { __emit: (e: string) => void }).__emit('ai-status'));
 
-async function openReader(page: Page) {
+async function openReader(page: Page, view = 'vi') {
   await nativeApp(page);
+  // The language the book is read in (no one signed in: the library key is empty).
+  await page.addInitScript(view => {
+    localStorage.setItem('bennovel.aiView.:1', JSON.stringify({ lang: 'vi', style: 'Natural', dict: true, view }));
+  }, view);
   await page.goto('/');
   await page.getByText('Võ Động Càn Khôn').filter({ visible: true }).first().click();
   await page.getByRole('button', { name: /Bắt đầu đọc|Đọc tiếp/ }).filter({ visible: true }).first().click();
   await expect(page.locator('[data-part="0"]')).toContainText('动少 笑了。');
 }
 
-test('watch live puts each translated paragraph in the reader as it comes, with no popup', async ({ page }, info) => {
+test('a chapter being translated into the reading language shows each paragraph as it comes, with no button', async ({ page }, info) => {
   await openReader(page);
-  // The pipeline panel: the chapter translated from the reader, watched live.
-  await page.locator('.ai-dock__pill').click();
-  await page.getByRole('button', { name: 'Xem trực tiếp' }).click();
-  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /Xem trực tiếp/ })).toHaveCount(0);
   const part = page.locator('[data-part="0"]');
   await expect(part.locator('[data-live-banner]')).toContainText('Đang dịch trực tiếp · 1/2 đoạn');
   await expect(part.locator('p[data-live="done"]')).toHaveText('[vi] Lâm Động nhìn người Đạo Tông.');
@@ -117,4 +118,16 @@ test('the first part is previewed in a popup to carry on or stop', async ({ page
   await sheet.getByRole('button', { name: 'Dừng dịch' }).click();
   await expect(sheet).toHaveCount(0);
   expect((await calls(page)).find(c => c.cmd === 'ai_chapter_stop')?.args).toMatchObject({ novelId: 1, index: 0 });
+});
+
+test('read raw, a chapter being translated stays raw', async ({ page }) => {
+  await openReader(page, 'raw');
+  const part = page.locator('[data-part="0"]');
+  await expect(part.locator('[data-live-banner]')).toHaveCount(0);
+  await expect(part).toContainText('林动 看着 道宗 的 人。');
+  // The pipeline panel opens it in the language being translated into.
+  await page.locator('.ai-dock__pill').click();
+  await page.getByRole('button', { name: 'Mở trong reader' }).click();
+  await expect(part.locator('[data-live-banner]')).toContainText('1/2 đoạn');
+  await expect(part.locator('p[data-live="done"]')).toHaveText('[vi] Lâm Động nhìn người Đạo Tông.');
 });
