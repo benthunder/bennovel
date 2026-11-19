@@ -63,6 +63,8 @@ pub struct Applied {
     pub rules: usize,
     /// Entries that took the AI's final name.
     pub renamed: usize,
+    /// Entries whose wrong original name was put right.
+    pub fixed: usize,
 }
 
 /// The name an entry is written with in the translation.

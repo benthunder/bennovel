@@ -8,6 +8,13 @@
 //! picks them (`apply_groups`): the entries go into the kept one, it takes the final name,
 //! and every old name, as entries and chapters wrote it, goes in the replace rules.
 //!
+//! The AI also puts right an original name that is not one: the translation requests
+//! sometimes wrote the Vietnamese name as the original ("Chích Minh" for "Cheok
+//! Myeong"). Each record also says which original names the chapters gave for its
+//! translated name, and the AI answers the right one (`raw`); applying it makes that the
+//! entry's name and keeps the wrong one as an alias, so the next chapters that write it
+//! again land on the same entry.
+//!
 //! For one entry (`for_entry`), the entry, the candidates found on the device and the
 //! closest names of its kind go in one request. For the whole wiki (`for_wiki`), the
 //! groups found on the device and the other entries are packed, kind by kind, into
@@ -28,13 +35,15 @@ use std::sync::Mutex;
 /// Letters in one request's list, about: a unit is never cut, so one may go over.
 pub const BLOCK: usize = 10_000;
 /// Requests at the same time for the whole wiki.
-const PARALLEL: usize = 3;
+pub const PARALLEL: usize = 3;
 /// A description is cut to this many letters.
 const SUMMARY: usize = 300;
 /// Relationships told per entry at most.
 const RELATIONS: usize = 6;
 /// Chapters told per translated spelling at most.
 const CHAPTERS: usize = 4;
+/// Original names told per translated name at most.
+const RAWS: usize = 6;
 /// Entries of its kind with the closest names sent with one entry at most.
 const FOR_ENTRY: usize = 40;
 
@@ -45,6 +54,8 @@ pub struct Group {
     pub members: Vec<Entry>,
     pub into: Entry,
     pub name: String,
+    /// The right original name for the kept entry, when its own is wrong; else empty.
+    pub raw: String,
     /// The replace rules applying it adds (find → `name`).
     pub rules: Vec<Rule>,
     pub note: String,
@@ -58,6 +69,9 @@ pub struct GroupPick {
     #[serde(default)]
     pub from_uids: Vec<String>,
     pub name: String,
+    /// The right original name, when the user kept the AI's.
+    #[serde(default)]
+    pub raw: String,
 }
 
 /// What the book knows about its entries, for the AI.
@@ -65,24 +79,38 @@ pub struct Records {
     all: Vec<Entry>,
     /// Original name → (spelling the translation used, chapters).
     found: HashMap<String, Vec<(String, Vec<i64>)>>,
+    /// A translated name (`smart_merge::key`) → (original names the chapters gave for
+    /// it, chapters).
+    back: HashMap<String, Vec<(String, Vec<i64>)>>,
     /// Entry uid → its relationships in words.
     rels: HashMap<String, Vec<String>>,
+    /// The book's language, named for the prompt ("Korean"); "Vietnamese" for a convert.
+    pub book: String,
 }
 
 impl Records {
     pub fn load(conn: &Connection, novel_id: i64) -> rusqlite::Result<Self> {
         let all = wiki::entries(conn, novel_id)?;
         let mut found: HashMap<String, Vec<(String, Vec<i64>)>> = HashMap::new();
-        for (raw, tr, chapter) in wiki::found_names(conn, novel_id, WIKI_LANG)? {
-            let list = found.entry(raw).or_default();
-            match list.iter_mut().find(|(t, _)| *t == tr) {
-                Some((_, ch)) => {
-                    if !ch.contains(&chapter) {
-                        ch.push(chapter);
-                    }
+        let mut back: HashMap<String, Vec<(String, Vec<i64>)>> = HashMap::new();
+        let push = |list: &mut Vec<(String, Vec<i64>)>, name: &str, chapter: i64| match list
+            .iter_mut()
+            .find(|(t, _)| t == name)
+        {
+            Some((_, ch)) => {
+                if !ch.contains(&chapter) {
+                    ch.push(chapter);
                 }
-                None => list.push((tr, vec![chapter])),
             }
+            None => list.push((name.to_string(), vec![chapter])),
+        };
+        for (raw, tr, chapter) in wiki::found_names(conn, novel_id, WIKI_LANG)? {
+            push(
+                back.entry(smart_merge::key(&tr)).or_default(),
+                &raw,
+                chapter,
+            );
+            push(found.entry(raw).or_default(), &tr, chapter);
         }
         let by: HashMap<&str, &Entry> = all.iter().map(|e| (e.uid.as_str(), e)).collect();
         let mut rels: HashMap<String, Vec<String>> = HashMap::new();
@@ -103,10 +131,18 @@ impl Records {
                 .or_default()
                 .push(format!("{} {words} (mục này)", shown(a)));
         }
-        Ok(Self { all, found, rels })
+        let book = wiki::book_lang(conn, novel_id).unwrap_or_default();
+        let book = super::translate::lang_name(&book).to_string();
+        Ok(Self {
+            all,
+            found,
+            back,
+            rels,
+            book,
+        })
     }
 
-    fn get(&self, uid: &str) -> Option<&Entry> {
+    pub fn get(&self, uid: &str) -> Option<&Entry> {
         self.all.iter().find(|e| e.uid == uid)
     }
 
@@ -149,6 +185,26 @@ impl Records {
                 })
                 .collect();
             s.push_str(&format!(" | các chương đã dịch thành: {}", told.join("; ")));
+        }
+        let given: Vec<String> = self
+            .back
+            .get(&smart_merge::key(shown(e)))
+            .into_iter()
+            .flatten()
+            .filter(|(raw, _)| raw.trim() != e.name.trim())
+            .take(RAWS)
+            .map(|(raw, ch)| {
+                let mut ch = ch.clone();
+                ch.sort();
+                let list: Vec<String> = ch.iter().take(CHAPTERS).map(i64::to_string).collect();
+                format!("{raw} (chương {})", list.join(", "))
+            })
+            .collect();
+        if !given.is_empty() {
+            s.push_str(&format!(
+                " | tên gốc các chương ghi cho tên dịch này: {}",
+                given.join("; ")
+            ));
         }
         let sum = e
             .summaries
@@ -206,16 +262,26 @@ impl Records {
 }
 
 /// The prompt: what a record says and the JSON to answer.
-pub fn prompt(one: bool) -> String {
+pub fn prompt(one: bool, book: &str) -> String {
     let mut s = String::from(
-        "Bạn là biên tập viên wiki của một bộ truyện dịch sang tiếng Việt. Người dùng gửi các mục wiki, mỗi dòng một mục: [số] tên dịch đang dùng | gốc: tên trong nguyên tác | tên khác | các chương đã dịch tên gốc thành: những cách bản dịch đã viết tên này và ở chương nào | mô tả | quan hệ.\n\
+        "Bạn là biên tập viên wiki của một bộ truyện dịch sang tiếng Việt. Người dùng gửi các mục wiki, mỗi dòng một mục: [số] tên dịch đang dùng | gốc: tên trong nguyên tác | tên khác | các chương đã dịch thành: những cách bản dịch đã viết tên gốc này và ở chương nào | tên gốc các chương ghi cho tên dịch này: những tên gốc mà lúc dịch các chương đã ghi cho cùng tên dịch | mô tả | quan hệ.\n\
 Nhiệm vụ:\n\
 1. Tìm các mục thực chất là MỘT nhân vật / một nơi / một vật / một kỹ năng bị tách thành nhiều mục: cùng một tên viết khác (phiên âm Latin và Hán Việt, có hay không gạch nối, sai một chữ hay một dấu), hoặc tên thật và danh hiệu, biệt danh của cùng một người khi mô tả và quan hệ cho thấy rõ là một.\n\
 2. Với mỗi nhóm, chọn mục giữ lại (\"keep\") và TÊN CUỐI CÙNG bản dịch phải dùng (\"name\"): tên tiếng Việt đúng và đầy đủ nhất; truyện bối cảnh Trung Hoa (kể cả võ hiệp Hàn Quốc) dùng tên Hán Việt thay cho phiên âm Latin; chọn cách viết được nhiều chương dùng nhất nếu đều đúng.\n\
 3. Một mục đứng một mình mà tên dịch đang dùng sai hoặc còn để phiên âm Latin thì cũng trả về một nhóm chỉ có mục đó, với tên đúng.\n\
+4. TÊN GỐC: {RAW}\n\
 KHÔNG gộp: người thân cùng họ, thầy trò, hai người khác nhau có tên gần giống, một môn phái và chưởng môn của nó, một nơi và nơi nằm trong nó, hai mục khác loại. Không chắc thì bỏ qua.\n\
-Chỉ trả về đúng một JSON, không giải thích thêm: {\"groups\":[{\"ids\":[số,...],\"keep\":số,\"name\":\"tên cuối cùng\",\"why\":\"lý do ngắn bằng tiếng Việt\"}]}. Không có gì thì trả {\"groups\":[]}.",
+Chỉ trả về đúng một JSON, không giải thích thêm: {\"groups\":[{\"ids\":[số,...],\"keep\":số,\"name\":\"tên cuối cùng\",\"raw\":\"tên gốc đúng, để trống nếu gốc đã đúng\",\"why\":\"lý do ngắn bằng tiếng Việt\"}]}. Không có gì thì trả {\"groups\":[]}.",
     );
+    let raw = if book == "Vietnamese" {
+        "nguyên tác là tiếng Việt (bản convert), \"gốc\" viết tiếng Việt là đúng; để \"raw\" trống."
+            .to_string()
+    } else {
+        format!(
+            "\"gốc\" phải là tên đúng như nguyên tác ({book}) viết, không phải tiếng Việt. Lúc dịch, máy đôi khi ghi nhầm tên tiếng Việt vào \"gốc\" (ví dụ gốc: Chích Minh thay cho Cheok Myeong). Khi \"gốc\" của mục giữ lại là tiếng Việt hoặc chỉ là tên dịch, hãy chọn tên gốc đúng từ \"tên gốc các chương ghi cho tên dịch này\", tên khác, hoặc gốc của các mục trong nhóm, và trả vào \"raw\". Mục chỉ sai tên gốc cũng trả về một nhóm chỉ có mục đó. Không tìm được tên gốc đúng trong dữ liệu thì để trống, đừng tự bịa."
+        )
+    };
+    s = s.replace("{RAW}", &raw);
     if one {
         s.push_str("\nChỉ trả về nhóm có mục số [1]; bỏ qua mọi nhóm khác.");
     }
@@ -237,6 +303,8 @@ struct AnswerGroup {
     #[serde(default)]
     name: String,
     #[serde(default)]
+    raw: String,
+    #[serde(default)]
     why: String,
 }
 
@@ -245,19 +313,37 @@ fn parse(reply: &str) -> Option<Answer> {
     serde_json::from_str(reply.get(a..=b)?).ok()
 }
 
-/// Asks about one block of entries (numbered from 1 in order) and reads the groups back.
-/// The user's own entry is the one kept; two of the user's are never merged; a group of
-/// one entry counts only when its name changes.
-fn ask(rec: &Records, llm: &dyn Chat, block: &[&Entry], one: bool) -> Result<Vec<Group>, AiError> {
+/// One group as the AI answered it, by entry uid, kept as it came (the merge queue
+/// stores these, `merge_queue.rs`) and turned into a `Group` against the wiki as it is
+/// when read (`build`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Answered {
+    pub uids: Vec<String>,
+    #[serde(default)]
+    pub keep: Option<String>,
+    pub name: String,
+    #[serde(default)]
+    pub raw: String,
+    #[serde(default)]
+    pub why: String,
+}
+
+/// Asks about one block of entries (numbered from 1 in order) and reads the groups back
+/// by uid. With `one`, only the group holding entry [1].
+pub fn ask_block(
+    rec: &Records,
+    llm: &dyn Chat,
+    block: &[&Entry],
+    one: bool,
+) -> Result<Vec<Answered>, AiError> {
     let list: Vec<String> = block
         .iter()
         .enumerate()
         .map(|(i, e)| rec.line(i + 1, e))
         .collect();
-    let reply = llm.chat(&prompt(one), &list.join("\n"))?;
+    let reply = llm.chat(&prompt(one, &rec.book), &list.join("\n"))?;
     let mut out = Vec::new();
     for g in parse(&reply).map(|a| a.groups).unwrap_or_default() {
-        let name = g.name.trim().to_string();
         let mut ids: Vec<usize> = g
             .ids
             .into_iter()
@@ -265,38 +351,77 @@ fn ask(rec: &Records, llm: &dyn Chat, block: &[&Entry], one: bool) -> Result<Vec
             .collect();
         ids.sort();
         ids.dedup();
-        if name.is_empty() || ids.is_empty() || (one && !ids.contains(&1)) {
+        if g.name.trim().is_empty() || ids.is_empty() || (one && !ids.contains(&1)) {
             continue;
         }
-        let entries: Vec<&Entry> = ids.iter().map(|i| block[i - 1]).collect();
-        if entries.iter().any(|e| e.kind != entries[0].kind) {
-            continue;
-        }
-        let users: Vec<&&Entry> = entries.iter().filter(|e| e.source == "user").collect();
-        if users.len() > 1 {
-            continue;
-        }
-        let into: &Entry = match users.first() {
-            Some(u) => u,
-            None => g
+        out.push(Answered {
+            keep: g
                 .keep
                 .filter(|k| ids.contains(k))
-                .map(|k| block[k - 1])
-                .unwrap_or(entries[0]),
-        };
-        let members: Vec<&Entry> = entries.into_iter().filter(|e| e.uid != into.uid).collect();
-        if members.is_empty() && name == shown(into) {
-            continue;
-        }
-        out.push(Group {
-            rules: rec.rules(&members, into, &name),
-            members: members.into_iter().cloned().collect(),
-            into: into.clone(),
-            name,
-            note: g.why.trim().to_string(),
+                .map(|k| block[k - 1].uid.clone()),
+            uids: ids.iter().map(|i| block[i - 1].uid.clone()).collect(),
+            name: g.name.trim().to_string(),
+            raw: g.raw.trim().to_string(),
+            why: g.why.trim().to_string(),
         });
     }
     Ok(out)
+}
+
+/// A group the AI answered, against the wiki now: entries gone since (merged, removed)
+/// are left out. The user's own entry is the one kept; two of the user's are never
+/// merged; a group of one entry counts only when its name or original name changes.
+pub fn build(rec: &Records, a: &Answered) -> Option<Group> {
+    let name = a.name.trim().to_string();
+    let entries: Vec<&Entry> = a.uids.iter().filter_map(|u| rec.get(u)).collect();
+    if name.is_empty() || entries.is_empty() {
+        return None;
+    }
+    if entries.iter().any(|e| e.kind != entries[0].kind) {
+        return None;
+    }
+    let users: Vec<&&Entry> = entries.iter().filter(|e| e.source == "user").collect();
+    if users.len() > 1 {
+        return None;
+    }
+    let into: &Entry = match users.first() {
+        Some(u) => u,
+        None => a
+            .keep
+            .as_deref()
+            .and_then(|k| entries.iter().find(|e| e.uid == k).copied())
+            .unwrap_or(entries[0]),
+    };
+    let members: Vec<&Entry> = entries.iter().copied().filter(|e| e.uid != into.uid).collect();
+    // A right original name is not the Vietnamese one, unless the book is Vietnamese;
+    // nor one a member or the kept entry already has as its name.
+    let raw = a.raw.trim();
+    let raw = if raw.is_empty()
+        || raw == into.name.trim()
+        || (rec.book != "Vietnamese" && smart_merge::key(raw) == smart_merge::key(&name))
+    {
+        String::new()
+    } else {
+        raw.to_string()
+    };
+    if members.is_empty() && name == shown(into) && raw.is_empty() {
+        return None;
+    }
+    Some(Group {
+        rules: rec.rules(&members, into, &name),
+        members: members.into_iter().cloned().collect(),
+        into: into.clone(),
+        name,
+        raw,
+        note: a.why.trim().to_string(),
+    })
+}
+
+fn ask(rec: &Records, llm: &dyn Chat, block: &[&Entry], one: bool) -> Result<Vec<Group>, AiError> {
+    Ok(ask_block(rec, llm, block, one)?
+        .iter()
+        .filter_map(|a| build(rec, a))
+        .collect())
 }
 
 /// The size of an entry's record, in letters.
@@ -468,6 +593,16 @@ fn blocks(rec: &Records, units: &[Vec<usize>]) -> Vec<Vec<usize>> {
     out
 }
 
+/// The whole wiki cut in blocks, as entry uids: what the merge queue stores.
+pub fn wiki_blocks(conn: &Connection, novel_id: i64) -> rusqlite::Result<Vec<Vec<String>>> {
+    let rec = Records::load(conn, novel_id)?;
+    let pairs = smart_merge::suggest(conn, novel_id)?;
+    Ok(blocks(&rec, &units(&rec, &pairs))
+        .into_iter()
+        .map(|b| b.into_iter().map(|i| rec.all[i].uid.clone()).collect())
+        .collect())
+}
+
 /// The AI's groups for the whole wiki, the blocks `PARALLEL` at a time. `progress` gets
 /// (blocks done, blocks). A block that fails is left out when others answered; when
 /// every block failed, the first error is returned.
@@ -542,14 +677,12 @@ pub fn apply_groups(
     let mut done = smart_merge::Applied::default();
     for g in picks {
         let name = g.name.trim();
-        let into_uid = follow(moved, &g.into_uid);
+        let raw = g.raw.trim();
+        let mut into_uid = follow(moved, &g.into_uid);
         if name.is_empty() || !wiki::by_uid_live(conn, &into_uid) {
             continue;
         }
         let rec = Records::load(conn, novel_id)?;
-        let Some(into) = rec.get(&into_uid).cloned() else {
-            continue;
-        };
         let mut from: Vec<String> = Vec::new();
         for f in &g.from_uids {
             let f = follow(moved, f);
@@ -557,6 +690,18 @@ pub fn apply_groups(
                 from.push(f);
             }
         }
+        // The member already named with the right original name is the one kept: a
+        // merged entry's row keeps its name, so no other could take it after.
+        if let Some(at) = from.iter().position(|f| {
+            rec.get(f)
+                .is_some_and(|e| !raw.is_empty() && e.name.trim() == raw)
+        }) {
+            let old = std::mem::replace(&mut into_uid, from.remove(at));
+            from.push(old);
+        }
+        let Some(into) = rec.get(&into_uid).cloned() else {
+            continue;
+        };
         let members: Vec<&Entry> = from.iter().filter_map(|f| rec.get(f)).collect();
         let rules = rec.rules(&members, &into, name);
         for f in &from {
@@ -564,25 +709,50 @@ pub fn apply_groups(
             moved.insert(f.clone(), into_uid.clone());
             done.merged += 1;
         }
-        if shown(&into) != name {
-            let kept = wiki::by_uid(conn, &into_uid)?.unwrap_or(into);
+        let kept = wiki::by_uid(conn, &into_uid)?.unwrap_or(into);
+        // The right original name, unless another row (a removed entry too) has it.
+        let fix = !raw.is_empty()
+            && raw != kept.name.trim()
+            && !conn
+                .query_row(
+                    "select 1 from wiki_entries where novel_id = ?1 and name = ?2 and uid <> ?3",
+                    rusqlite::params![novel_id, raw, into_uid],
+                    |_| Ok(()),
+                )
+                .is_ok();
+        if shown(&kept) != name || fix {
             let mut names = kept.names.clone();
             names.insert(WIKI_LANG.to_string(), name.to_string());
+            let mut aliases = kept.aliases.clone();
+            // The wrong name stays as an alias: a chapter that writes it again finds
+            // this entry instead of making a new one.
+            if fix {
+                aliases.push(kept.name.clone());
+            }
             wiki::save(
                 conn,
                 novel_id,
                 EntryInput {
                     uid: Some(kept.uid.clone()),
                     kind: kept.kind.clone(),
-                    name: kept.name.clone(),
+                    name: if fix {
+                        raw.to_string()
+                    } else {
+                        kept.name.clone()
+                    },
                     names,
-                    aliases: kept.aliases.clone(),
+                    aliases,
                     summaries: kept.summaries.clone(),
                     rank: kept.rank,
                     meta: kept.meta.clone(),
                 },
             )?;
-            done.renamed += 1;
+            if shown(&kept) != name {
+                done.renamed += 1;
+            }
+            if fix {
+                done.fixed += 1;
+            }
         }
         done.rules += smart_merge::add_rules(conn, novel_id, &rules)?;
     }
@@ -709,6 +879,7 @@ mod tests {
                 into_uid: a.clone(),
                 from_uids: vec![b.clone()],
                 name: "Tuyết Huy".into(),
+                raw: String::new(),
             }],
             &mut moved,
         )
@@ -787,5 +958,89 @@ mod tests {
         let with_a = u.iter().find(|x| x.iter().any(|&i| uid(i) == a)).unwrap();
         assert!(with_a.iter().any(|&i| uid(i) == b));
         assert!(!with_a.iter().any(|&i| uid(i) == c));
+    }
+
+    #[test]
+    fn a_vietnamese_original_name_is_put_right_from_what_the_chapters_gave() {
+        let (conn, novel) = book("smart-ai-raw");
+        // The book is in English; one request wrote the Vietnamese name as the original.
+        let a = add(
+            &conn,
+            novel,
+            "character",
+            "Chích Minh",
+            "Chích Minh",
+            "Kiếm khách.",
+        );
+        let b = add(&conn, novel, "character", "Cheok Myeong", "Chích Minh", "");
+        let c = add(&conn, novel, "character", "Jin Ho", "Chân Hạo", "");
+        facts(&conn, 10, &[("Chích Minh", "Chích Minh")]);
+        facts(&conn, 11, &[("Cheok Myeong", "Chích Minh")]);
+        let j = judge(
+            r#"{"groups":[{"ids":[1,2],"keep":1,"name":"Chích Minh","raw":"Cheok Myeong","why":"cùng một người, gốc ghi nhầm tiếng Việt"}]}"#,
+        );
+        let g = for_entry(&conn, &j, novel, &a).unwrap();
+        assert_eq!(g.len(), 1, "{g:?}");
+        assert_eq!(g[0].raw, "Cheok Myeong");
+        let (system, user) = j.sent.lock().unwrap()[0].clone();
+        assert!(system.contains("nguyên tác (English)"), "{system}");
+        let first = user.lines().next().unwrap();
+        assert!(
+            first.contains("tên gốc các chương ghi cho tên dịch này: Cheok Myeong (chương 2)"),
+            "{first}"
+        );
+
+        // A Vietnamese "raw" is no fix.
+        let j = judge(r#"{"groups":[{"ids":[1],"name":"Chân Hạo","raw":"Chân Hạo"}]}"#);
+        assert!(for_entry(&conn, &j, novel, &c).unwrap().is_empty());
+
+        let mut moved = HashMap::new();
+        let done = apply_groups(
+            &conn,
+            novel,
+            &[GroupPick {
+                into_uid: a.clone(),
+                from_uids: vec![b.clone()],
+                name: "Chích Minh".into(),
+                raw: "Cheok Myeong".into(),
+            }],
+            &mut moved,
+        )
+        .unwrap();
+        assert_eq!(done.merged, 1);
+        let w = wiki::load(&conn, novel).unwrap();
+        let live: Vec<&Entry> = w
+            .entries
+            .iter()
+            .filter(|e| e.names.get("vi").map(String::as_str) == Some("Chích Minh"))
+            .collect();
+        assert_eq!(live.len(), 1, "{live:?}");
+        // The entry with the right name is kept, the wrong one is its alias now.
+        assert_eq!(live[0].uid, b);
+        assert_eq!(live[0].name, "Cheok Myeong");
+        assert!(live[0].aliases.contains(&"Chích Minh".to_string()));
+        assert_eq!(
+            live[0].summaries.get("vi").map(String::as_str),
+            Some("Kiếm khách.")
+        );
+
+        // An entry alone with a wrong original name takes the right one.
+        let d = add(&conn, novel, "character", "Hắc Long", "Hắc Long", "");
+        let done = apply_groups(
+            &conn,
+            novel,
+            &[GroupPick {
+                into_uid: d.clone(),
+                from_uids: vec![],
+                name: "Hắc Long".into(),
+                raw: "Heuk Ryong".into(),
+            }],
+            &mut HashMap::new(),
+        )
+        .unwrap();
+        assert_eq!((done.fixed, done.renamed), (1, 0));
+        let e = wiki::by_uid(&conn, &d).unwrap().unwrap();
+        assert_eq!(e.name, "Heuk Ryong");
+        assert_eq!(e.aliases, vec!["Hắc Long".to_string()]);
     }
 }

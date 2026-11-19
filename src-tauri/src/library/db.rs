@@ -598,6 +598,23 @@ update wiki_relations set labels = json_object('vi', json_extract(labels, '$.vi'
  where json_valid(labels) and json_extract(labels, '$.vi') is not null
    and (select count(*) from json_each(wiki_relations.labels)) > 1;
 "#,
+    r#"
+-- Local only (merge_queue.rs): the AI step of a book's smart merge as a queue, like
+-- ai_jobs. The wiki is cut in blocks (`uids`, a JSON array of entry uids); each block's
+-- answer (`groups`, JSON, smart_merge_ai.rs `Answered`) is kept, so a run cut short by
+-- closing the app or a lost connection carries on from the blocks left.
+create table wiki_merge_blocks (
+  novel_id   integer not null references novels (id) on delete cascade,
+  idx        integer not null,
+  uids       text not null,
+  status     text not null default 'queued'
+             check (status in ('queued', 'running', 'done', 'failed', 'paused')),
+  groups     text,
+  error      text,
+  created_at integer not null,
+  primary key (novel_id, idx)
+);
+"#,
 ];
 
 /// The migration (1-based) after which `content` holds blocks.
