@@ -1846,7 +1846,8 @@ pub fn marks(conn: &Connection, novel_id: i64) -> rusqlite::Result<Vec<Mark>> {
 /// Takes the LLM settings and the AI queue out of a copy about to be synced.
 pub fn strip(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
-        "delete from llm_config; delete from ai_jobs; delete from ai_parts; delete from ai_books;",
+        "delete from llm_config; delete from ai_jobs; delete from ai_parts; delete from ai_books;
+         delete from wiki_merge_blocks;",
     )
 }
 

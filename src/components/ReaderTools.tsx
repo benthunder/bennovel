@@ -18,10 +18,12 @@ const FONT_MIN = 14, FONT_MAX = 26;
  * Reading settings and the (simulated) AI dictionary / translator.
  * Phone: bottom sheet over the chapter. Tablet and desktop: a side panel the chapter makes room for.
  */
-export function ReaderTools({ glossary, lang, rules, onRulesChange, onClose, onTranslate, onTranslateFrom, aiLangs, aiHint, aiBook, initialTab = 'reading' }: {
+export function ReaderTools({ glossary, lang, rulesLang, rules, onRulesChange, onClose, onTranslate, onTranslateFrom, aiLangs, aiHint, aiBook, initialTab = 'reading' }: {
   glossary: Record<string, GlossaryTerm>;
   /** Language of the text on screen; replace rules are kept per language. */
   lang: ContentLang;
+  /** The language of the replace rules shown: the one read (a translation's), else the book's. */
+  rulesLang?: ContentLang;
   rules: ReplaceRule[];
   onRulesChange: (rules: ReplaceRule[]) => void;
   onClose: () => void;
@@ -57,7 +59,7 @@ export function ReaderTools({ glossary, lang, rules, onRulesChange, onClose, onT
         </div>
         <div className="nx-scroll" style={{ overflowY: 'auto', padding: '0 20px calc(env(safe-area-inset-bottom) + 30px)', display: 'flex', flexDirection: 'column', gap: 18 }}>
           {tab === 'reading' && <ReadingTab />}
-          {tab === 'replace' && <ReplaceTab lang={lang} rules={rules} onChange={onRulesChange} />}
+          {tab === 'replace' && <ReplaceTab lang={rulesLang ?? lang} rules={rules} onChange={onRulesChange} />}
           {tab === 'ai' && <AiTab glossary={glossary} currentLang={lang} onTranslate={onTranslate} onTranslateFrom={onTranslateFrom} langs={aiLangs} hint={aiHint} book={aiBook} />}
         </div>
       </div>

@@ -77,7 +77,10 @@ fn snapshot(
         match backup {
             Some(extras) => {
                 // The AI queue isn't restarted by a restore.
-                copy.execute_batch("delete from ai_jobs; delete from ai_parts; delete from ai_books;")?;
+                copy.execute_batch(
+                    "delete from ai_jobs; delete from ai_parts; delete from ai_books;
+                     delete from wiki_merge_blocks;",
+                )?;
                 copy.execute("delete from sync_state where key = ?1", [APP_SETTINGS])?;
                 if let Some(settings) = extras.settings {
                     db::set_state(&copy, APP_SETTINGS, settings)?;

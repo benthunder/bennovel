@@ -172,6 +172,8 @@ export interface MergeGroup {
   members: WikiEntry[];
   into: WikiEntry;
   name: string;
+  /** The right original name for `into` when its own is wrong (often the Vietnamese name written as the original); '' when it is right. */
+  raw: string;
   rules: { find: string; replace: string }[];
   note: string;
 }
@@ -189,6 +191,47 @@ export async function suggestWikiMerges(user: string, novelId: number) {
 export async function suggestWikiMergesAi(user: string, novelId: number) {
   try {
     return await invoke<MergeGroup[]>('wiki_merge_suggest_ai', { user, novelId });
+  } catch (e) {
+    throw new AiFailure(e);
+  }
+}
+
+/** The AI step of smart merge for the whole wiki, run in the background like the translation queue: its blocks by state and the groups found so far. */
+export interface MergeRun {
+  novelId: number;
+  total: number;
+  done: number;
+  failed: number;
+  queued: number;
+  running: number;
+  paused: number;
+  /** Why the run waits or a block failed. */
+  error: string | null;
+  groups: MergeGroup[];
+}
+
+/** Starts the AI step in the background (or carries on the run left); `fresh` starts over. */
+export async function startWikiMergeAi(user: string, novelId: number, fresh = false) {
+  try {
+    return await invoke<MergeRun>('wiki_merge_ai_start', { user, novelId, fresh });
+  } catch (e) {
+    throw new AiFailure(e);
+  }
+}
+
+/** The book's AI run with the groups found so far (they survive closing the app). */
+export async function wikiMergeAiStatus(user: string, novelId: number) {
+  try {
+    return await invoke<MergeRun>('wiki_merge_ai_status', { user, novelId });
+  } catch (e) {
+    throw new AiFailure(e);
+  }
+}
+
+/** Pauses, carries on, tries the failed blocks again or clears the book's AI run. */
+export async function controlWikiMergeAi(user: string, novelId: number, action: 'pause' | 'resume' | 'retry' | 'clear') {
+  try {
+    return await invoke<MergeRun>('wiki_merge_ai_control', { user, novelId, action });
   } catch (e) {
     throw new AiFailure(e);
   }
@@ -225,9 +268,9 @@ export async function entryWikiMergesAi(user: string, novelId: number, uid: stri
 
 /** Merges the pairs the user kept; each merge also adds its line to the book's replace rules. */
 export async function applyWikiMerges(user: string, novelId: number, picks: { fromUid: string; intoUid: string }[],
-  groups: { intoUid: string; fromUids: string[]; name: string }[] = []) {
+  groups: { intoUid: string; fromUids: string[]; name: string; raw?: string }[] = []) {
   try {
-    return await invoke<{ merged: number; rules: number; renamed: number }>('wiki_merge_apply', { user, novelId, picks, groups });
+    return await invoke<{ merged: number; rules: number; renamed: number; fixed: number }>('wiki_merge_apply', { user, novelId, picks, groups });
   } catch (e) {
     throw new AiFailure(e);
   }
