@@ -252,6 +252,10 @@ test('names in a chapter open the whole wiki with its links', async ({ page }, i
   await expect(first.locator('[data-wiki-term="a"]')).toHaveCount(2);
   await expect(first.locator('[data-wiki-term="c"]')).toHaveCount(1);
   expect((await calls(page)).some(c => c.cmd === 'wiki_at')).toBe(false);
+  // Read in Vietnamese, the replace rules are the Vietnamese list (where wiki merges add theirs), not the raw book's.
+  const ruleLoads = (await calls(page)).filter(c => c.cmd === 'replace_rules_get').map(c => c.args.lang);
+  expect(ruleLoads).toContain('vi');
+  expect(ruleLoads).not.toContain('zh');
   await first.locator('[data-wiki-term="a"]').first().click();
   const card = page.getByRole('dialog', { name: 'Lâm Động' });
   await expect(card.getByText('Thiếu niên Lâm gia ở Thanh Dương trấn, tu luyện nhờ thạch phù bí ẩn.')).toBeVisible();

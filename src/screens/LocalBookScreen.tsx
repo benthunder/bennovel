@@ -74,25 +74,6 @@ export function LocalBookScreen({ book, place, path, live: liveStart }: { book: 
   // Library books know their language; a file opened once falls back to the reading language.
   const known = CONTENT_LANGS.find(l => l === place?.lang);
   const lang: ContentLang = known ?? app.contentLang ?? 'vi';
-  const rulesKey = `localRules.${place ? `${place.user}:${place.novelId}` : `file:${book.title ?? ''}`}.${lang}`;
-  // Library books keep their list in the library file (synced); a file opened once, on the device.
-  // Raised when a wiki merge added replace rules, so they load again.
-  const [rulesRev, setRulesRev] = useState(0);
-  const rulesQ = useAsync(
-    () => (place ? getBookRules(place.user, place.novelId, lang, rulesKey) : Promise.resolve(load<ReplaceRule[]>(rulesKey, []))),
-    [rulesKey, rulesRev]
-  );
-  // Edits made here win over what was loaded until the book or language changes.
-  const [edited, setEdited] = useState<{ key: string; rules: ReplaceRule[] } | null>(null);
-  const rules = edited?.key === rulesKey ? edited.rules : rulesQ.status === 'ready' ? rulesQ.data : NO_RULES;
-  const changeRules = (next: ReplaceRule[]) => {
-    setEdited({ key: rulesKey, rules: next });
-    if (place) saveBookRules(place.user, place.novelId, lang, next).catch(() => app.showToast(t('replace.saveFailed')));
-    else store(rulesKey, next.length ? next : null);
-  };
-  // Kept the same while the rules are, so the parts on screen don't lay out their text again.
-  const fix = useCallback((text: string) => applyReplaceRules(text, rules), [rules]);
-
   // AI versions are marked per chapter: a chapter with one shows it (the last language
   // and style chosen when it has several), the others their original. Each chapter can
   // be switched back to the original on its own.
@@ -107,6 +88,28 @@ export function LocalBookScreen({ book, place, path, live: liveStart }: { book: 
     if (viewKey) store(viewKey, v);
   };
   const viewLang = readingLangOf(ai);
+  // The replace rules of the language read: a book read in its Vietnamese translation
+  // uses the Vietnamese list, which a wiki merge adds to; read raw, the book's own.
+  const rulesLang: ContentLang = CONTENT_LANGS.find(l => l === viewLang) ?? lang;
+  const rulesKey = `localRules.${place ? `${place.user}:${place.novelId}` : `file:${book.title ?? ''}`}.${rulesLang}`;
+  // Library books keep their list in the library file (synced); a file opened once, on the device.
+  // Raised when a wiki merge added replace rules, so they load again.
+  const [rulesRev, setRulesRev] = useState(0);
+  const rulesQ = useAsync(
+    () => (place ? getBookRules(place.user, place.novelId, rulesLang, rulesKey) : Promise.resolve(load<ReplaceRule[]>(rulesKey, []))),
+    [rulesKey, rulesRev]
+  );
+  // Edits made here win over what was loaded until the book or language changes.
+  const [edited, setEdited] = useState<{ key: string; rules: ReplaceRule[] } | null>(null);
+  const rules = edited?.key === rulesKey ? edited.rules : rulesQ.status === 'ready' ? rulesQ.data : NO_RULES;
+  const changeRules = (next: ReplaceRule[]) => {
+    setEdited({ key: rulesKey, rules: next });
+    if (place) saveBookRules(place.user, place.novelId, rulesLang, next).catch(() => app.showToast(t('replace.saveFailed')));
+    else store(rulesKey, next.length ? next : null);
+  };
+  // Kept the same while the rules are, so the parts on screen don't lay out their text again.
+  const fix = useCallback((text: string) => applyReplaceRules(text, rules), [rules]);
+
   const [langMenu, setLangMenu] = useState<DOMRect | null>(null);
   const viewLangs = ['raw', ...AI_LANGS.map(l => l.code as string)];
   const pickView = (l: string) => {
@@ -588,7 +591,7 @@ export function LocalBookScreen({ book, place, path, live: liveStart }: { book: 
       {toc && <ChapterSheet sections={book.sections} current={index} marks={marks ?? undefined} onPick={jump} onClose={() => setToc(false)} />}
 
       {tools && (
-        <ReaderTools key={tools} initialTab={tools} glossary={NO_GLOSSARY} lang={lang} rules={rules} onRulesChange={changeRules}
+        <ReaderTools key={tools} initialTab={tools} glossary={NO_GLOSSARY} lang={lang} rulesLang={rulesLang} rules={rules} onRulesChange={changeRules}
           onClose={() => setTools(null)} onTranslate={tr => void translateChapter(tr)}
           onTranslateFrom={place ? translateFrom : undefined} aiLangs={[...AI_LANGS]} aiHint={t('ai.hint')}
           aiBook={place ? { user: place.user, novelId: place.novelId } : undefined} />
