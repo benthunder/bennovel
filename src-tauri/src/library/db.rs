@@ -673,23 +673,47 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
         let _ = std::fs::create_dir_all(dir);
     }
     let mut conn = Connection::open(path)?;
-    conn.pragma_update(None, "journal_mode", "WAL")?;
-    conn.pragma_update(None, "foreign_keys", true)?;
-    migrate(&mut conn)?;
+    {
+        // Turning a new file to WAL and migrating it, one connection at a time.
+        let _one = MIGRATING.lock().unwrap_or_else(|e| e.into_inner());
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.pragma_update(None, "foreign_keys", true)?;
+        migrate(&mut conn)?;
+    }
     Ok(conn)
 }
 
+/// One migration at a time in this process: the app opens the library file from many
+/// tasks at once (the queues, the commands), and two of them migrating together left
+/// some libraries with tables a schema version below what they have (`effective`).
+static MIGRATING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
-    let done: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-    if done as usize >= MIGRATIONS.len() {
+    let version = |c: &Connection| -> rusqlite::Result<usize> {
+        Ok(c.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))? as usize)
+    };
+    let mut done = version(conn)?;
+    if done >= MIGRATIONS.len() {
         return Ok(());
+    }
+    // A library whose version went back below the tables it has (two connections
+    // migrating at once, in an older app) goes on from what it really has.
+    let real = effective(conn)?;
+    if real > done {
+        conn.pragma_update(None, "user_version", real as i64)?;
+        done = real;
     }
     // Some migrations rebuild a table; with foreign keys on, dropping the old one would
     // delete the rows that point at it.
     conn.pragma_update(None, "foreign_keys", false)?;
     let result = (|| {
-        for (i, sql) in MIGRATIONS.iter().enumerate().skip(done as usize) {
-            let tx = conn.transaction()?;
+        for (i, sql) in MIGRATIONS.iter().enumerate().skip(done) {
+            // Taken before anything is read, so another process can't migrate meanwhile;
+            // a migration already made by one is skipped.
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            if version(&tx)? > i {
+                continue;
+            }
             tx.execute_batch(sql)?;
             if i + 1 == BLOCKS_VERSION {
                 super::blocks::convert_all(&tx)?;
@@ -698,7 +722,7 @@ fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
                 super::segments::migrate_all(&tx)?;
             }
             // Run on the latest schema, which the wiki's code reads.
-            if i + 1 == MIGRATIONS.len() && (done as usize) < TIDY_VERSION {
+            if i + 1 == MIGRATIONS.len() && done < TIDY_VERSION {
                 super::wiki::tidy_all(&tx)?;
             }
             tx.pragma_update(None, "user_version", i as i64 + 1)?;
@@ -708,6 +732,115 @@ fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
     })();
     conn.pragma_update(None, "foreign_keys", true)?;
     result
+}
+
+/// What a migration leaves that can be seen in the schema: the tables and indexes it
+/// creates and the columns it adds ((table, Some(column)) for a column). A table built
+/// to replace another (`…_new`, renamed after) is not one.
+fn effects(sql: &str) -> Vec<(String, Option<String>)> {
+    let text: String = sql
+        .lines()
+        .map(|l| l.split("--").next().unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    let words: Vec<&str> = text
+        .split(|c: char| c.is_whitespace() || "(),;".contains(c))
+        .filter(|w| !w.is_empty())
+        .collect();
+    let name = |at: usize| -> Option<(String, usize)> {
+        let mut k = at;
+        if words.get(k) == Some(&"if") {
+            k += 3;
+        }
+        words.get(k).map(|w| (w.trim_matches('"').to_string(), k))
+    };
+    let mut out = Vec::new();
+    for i in 0..words.len() {
+        match (words[i], words.get(i + 1).copied()) {
+            ("create", Some("table")) => {
+                if let Some((t, _)) = name(i + 2) {
+                    if !t.ends_with("_new") {
+                        out.push((t, None));
+                    }
+                }
+            }
+            ("create", Some("virtual")) => {
+                if let Some((t, _)) = name(i + 3) {
+                    out.push((t, None));
+                }
+            }
+            ("create", Some("index")) => {
+                if let Some((t, _)) = name(i + 2) {
+                    out.push((t, None));
+                }
+            }
+            ("create", Some("unique")) if words.get(i + 2) == Some(&"index") => {
+                if let Some((t, _)) = name(i + 3) {
+                    out.push((t, None));
+                }
+            }
+            ("alter", Some("table")) => {
+                let Some((t, k)) = name(i + 2) else { continue };
+                if words.get(k + 1) != Some(&"add") {
+                    continue;
+                }
+                let c = if words.get(k + 2) == Some(&"column") {
+                    k + 3
+                } else {
+                    k + 2
+                };
+                if let Some(c) = words.get(c) {
+                    if !t.ends_with("_new") {
+                        out.push((t, Some(c.trim_matches('"').to_string())));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The schema version a library really has: the last migration all of whose tables,
+/// indexes and columns are there (0 for a new file).
+fn effective(conn: &Connection) -> rusqlite::Result<usize> {
+    let has = |(t, c): &(String, Option<String>)| -> rusqlite::Result<bool> {
+        Ok(match c {
+            None => {
+                conn.query_row(
+                    "select count(*) from sqlite_master where name = ?1",
+                    [t],
+                    |r| r.get::<_, i64>(0),
+                )? > 0
+            }
+            Some(c) => {
+                conn.query_row(
+                    "select count(*) from pragma_table_info(?1) where name = ?2",
+                    [t, c],
+                    |r| r.get::<_, i64>(0),
+                )? > 0
+            }
+        })
+    };
+    let mut real = 0;
+    for (i, sql) in MIGRATIONS.iter().enumerate() {
+        let seen = effects(sql);
+        if seen.is_empty() {
+            continue;
+        }
+        let mut all = true;
+        for e in &seen {
+            if !has(e)? {
+                all = false;
+                break;
+            }
+        }
+        if all {
+            real = i + 1;
+        }
+    }
+    Ok(real)
 }
 
 #[cfg(test)]
@@ -825,5 +958,70 @@ mod tests {
             .pragma_query_value(None, "foreign_keys", |r| r.get(0))
             .unwrap();
         assert!(fk);
+    }
+
+    #[test]
+    fn opening_a_new_library_from_many_tasks_at_once_migrates_it_once() {
+        for round in 0..4 {
+            let dir = std::env::temp_dir().join(format!("bennovel-race-{round}-{}", now_ms()));
+            let path = dir.join("lib.sqlite3");
+            let errors: Vec<String> = std::thread::scope(|s| {
+                let all: Vec<_> = (0..6)
+                    .map(|_| s.spawn(|| open(&path).err().map(|e| e.to_string())))
+                    .collect();
+                all.into_iter().filter_map(|h| h.join().unwrap()).collect()
+            });
+            assert!(errors.is_empty(), "{errors:?}");
+            let conn = open(&path).unwrap();
+            let v: i64 = conn
+                .pragma_query_value(None, "user_version", |r| r.get(0))
+                .unwrap();
+            assert_eq!(v, schema_version());
+        }
+    }
+
+    #[test]
+    fn a_library_whose_version_went_back_goes_on_from_the_tables_it_has() {
+        let dir = std::env::temp_dir().join(format!("bennovel-back-{}", now_ms()));
+        let path = dir.join("lib.sqlite3");
+        let conn = open(&path).unwrap();
+        conn.execute_batch(
+            "insert into authors (id, slug, name) values (1, 'a', 'A');
+             insert into novels (id, slug, author_id, original_lang, book_key) values (1, 'n', 1, 'en', 'k');",
+        )
+        .unwrap();
+        // As the race in older apps left it: the tables of every migration, the version of the 6th.
+        conn.pragma_update(None, "user_version", 6).unwrap();
+        drop(conn);
+        let conn = open(&path).unwrap();
+        let v: i64 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, schema_version());
+        let books: i64 = conn
+            .query_row("select count(*) from novels", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(books, 1);
+        // Only the last migration missing: it alone runs.
+        conn.execute_batch("drop table wiki_merge_blocks").unwrap();
+        conn.pragma_update(None, "user_version", 3).unwrap();
+        drop(conn);
+        let conn = open(&path).unwrap();
+        let n: i64 = conn
+            .query_row(
+                "select count(*) from sqlite_master where name = 'wiki_merge_blocks'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn every_migration_with_a_table_or_column_is_seen() {
+        let e = effects(MIGRATIONS[MIGRATIONS.len() - 1]);
+        assert_eq!(e, vec![("wiki_merge_blocks".to_string(), None)]);
+        let seen = MIGRATIONS.iter().filter(|m| !effects(m).is_empty()).count();
+        assert!(seen >= 15, "{seen}");
     }
 }
