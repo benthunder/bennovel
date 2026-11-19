@@ -1261,7 +1261,10 @@ const MAX_LOOKUPS: usize = 3;
 fn doan_blocks(doan: &serde_json::Value) -> Option<Vec<String>> {
     use serde_json::Value;
     let list = |a: &Vec<Value>| -> Vec<String> {
-        a.iter().filter_map(Value::as_str).map(str::to_string).collect()
+        a.iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect()
     };
     match doan {
         Value::Array(a) => Some(list(a)),
@@ -1339,7 +1342,10 @@ fn ask_part_tools(
                 .and_then(|a| serde_json::from_str(a).ok());
             let answer = match name {
                 n if n == super::wiki::PART_TEXT => {
-                    let Some(blocks) = args.as_ref().and_then(|a| a.get("doan")).and_then(doan_blocks)
+                    let Some(blocks) = args
+                        .as_ref()
+                        .and_then(|a| a.get("doan"))
+                        .and_then(doan_blocks)
                     else {
                         return Ok(None);
                     };
@@ -1861,7 +1867,10 @@ pub(crate) mod tests {
         use serde_json::json;
         let want = vec!["Một.".to_string(), "Hai.".to_string()];
         assert_eq!(doan_blocks(&json!(["Một.", "Hai."])), Some(want.clone()));
-        assert_eq!(doan_blocks(&json!("[\"Một.\", \"Hai.\"]")), Some(want.clone()));
+        assert_eq!(
+            doan_blocks(&json!("[\"Một.\", \"Hai.\"]")),
+            Some(want.clone())
+        );
         assert_eq!(doan_blocks(&json!("Một.\n\nHai.")), Some(want));
         assert_eq!(doan_blocks(&json!("  ")), None);
         assert_eq!(doan_blocks(&json!(3)), None);

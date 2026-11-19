@@ -1190,6 +1190,34 @@ pub async fn wiki_remove<R: Runtime>(
     ai_blocking(move || Ok(wiki::remove(&db::open(&path)?, &uid)?)).await
 }
 
+/// Writes the wiki's names into the book's translations; returns the paragraphs changed.
+#[tauri::command]
+pub async fn wiki_apply_to_text<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+) -> Result<usize, AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || {
+        Ok(super::smart_merge_ai::apply_wiki(
+            &db::open(&path)?,
+            novel_id,
+        )?)
+    })
+    .await
+}
+
+/// Removes the entries the user selected; returns how many went.
+#[tauri::command]
+pub async fn wiki_remove_many<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    uids: Vec<String>,
+) -> Result<usize, AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || Ok(wiki::remove_many(&db::open(&path)?, &uids)?)).await
+}
+
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn wiki_relate<R: Runtime>(
@@ -1222,7 +1250,9 @@ pub async fn wiki_merge<R: Runtime>(
     let path = db_path(&app, &user)?;
     ai_blocking(move || {
         let conn = db::open(&path)?;
-        Ok(super::smart_merge::merge_with_rules(&conn, novel_id, &from_uid, &into_uid)?.0)
+        let kept = super::smart_merge::merge_with_rules(&conn, novel_id, &from_uid, &into_uid)?.0;
+        wiki::index_names(&conn, None, novel_id, wiki::WIKI_LANG)?;
+        Ok(kept)
     })
     .await
 }
@@ -1282,7 +1312,8 @@ pub async fn wiki_merge_ai_start<R: Runtime>(
         Ok(super::merge_queue::counts(&conn, novel_id)?)
     })
     .await?;
-    app.state::<super::merge_queue::MergeQueue>().kick(path, user);
+    app.state::<super::merge_queue::MergeQueue>()
+        .kick(path, user);
     Ok(status)
 }
 
@@ -1315,7 +1346,8 @@ pub async fn wiki_merge_ai_control<R: Runtime>(
     })
     .await?;
     if kick {
-        app.state::<super::merge_queue::MergeQueue>().kick(path, user);
+        app.state::<super::merge_queue::MergeQueue>()
+            .kick(path, user);
     }
     Ok(status)
 }
@@ -1330,8 +1362,14 @@ pub async fn wiki_merge_entry<R: Runtime>(
     uid: String,
 ) -> Result<super::smart_merge::EntryMerge, AiError> {
     let path = db_path(&app, &user)?;
-    ai_blocking(move || Ok(super::smart_merge::for_entry(&db::open(&path)?, novel_id, &uid)?))
-        .await
+    ai_blocking(move || {
+        Ok(super::smart_merge::for_entry(
+            &db::open(&path)?,
+            novel_id,
+            &uid,
+        )?)
+    })
+    .await
 }
 
 /// More pairs for one entry, found by the user's LLM.
@@ -1378,6 +1416,9 @@ pub async fn wiki_merge_apply<R: Runtime>(
         done.rules += g.rules;
         done.renamed += g.renamed;
         done.fixed += g.fixed;
+        // The names table the translation reads follows the merged entries: the next
+        // chapters write the kept name for every name merged into it.
+        wiki::index_names(&conn, None, novel_id, wiki::WIKI_LANG)?;
         Ok(done)
     })
     .await

@@ -3,21 +3,21 @@
 //! never held in memory whole; reading then loads chapters from SQLite on demand
 //! through the same windowed reader as a book file (`DbBook`).
 
-pub mod blocks;
 pub mod background;
+pub mod blocks;
 pub mod cast;
 pub mod commands;
 pub mod db;
 pub mod folder;
 pub mod genre_terms;
 pub mod llm;
+pub mod merge_queue;
 pub mod names;
 pub mod ocr;
 pub mod queue;
 pub mod rules;
 pub mod segments;
 pub mod smart_merge;
-pub mod merge_queue;
 pub mod smart_merge_ai;
 pub mod sync;
 pub mod translate;
@@ -218,7 +218,7 @@ pub fn import(
                 .filter(|p| image::key_of(p).is_none())
                 .map(|p| word_count(p))
                 .sum();
-                        // Titles and numbers are stored as the book gives them (its table of
+            // Titles and numbers are stored as the book gives them (its table of
             // contents, or a folder's file names); nothing is guessed from the text.
             let title = meta.label.clone().or_else(|| source.section_title(i));
             let pages = meta.pages;
