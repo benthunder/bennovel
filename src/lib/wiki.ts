@@ -172,6 +172,8 @@ export interface MergeGroup {
   members: WikiEntry[];
   into: WikiEntry;
   name: string;
+  /** The right original name for `into` when its own is wrong (often the Vietnamese name written as the original); '' when it is right. */
+  raw: string;
   rules: { find: string; replace: string }[];
   note: string;
 }
@@ -225,9 +227,9 @@ export async function entryWikiMergesAi(user: string, novelId: number, uid: stri
 
 /** Merges the pairs the user kept; each merge also adds its line to the book's replace rules. */
 export async function applyWikiMerges(user: string, novelId: number, picks: { fromUid: string; intoUid: string }[],
-  groups: { intoUid: string; fromUids: string[]; name: string }[] = []) {
+  groups: { intoUid: string; fromUids: string[]; name: string; raw?: string }[] = []) {
   try {
-    return await invoke<{ merged: number; rules: number; renamed: number }>('wiki_merge_apply', { user, novelId, picks, groups });
+    return await invoke<{ merged: number; rules: number; renamed: number; fixed: number }>('wiki_merge_apply', { user, novelId, picks, groups });
   } catch (e) {
     throw new AiFailure(e);
   }

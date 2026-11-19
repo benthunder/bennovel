@@ -1315,6 +1315,7 @@ pub async fn wiki_merge_apply<R: Runtime>(
         done.merged += g.merged;
         done.rules += g.rules;
         done.renamed += g.renamed;
+        done.fixed += g.fixed;
         Ok(done)
     })
     .await

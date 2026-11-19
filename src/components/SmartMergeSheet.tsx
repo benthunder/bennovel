@@ -33,6 +33,8 @@ export function SmartMergeSheet({ novelId, lang, entry, onClose, onMerged }: {
   const [groups, setGroups] = useState<MergeGroup[]>([]);
   // The final name per group, as the user may have changed it.
   const [names, setNames] = useState<Record<string, string>>({});
+  // The right original name per group, as the user may have changed it.
+  const [raws2, setRaws] = useState<Record<string, string>>({});
   const gid = (g: MergeGroup) => [g.into.uid, ...g.members.map(m => m.uid)].join('+');
   const pid = (s: MergeSuggestion) => `${s.from.uid}>${s.into.uid}`;
   // A pair the AI put in one of its groups is shown there only.
@@ -72,8 +74,10 @@ export function SmartMergeSheet({ novelId, lang, entry, onClose, onMerged }: {
       const fresh = found.filter(g => !groups.some(x => gid(x) === gid(g)));
       setGroups(gs => [...gs, ...fresh]);
       setNames(n => ({ ...n, ...Object.fromEntries(fresh.map(g => [gid(g), g.name])) }));
-      // A better name alone is ticked for one entry; across the whole wiki it waits for the user.
-      setPicked(p => new Set([...(p ?? []), ...fresh.filter(g => g.members.length > 0 || entry).map(gid)]));
+      setRaws(n => ({ ...n, ...Object.fromEntries(fresh.map(g => [gid(g), g.raw])) }));
+      // A better name alone is ticked for one entry; across the whole wiki it waits for the
+      // user, unless it only puts a wrong original name right.
+      setPicked(p => new Set([...(p ?? []), ...fresh.filter(g => g.members.length > 0 || entry || (g.raw && g.name === wikiLabel(g.into, lang))).map(gid)]));
       app.showToast(t('wiki.smartMergeAiFound', { n: fresh.length }));
     } catch (e) {
       console.error(e);
@@ -95,9 +99,10 @@ export function SmartMergeSheet({ novelId, lang, entry, onClose, onMerged }: {
     try {
       const done = await applyWikiMerges(user, novelId,
         chosenPairs.map(s => ({ fromUid: s.from.uid, intoUid: s.into.uid })),
-        chosenGroups.map(g => ({ intoUid: g.into.uid, fromUids: g.members.map(m => m.uid), name: (names[gid(g)] ?? g.name).trim() })));
+        chosenGroups.map(g => ({ intoUid: g.into.uid, fromUids: g.members.map(m => m.uid), name: (names[gid(g)] ?? g.name).trim(), raw: (raws2[gid(g)] ?? g.raw).trim() })));
       app.showToast(t('wiki.smartMerged', { n: done.merged, rules: done.rules })
-        + (done.renamed ? ` ${t('wiki.smartRenamed', { n: done.renamed })}` : ''));
+        + (done.renamed ? ` ${t('wiki.smartRenamed', { n: done.renamed })}` : '')
+        + (done.fixed ? ` ${t('wiki.smartFixed', { n: done.fixed })}` : ''));
       onMerged();
       onClose();
     } catch (e) {
@@ -155,7 +160,8 @@ export function SmartMergeSheet({ novelId, lang, entry, onClose, onMerged }: {
                       </span>
                       <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                         <span className="tag tag-neutral" style={{ fontSize: 11 }}>{t(`wiki.kind.${g.into.kind}`)}</span>
-                        <span className="tag tag-accent-2" style={{ fontSize: 11 }}>{t(g.members.length ? 'wiki.reason.ai' : 'wiki.reason.aiName')}</span>
+                        <span className="tag tag-accent-2" style={{ fontSize: 11 }}>{t(g.members.length ? 'wiki.reason.ai' : g.raw && g.name === wikiLabel(g.into, lang) ? 'wiki.reason.aiRaw' : 'wiki.reason.aiName')}</span>
+                        {g.members.length > 0 && g.raw && <span className="tag tag-accent-2" style={{ fontSize: 11 }}>{t('wiki.reason.aiRaw')}</span>}
                       </span>
                     </span>
                   </Checkbox>
@@ -163,6 +169,15 @@ export function SmartMergeSheet({ novelId, lang, entry, onClose, onMerged }: {
                     <label style={{ fontSize: 12, fontWeight: 700 }} htmlFor={`final-${k}`}>{t('wiki.finalName')}</label>
                     <input id={`final-${k}`} className="input" data-final-name style={{ height: 38 }} value={name}
                       onChange={e => setNames(n => ({ ...n, [k]: e.target.value }))} />
+                    {g.raw && (
+                      <>
+                        <label style={{ fontSize: 12, fontWeight: 700 }} htmlFor={`raw-${k}`}>
+                          {t('wiki.finalRaw')} <span className="muted" style={{ fontWeight: 400 }}>({t('wiki.finalRawWas', { raw: g.into.name })})</span>
+                        </label>
+                        <input id={`raw-${k}`} className="input" data-final-raw style={{ height: 38 }} value={raws2[k] ?? g.raw}
+                          onChange={e => setRaws(n => ({ ...n, [k]: e.target.value }))} />
+                      </>
+                    )}
                     {g.note && <span style={{ fontSize: 12, overflowWrap: 'anywhere' }}>{g.note}</span>}
                     {g.rules.length > 0 && (
                       <span className="muted" style={{ fontSize: 12, overflowWrap: 'anywhere' }}>

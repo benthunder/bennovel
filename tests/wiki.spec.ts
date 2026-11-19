@@ -108,7 +108,7 @@ async function nativeApp(page: Page) {
           }
           case 'wiki_merge_suggest_ai': {
             const by = (u: string) => wiki.entries.find(e => e.uid === u)!;
-            return [{ members: [by('l')], into: by('h'), name: 'Lâm Khiếu', rules: [{ find: 'Ứng Huyền Tử', replace: 'Lâm Khiếu' }], note: 'Mô tả cho thấy là một người.' }];
+            return [{ members: [by('l')], into: by('h'), name: 'Lâm Khiếu', raw: '', rules: [{ find: 'Ứng Huyền Tử', replace: 'Lâm Khiếu' }], note: 'Mô tả cho thấy là một người.' }];
           }
           case 'wiki_merge_entry': {
             const by = (u: string) => wiki.entries.find(e => e.uid === u)!;
@@ -123,7 +123,7 @@ async function nativeApp(page: Page) {
           }
           case 'wiki_merge_entry_ai': {
             const by = (u: string) => wiki.entries.find(e => e.uid === u)!;
-            return [{ members: [by('i')], into: by('a'), name: 'Lâm Động', rules: [{ find: 'Lâm Lang Thiên', replace: 'Lâm Động' }, { find: 'Lâm Đống', replace: 'Lâm Động' }], note: 'Cùng một người.' }];
+            return [{ members: [by('i')], into: by('a'), name: 'Lâm Động', raw: 'Lin Dong', rules: [{ find: 'Lâm Lang Thiên', replace: 'Lâm Động' }, { find: 'Lâm Đống', replace: 'Lâm Động' }], note: 'Cùng một người.' }];
           }
           case 'wiki_merge_apply': return { merged: (args.picks as unknown[]).length + ((args.groups as { fromUids: string[] }[]) ?? []).reduce((n, g) => n + g.fromUids.length, 0), rules: 2, renamed: 0 };
           case 'ai_marks': case 'ai_progress': case 'ai_versions': return [];
@@ -415,6 +415,10 @@ test('smart merge lists pairs to review and merges only the ticked ones', async 
   await expect(sheet.locator('[data-merge-group]')).toHaveCount(1);
   await expect(sheet.locator('[data-merge-pair]')).toHaveCount(0);
   await expect(sheet.locator('[data-final-name]')).toHaveValue('Lâm Động');
+  // A wrong original name comes back put right, and can be changed too.
+  await expect(sheet.locator('[data-final-raw]')).toHaveValue('Lin Dong');
+  await expect(sheet.getByText('(đang ghi: 林动)')).toBeVisible();
+  await expect(sheet.getByText('AI sửa tên gốc')).toBeVisible();
   await page.screenshot({ path: `test-results/wiki-${info.project.name}-entry-merge-ai.png` });
   await sheet.getByRole('button', { name: 'Hủy' }).click();
   await expect(page.locator('form.dialog')).toBeVisible();
