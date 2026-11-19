@@ -1177,7 +1177,9 @@ pub async fn wiki_save<R: Runtime>(
     entry: wiki::EntryInput,
 ) -> Result<wiki::Entry, AiError> {
     let path = db_path(&app, &user)?;
-    ai_blocking(move || wiki::save(&db::open(&path)?, novel_id, entry)).await
+    // A changed Vietnamese name is written into the translated chapters too.
+    ai_blocking(move || Ok(super::smart_merge::save_entry(&db::open(&path)?, novel_id, entry)?.0))
+        .await
 }
 
 #[tauri::command]

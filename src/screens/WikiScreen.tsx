@@ -46,7 +46,8 @@ export function WikiScreen({ novelId, title }: { novelId: number; title: string;
   const [picked, setPicked] = useState<Set<string>>(() => new Set());
   const [removing, setRemoving] = useState(false);
   const [applying, setApplying] = useState(false);
-  const reload = () => setRev(n => n + 1);
+  // A merge or an edited name may have changed the translated chapters too.
+  const reload = () => { setRev(n => n + 1); app.reloadText(); };
 
   const wiki = q.status === 'ready' ? q.data : null;
   const relCount = useMemo(() => {
@@ -95,7 +96,7 @@ export function WikiScreen({ novelId, title }: { novelId: number; title: string;
     try {
       const n = await applyWikiToText(user, novelId);
       app.showToast(t('wiki.applyTextDone', { n }));
-      app.reloadAi();
+      app.reloadText();
     } catch (e) {
       console.error(e);
       app.showToast(String(e));
