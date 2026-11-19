@@ -1196,27 +1196,9 @@ pub fn tidy_all(conn: &Connection) -> rusqlite::Result<()> {
         .query_map([], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?;
     for b in books {
-        tidy(conn, b)?;
-    }
-    // Merging those entries added replace rules from one chapter's heading to another's
-    // ("Chương 319" → "Chương 318"), which would rename the chapters' titles.
-    let mut stmt = conn.prepare("select rowid, rules from rule_lists")?;
-    let lists: Vec<(i64, String)> = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-        .collect::<rusqlite::Result<_>>()?;
-    for (row, json) in lists {
-        let Ok(rules) = serde_json::from_str::<Vec<super::rules::Rule>>(&json) else {
-            continue;
-        };
-        let kept: Vec<&super::rules::Rule> = rules
-            .iter()
-            .filter(|r| !(chapter_heading(&r.find) && chapter_heading(&r.replace)))
-            .collect();
-        if kept.len() != rules.len() {
-            conn.execute(
-                "update rule_lists set rules = ?2, updated_at = ?3 where rowid = ?1",
-                params![row, to_json(&kept, "[]"), super::db::now_ms()],
-            )?;
+        if tidy(conn, b)? > 0 {
+            // The names table the translation reads leaves out what went.
+            let _ = index_names(conn, None, b, WIKI_LANG);
         }
     }
     Ok(())
@@ -5032,7 +5014,8 @@ mod tests {
             super::super::rules::get(&conn, novel, "vi")
                 .unwrap()
                 .unwrap(),
-            vec![rule("Mak Hwa", "Mặc Hoa")]
+            vec![rule("Chương 319", "Chương 318"), rule("Mak Hwa", "Mặc Hoa")],
+            "the user's replace list is theirs: the cleanup leaves it as it is"
         );
         assert!(by_uid_live(&conn, &keep.uid));
     }

@@ -18,8 +18,8 @@ import { useApp } from '../store/AppStore';
  * with the final name (and the right original name) to use, which can be edited. For the
  * whole wiki the AI runs in the background like the translation queue: closing the
  * sheet or the app keeps the run, a lost connection pauses it to carry on, and the
- * groups found so far can be reviewed while the rest is read. Each merge adds its old names to the
- * replace rules, so chapters translated before show the final name.
+ * groups found so far can be reviewed while the rest is read. Each merge writes the final name
+ * over its old names in the chapters translated before; the user's replace list is not touched.
  */
 export function SmartMergeSheet({ novelId, lang, entry, onClose, onMerged }: {
   novelId: number; lang: string; entry?: WikiEntry; onClose: () => void; onMerged: () => void;

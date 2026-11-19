@@ -89,15 +89,13 @@ export function LocalBookScreen({ book, place, path, live: liveStart }: { book: 
   };
   const viewLang = readingLangOf(ai);
   // The replace rules of the language read: a book read in its Vietnamese translation
-  // uses the Vietnamese list, which a wiki merge adds to; read raw, the book's own.
+  // uses the Vietnamese list; read raw, the book's own.
   const rulesLang: ContentLang = CONTENT_LANGS.find(l => l === viewLang) ?? lang;
   const rulesKey = `localRules.${place ? `${place.user}:${place.novelId}` : `file:${book.title ?? ''}`}.${rulesLang}`;
   // Library books keep their list in the library file (synced); a file opened once, on the device.
-  // Raised when a wiki merge added replace rules, so they load again.
-  const [rulesRev, setRulesRev] = useState(0);
   const rulesQ = useAsync(
     () => (place ? getBookRules(place.user, place.novelId, rulesLang, rulesKey) : Promise.resolve(load<ReplaceRule[]>(rulesKey, []))),
-    [rulesKey, rulesRev]
+    [rulesKey]
   );
   // Edits made here win over what was loaded until the book or language changes.
   const [edited, setEdited] = useState<{ key: string; rules: ReplaceRule[] } | null>(null);
@@ -584,7 +582,11 @@ export function LocalBookScreen({ book, place, path, live: liveStart }: { book: 
       {wikiPop && place && (
         <WikiPopup key={wikiPop.entry.uid} wiki={wikiPop.wiki} entry={wikiPop.entry} lang={wikiPop.lang}
           onPick={e => setWikiPop(w => w && { ...w, entry: e })} onClose={() => setWikiPop(null)}
-          novelId={place.novelId} onMerged={() => { setEdited(null); setRulesRev(n => n + 1); app.reloadAi(); }}
+          novelId={place.novelId} onMerged={() => {
+            // The merge wrote the kept name into the translated chapters: each part loads its text again.
+            setAiRev(r => { const o = { ...r }; book.sections.forEach((_, i) => { o[i] = (o[i] ?? 0) + 1; }); return o; });
+            app.reloadAi();
+          }}
           onOpenWiki={() => { setWikiPop(null); app.push({ s: 'bookWiki', novelId: place.novelId, title: book.title ?? t('book.untitled'), lang: wikiPop.lang }); }} />
       )}
 

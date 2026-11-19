@@ -3,14 +3,14 @@
 //! names, mostly the Vietnamese ones the translation used, and lists them for the user
 //! to review (`suggest`). Nothing is merged until the user picks pairs (`apply`).
 //!
-//! Every merge, smart or by hand (`merge_with_rules`), also adds a line to the book's
-//! replace rules (`rules.rs`): the name the merged entry had → the kept entry's name.
-//! The reader applies those rules to the text, so chapters translated before the merge
-//! show the kept name without being translated again.
+//! Every merge, smart or by hand (`merge_with_rules`), also writes the kept entry's name
+//! into the chapters translated before (`rewrite`) where they wrote the merged one, so
+//! they show it without being translated again. The user's own replace list
+//! (`rules.rs`) is theirs alone: merging never adds to it.
 
 use super::genre_terms::{embed, fold};
 use super::llm::AiError;
-use super::rules::{self, Rule};
+use super::rules::Rule;
 use super::wiki::{self, Entry, WIKI_LANG};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -43,7 +43,7 @@ pub struct Suggestion {
     /// The entry that is kept, with its name.
     pub into: Entry,
     pub reason: Reason,
-    /// The replace rules the merge will add (find → replace).
+    /// The names the merge will write over in the translations (find → replace).
     pub rules: Vec<Rule>,
     /// More about why, when there is something to say.
     pub note: String,
@@ -114,7 +114,7 @@ pub(crate) fn safe_find(find: &str, to: &str) -> bool {
     find.chars().count() >= 3 && long && find != to && !to.contains(find)
 }
 
-/// The replace rules merging `from` into `into` adds: the names `from` was written
+/// The names merging `from` into `into` writes over in the translations: the names `from` was written
 /// with in the translation → the kept name. A name is left out when replacing it as
 /// plain text would harm other words or other entries: a short one-word name, one the
 /// kept name holds (it would be replaced inside the kept name), one that is another
@@ -395,42 +395,129 @@ pub(crate) fn distance(a: &[f32], b: &[f32]) -> f32 {
     1.0 - dot / (na.sqrt() * nb.sqrt())
 }
 
-/// Adds `new` to the book's replace rules in the wiki's language: a rule that already
-/// finds the same text now replaces it with the new name, and one that replaced with a
-/// name now merged away follows to the kept name. Returns the rules added or changed.
-pub fn add_rules(conn: &Connection, novel_id: i64, new: &[Rule]) -> rusqlite::Result<usize> {
+/// Writes the kept name into the book's Vietnamese translations where the merged names
+/// were written (`new`: find → replace, longest first): every translated paragraph and
+/// chapter title, as whole words. The user's replace list is not touched. Returns the
+/// paragraphs and titles changed.
+pub fn rewrite(conn: &Connection, novel_id: i64, new: &[Rule]) -> rusqlite::Result<usize> {
+    let mut new: Vec<&Rule> = new
+        .iter()
+        .filter(|r| !r.find.trim().is_empty() && r.find != r.replace)
+        .collect();
     if new.is_empty() {
         return Ok(0);
     }
-    let mut list = rules::get(conn, novel_id, WIKI_LANG)?.unwrap_or_default();
-    let mut changed = 0;
-    for r in new {
-        for old in list.iter_mut().filter(|o| o.replace == r.find) {
-            old.replace = r.replace.clone();
-            changed += 1;
-        }
-        match list.iter_mut().find(|o| o.find == r.find) {
-            Some(o) if o.replace == r.replace => {}
-            Some(o) => {
-                o.replace = r.replace.clone();
-                changed += 1;
+    new.sort_by_key(|r| std::cmp::Reverse(r.find.chars().count()));
+    let fix = |text: &str| -> Option<String> {
+        let mut out = text.to_string();
+        let mut changed = false;
+        for r in &new {
+            if let Some(t) = replace_words(&out, &r.find, &r.replace) {
+                out = t;
+                changed = true;
             }
-            None => {
-                list.push(r.clone());
-                changed += 1;
+        }
+        changed.then_some(out)
+    };
+    let mut stmt = conn.prepare(
+        "select s.id, s.chapter_id, s.style, s.content from segments s
+           join chapters c on c.id = s.chapter_id
+         where c.novel_id = ?1 and s.lang = ?2 and s.style <> '' and s.type = 'text'",
+    )?;
+    let rows: Vec<(i64, i64, String, String)> = stmt
+        .query_map(rusqlite::params![novel_id, WIKI_LANG], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut changed = 0;
+    let mut touched: Vec<(i64, String)> = Vec::new();
+    for (id, chapter, style, content) in rows {
+        let Ok(sentences) = serde_json::from_str::<Vec<String>>(&content) else {
+            continue;
+        };
+        let mut any = false;
+        let fixed: Vec<String> = sentences
+            .iter()
+            .map(|t| match fix(t) {
+                Some(f) => {
+                    any = true;
+                    f
+                }
+                None => t.clone(),
+            })
+            .collect();
+        if any {
+            conn.execute(
+                "update segments set content = ?2 where id = ?1",
+                rusqlite::params![id, serde_json::to_string(&fixed).unwrap_or(content)],
+            )?;
+            changed += 1;
+            if !touched.contains(&(chapter, style.clone())) {
+                touched.push((chapter, style));
             }
         }
     }
-    // A rule may now replace a name with itself (the chain came back to it).
-    list.retain(|o| o.find != o.replace);
-    if changed > 0 {
-        rules::set(conn, novel_id, WIKI_LANG, &list)?;
+    let mut stmt = conn.prepare(
+        "select t.id, t.title from chapter_translations t join chapters c on c.id = t.chapter_id
+         where c.novel_id = ?1 and t.lang = ?2",
+    )?;
+    let titles: Vec<(i64, String)> = stmt
+        .query_map(rusqlite::params![novel_id, WIKI_LANG], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    for (id, title) in titles {
+        if let Some(t) = fix(&title) {
+            conn.execute(
+                "update chapter_translations set title = ?2,
+                   updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') where id = ?1",
+                rusqlite::params![id, t],
+            )?;
+            changed += 1;
+        }
+    }
+    // A changed translation is the newer one when the library syncs.
+    for (chapter, style) in touched {
+        conn.execute(
+            "update chapter_translations set updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             where chapter_id = ?1 and lang = ?2 and coalesce(style, '') = ?3",
+            rusqlite::params![chapter, WIKI_LANG, style],
+        )?;
     }
     Ok(changed)
 }
 
-/// Merges `from_uid` into `into_uid` as the user asked and adds the replace rules for
-/// the name that went away. Returns the kept entry and the rules added.
+/// `text` with every `find` that stands as whole words (not inside a longer word)
+/// written `to`; None when there is none.
+pub(crate) fn replace_words(text: &str, find: &str, to: &str) -> Option<String> {
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    let mut any = false;
+    for (i, _) in text.match_indices(find) {
+        if i < last {
+            continue;
+        }
+        let before = text[..i].chars().next_back();
+        let after = text[i + find.len()..].chars().next();
+        let word = |c: Option<char>| c.is_some_and(char::is_alphanumeric);
+        if word(before) || word(after) {
+            continue;
+        }
+        out.push_str(&text[last..i]);
+        out.push_str(to);
+        last = i + find.len();
+        any = true;
+    }
+    if !any {
+        return None;
+    }
+    out.push_str(&text[last..]);
+    Some(out)
+}
+
+/// Merges `from_uid` into `into_uid` as the user asked and writes the kept name over
+/// the name that went away in the translations. Returns the kept entry and the
+/// paragraphs changed.
 pub fn merge_with_rules(
     conn: &Connection,
     novel_id: i64,
@@ -446,7 +533,7 @@ pub fn merge_with_rules(
     };
     let new = rules_for(from, into, &all);
     let kept = wiki::merge(conn, novel_id, from_uid, into_uid, true)?;
-    let added = add_rules(conn, novel_id, &new)?;
+    let added = rewrite(conn, novel_id, &new)?;
     Ok((kept, added))
 }
 
@@ -570,8 +657,16 @@ mod tests {
     }
 
     #[test]
-    fn merging_adds_replace_rules_that_follow_later_merges() {
+    fn merging_writes_the_kept_name_into_the_translations_and_not_the_replace_list() {
         let (conn, novel) = book("smart-merge-rules");
+        conn.execute_batch(
+            r#"insert into chapter_translations (chapter_id, lang, style, source, state, title, content, updated_at)
+                 values (10, 'vi', 'natural', 'ai', 'published', 'Chương 1: Tuyết Hui', '', '2020-01-01T00:00:00.000Z');
+               insert into segments (chapter_id, lang, style, position, type, content) values
+                 (10, 'vi', 'natural', 0, 'text', '["Tuyết Hui cười.","Seol Hwi đi, Tuyết Huiên ở lại."]'),
+                 (10, 'en', '', 0, 'text', '["Seol Hwi smiled."]');"#,
+        )
+        .unwrap();
         let a = add(&conn, novel, "character", "Seol-Hwi", "Tuyết Huy");
         let b = add(&conn, novel, "character", "Seolhwi", "Tuyết Hui");
         let c = add(&conn, novel, "character", "Seol Hwi", "Seol Hwi");
@@ -596,23 +691,30 @@ mod tests {
         )
         .unwrap();
         assert_eq!(done.merged, 2);
-        let list = rules::get(&conn, novel, "vi").unwrap().unwrap();
-        // "Tuyết Hui" first went to "Seol Hwi", then followed it to "Tuyết Huy".
-        assert!(
-            list.contains(&Rule {
-                find: "Tuyết Hui".into(),
-                replace: "Tuyết Huy".into()
-            }),
-            "{list:?}"
+        // "Tuyết Hui" first became "Seol Hwi", then followed it to "Tuyết Huy"; a longer
+        // word holding the name and the original text stay as they were.
+        let text = |lang: &str| -> String {
+            conn.query_row(
+                "select content from segments where chapter_id = 10 and lang = ?1",
+                [lang],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            text("vi"),
+            r#"["Tuyết Huy cười.","Tuyết Huy đi, Tuyết Huiên ở lại."]"#
         );
-        assert!(
-            list.contains(&Rule {
-                find: "Seol Hwi".into(),
-                replace: "Tuyết Huy".into()
-            }),
-            "{list:?}"
-        );
-        assert!(list.iter().all(|r| r.replace == "Tuyết Huy"), "{list:?}");
+        assert_eq!(text("en"), r#"["Seol Hwi smiled."]"#);
+        let (title, at): (String, String) = conn
+            .query_row("select title, updated_at from chapter_translations where chapter_id = 10 and lang = 'vi'", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(title, "Chương 1: Tuyết Huy");
+        assert!(at.as_str() > "2020-01-01T00:00:00.000Z");
+        assert!(done.rules > 0);
+        assert_eq!(super::super::rules::get(&conn, novel, "vi").unwrap(), None);
         let w = wiki::load(&conn, novel).unwrap();
         assert_eq!(w.entries.len(), 1);
     }

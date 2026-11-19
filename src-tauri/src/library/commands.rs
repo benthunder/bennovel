@@ -1233,7 +1233,9 @@ pub async fn wiki_merge<R: Runtime>(
     let path = db_path(&app, &user)?;
     ai_blocking(move || {
         let conn = db::open(&path)?;
-        Ok(super::smart_merge::merge_with_rules(&conn, novel_id, &from_uid, &into_uid)?.0)
+        let kept = super::smart_merge::merge_with_rules(&conn, novel_id, &from_uid, &into_uid)?.0;
+        wiki::index_names(&conn, None, novel_id, wiki::WIKI_LANG)?;
+        Ok(kept)
     })
     .await
 }
@@ -1397,6 +1399,9 @@ pub async fn wiki_merge_apply<R: Runtime>(
         done.rules += g.rules;
         done.renamed += g.renamed;
         done.fixed += g.fixed;
+        // The names table the translation reads follows the merged entries: the next
+        // chapters write the kept name for every name merged into it.
+        wiki::index_names(&conn, None, novel_id, wiki::WIKI_LANG)?;
         Ok(done)
     })
     .await

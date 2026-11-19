@@ -6,7 +6,8 @@
 //! are one, the entry to keep and the final name to use (`Group`); one entry alone with a
 //! better name is a group too. Nothing is merged until the user reviews the groups and
 //! picks them (`apply_groups`): the entries go into the kept one, it takes the final name,
-//! and every old name, as entries and chapters wrote it, goes in the replace rules.
+//! and every old name, as entries and chapters wrote it, is written over in the
+//! translated chapters (`smart_merge::rewrite`).
 //!
 //! The AI also puts right an original name that is not one: the translation requests
 //! sometimes wrote the Vietnamese name as the original ("Chích Minh" for "Cheok
@@ -56,7 +57,7 @@ pub struct Group {
     pub name: String,
     /// The right original name for the kept entry, when its own is wrong; else empty.
     pub raw: String,
-    /// The replace rules applying it adds (find → `name`).
+    /// The names applying it writes over in the translations (find → `name`).
     pub rules: Vec<Rule>,
     pub note: String,
 }
@@ -223,7 +224,7 @@ impl Records {
         s
     }
 
-    /// The replace rules for a group: every name its entries were written with (their
+    /// The names to write over for a group: every name its entries were written with (their
     /// translated names, original names, and the chapters' spellings) → `name`. A name
     /// another entry outside the group still uses, one unsafe as plain text, or a title or
     /// nickname rather than the name misspelt (`smart_merge::rule_ok`) is left out.
@@ -662,7 +663,7 @@ pub fn for_wiki(
 
 /// Applies the groups the user kept, after the pairs (`smart_merge::apply`) already
 /// merged: each group's entries go into the kept one (following earlier merges), it
-/// takes the final name, and its old names go in the replace rules.
+/// takes the final name, and its old names are written over in the translations.
 pub fn apply_groups(
     conn: &Connection,
     novel_id: i64,
@@ -759,7 +760,7 @@ pub fn apply_groups(
                 done.fixed += 1;
             }
         }
-        done.rules += smart_merge::add_rules(conn, novel_id, &rules)?;
+        done.rules += smart_merge::rewrite(conn, novel_id, &rules)?;
     }
     Ok(done)
 }
@@ -894,16 +895,8 @@ mod tests {
         let kept = w.entries.iter().find(|e| e.uid == a).unwrap();
         assert_eq!(kept.names.get("vi").map(String::as_str), Some("Tuyết Huy"));
         assert!(!w.entries.iter().any(|e| e.uid == b));
-        let list = rules::get(&conn, novel, "vi").unwrap().unwrap();
-        for find in ["Seol-Hwi", "Seol Hwi", "Tuyết Hui", "Tuyết Hy"] {
-            assert!(
-                list.contains(&Rule {
-                    find: find.into(),
-                    replace: "Tuyết Huy".into()
-                }),
-                "{find}: {list:?}"
-            );
-        }
+        // Nothing goes in the user's replace list.
+        assert_eq!(rules::get(&conn, novel, "vi").unwrap(), None);
     }
 
     #[test]
