@@ -22,7 +22,7 @@ use super::llm::{AiError, Chat};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 pub const KINDS: &[&str] = &[
     "character",
@@ -881,6 +881,21 @@ pub fn remove(conn: &Connection, uid: &str) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// Removes many entries at once (the user's selection on the wiki screen), all or none.
+/// Returns how many were removed.
+pub fn remove_many(conn: &Connection, uids: &[String]) -> rusqlite::Result<usize> {
+    let tx = conn.unchecked_transaction()?;
+    let mut n = 0;
+    for uid in uids {
+        if by_uid_live(&tx, uid) {
+            remove(&tx, uid)?;
+            n += 1;
+        }
+    }
+    tx.commit()?;
+    Ok(n)
+}
+
 /// Adds (or, from the user, brings back) a relation; returns its uid, or None when the
 /// user removed it before and the AI asks again. `kind` is a relation type, or free
 /// words written in `lang`.
@@ -1075,6 +1090,70 @@ pub fn merge(
 pub fn tidy(conn: &Connection, novel_id: i64) -> rusqlite::Result<usize> {
     let all = entries(conn, novel_id)?;
     let mut changes = 0;
+    // A chapter's heading is never a name, whoever's entry it is (merging entries makes
+    // the kept one the user's).
+    for e in &all {
+        let vi = e.names.get("vi").map(String::as_str).unwrap_or("");
+        if chapter_heading(&e.name) || (!vi.is_empty() && chapter_heading(vi)) {
+            remove(conn, &e.uid)?;
+            changes += 1;
+        }
+    }
+    // Nor is a chapter's title, taken for a term while translating.
+    let titles = chapter_titles(conn, novel_id)?;
+    for e in &all {
+        let vi = e
+            .names
+            .get("vi")
+            .map(|v| v.trim().to_lowercase())
+            .unwrap_or_default();
+        let title = titles.contains(&e.name.trim().to_lowercase())
+            || (!vi.is_empty() && titles.contains(&vi));
+        if by_uid_live(conn, &e.uid) && (numbered(&e.name) || (title_kind(&e.kind) && title)) {
+            remove(conn, &e.uid)?;
+            changes += 1;
+        }
+    }
+    // A Vietnamese name kept as the original of a book that is not Vietnamese gives way
+    // to the original among its other names; the entry that already has it takes it in.
+    if !vietnamese_book(conn, novel_id) {
+        for e in &all {
+            let Some(raw) = raw_alias(&e.name, &e.aliases) else {
+                continue;
+            };
+            if !by_uid_live(conn, &e.uid) {
+                continue;
+            }
+            let other = all
+                .iter()
+                .find(|o| o.uid != e.uid && o.name.trim() == raw && by_uid_live(conn, &o.uid));
+            if let Some(o) = other {
+                if o.kind == e.kind && merge(conn, novel_id, &e.uid, &o.uid, false).is_ok() {
+                    changes += 1;
+                }
+                continue;
+            }
+            let mut names = e.names.clone();
+            names
+                .entry("vi".to_string())
+                .or_insert_with(|| e.name.clone());
+            let mut aliases: Vec<String> = e
+                .aliases
+                .iter()
+                .filter(|a| a.trim() != raw)
+                .cloned()
+                .collect();
+            aliases.push(e.name.clone());
+            // A removed entry may hold the name: it stays as it is then.
+            let done = conn.execute(
+                "update or ignore wiki_entries set name = ?2, names = ?3, aliases = ?4, updated_at = ?5
+                 where uid = ?1",
+                params![e.uid, raw, to_json(&names, "{}"), to_json(&clean_list(aliases, raw), "[]"), super::db::now_ms()],
+            )?;
+            changes += done;
+        }
+    }
+    let all = entries(conn, novel_id)?;
     for e in all.iter().filter(|e| e.source == "ai") {
         // Judged by the Vietnamese name when there is one (the raw one may be Chinese).
         let translated = e
@@ -1117,7 +1196,10 @@ pub fn tidy_all(conn: &Connection) -> rusqlite::Result<()> {
         .query_map([], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?;
     for b in books {
-        tidy(conn, b)?;
+        if tidy(conn, b)? > 0 {
+            // The names table the translation reads leaves out what went.
+            let _ = index_names(conn, None, b, WIKI_LANG);
+        }
     }
     Ok(())
 }
@@ -1249,13 +1331,192 @@ fn capitalised_name(name: &str) -> Option<bool> {
 /// has capitals (`capitalised_name`: "núi", "linh khí", "Bé gái váy hồng" are not). A
 /// Chinese name has no capitals, so its translation tells.
 fn proper_noun(name: &str, translated: &str) -> bool {
-    if name.trim().chars().count() < 2 {
+    if name.trim().chars().count() < 2
+        || chapter_heading(name)
+        || chapter_heading(translated)
+        || numbered(name)
+    {
         return false;
     }
     match capitalised_name(name) {
         Some(ok) => ok,
         None => capitalised_name(translated).unwrap_or(true),
     }
+}
+
+/// Whether a name ends in a part number in brackets, as a chapter's title split over
+/// several chapters does ("Those Who Leave Must Return (2)"): no name is written so.
+fn numbered(name: &str) -> bool {
+    let n = name.trim();
+    let Some(inner) = n
+        .strip_suffix(')')
+        .and_then(|r| r.rsplit_once('('))
+        .map(|(_, i)| i)
+    else {
+        return false;
+    };
+    !inner.trim().is_empty() && inner.trim().chars().all(|c| c.is_ascii_digit())
+}
+
+/// The kinds a chapter's title may be taken for by mistake. A character, a place or a
+/// sect named as a chapter's title is still a name.
+fn title_kind(kind: &str) -> bool {
+    matches!(kind, "term" | "other")
+}
+
+/// Whether a paragraph (a segment's JSON content) is only a chapter's heading.
+fn heading_paragraph(content: &str) -> bool {
+    serde_json::from_str::<Vec<String>>(content)
+        .map(|v| v.len() == 1 && chapter_heading(&v[0]))
+        .unwrap_or(false)
+}
+
+/// Whether `name` is a chapter's title in the book: a paragraph of its own right after
+/// a heading paragraph ("Chapter 350", then "Those Who Leave Must Return").
+fn chapter_title(conn: &Connection, novel_id: i64, name: &str) -> rusqlite::Result<bool> {
+    let text = serde_json::to_string(&[name.trim()]).unwrap_or_default();
+    let mut stmt = conn.prepare_cached(
+        "select p.content from segments s
+           join chapters c on c.id = s.chapter_id
+           join segments p on p.chapter_id = s.chapter_id and p.lang = s.lang
+             and p.style = s.style and p.position = s.position - 1
+         where c.novel_id = ?1 and s.content = ?2",
+    )?;
+    let before: Vec<String> = stmt
+        .query_map(params![novel_id, text], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(before.iter().any(|p| heading_paragraph(p)))
+}
+
+/// Every chapter title of the book (as `chapter_title` finds them), lower case, in the
+/// original and in its translations.
+fn chapter_titles(conn: &Connection, novel_id: i64) -> rusqlite::Result<HashSet<String>> {
+    let mut stmt = conn.prepare(
+        "select s.content, n.content from segments s
+           join chapters c on c.id = s.chapter_id
+           join segments n on n.chapter_id = s.chapter_id and n.lang = s.lang
+             and n.style = s.style and n.position = s.position + 1
+         where c.novel_id = ?1 and s.type = 'text' and length(s.content) < 80
+           and length(n.content) < 300",
+    )?;
+    let pairs: Vec<(String, String)> = stmt
+        .query_map([novel_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(pairs
+        .into_iter()
+        .filter(|(h, _)| heading_paragraph(h))
+        .filter_map(|(_, t)| serde_json::from_str::<Vec<String>>(&t).ok())
+        .filter(|t| t.len() == 1)
+        .map(|t| t[0].trim().to_lowercase())
+        .collect())
+}
+
+/// Whether the book is written in Vietnamese (a convert), so its original names are too.
+fn vietnamese_book(conn: &Connection, novel_id: i64) -> bool {
+    book_lang(conn, novel_id).map(|l| l == "vi").unwrap_or(true)
+}
+
+/// The original name among `aliases` for an entry whose name is Vietnamese in a book
+/// that is not: the translation sometimes writes the Vietnamese name as the original
+/// ("Tuyết Huy", with "Seol-Hwi" as its other name).
+fn raw_alias<'a>(name: &str, aliases: &'a [String]) -> Option<&'a str> {
+    if super::detect_lang(name) != "vi" {
+        return None;
+    }
+    aliases
+        .iter()
+        .map(|a| a.trim())
+        .find(|a| a.chars().count() >= 2 && super::detect_lang(a) != "vi")
+}
+
+/// Words that head a chapter, volume or episode title ("Chapter 320", "Chương 12",
+/// "Quyển 3", "Episode 4"), lower case.
+const HEADINGS: &[&str] = &[
+    "chapter",
+    "chap",
+    "ch",
+    "chương",
+    "chuong",
+    "episode",
+    "ep",
+    "part",
+    "phần",
+    "volume",
+    "vol",
+    "quyển",
+    "tập",
+    "hồi",
+    "book",
+    "act",
+    "arc",
+    "prologue",
+    "epilogue",
+    "side story",
+    "extra",
+    "ngoại truyện",
+    "phiên ngoại",
+    "mở đầu",
+    "kết thúc",
+];
+
+/// Whether a name is only a chapter's (or volume's, episode's) heading: a heading word
+/// and a number ("Chapter 320", "Chương 318", "Ch. 5", "Quyển III"), "第三百二十章",
+/// "제320화", or a number alone. The AI sometimes lists a chapter's title as a wiki entry;
+/// it is not a name, and the wiki would fill with hundreds of them.
+pub(crate) fn chapter_heading(name: &str) -> bool {
+    let n = name.trim().to_lowercase();
+    if n.is_empty() {
+        return false;
+    }
+    let original: Vec<char> = name.trim().chars().collect();
+    // A number, a Roman one in capitals ("III", not "Mi"), or a Chinese one.
+    let numeral = |s: &str| {
+        let s = s.trim_start_matches(|c: char| c.is_whitespace() || ".:#-–—".contains(c));
+        let first = s
+            .split(|c: char| c.is_whitespace() || ":.-–—".contains(c))
+            .next()
+            .unwrap_or("");
+        !first.is_empty()
+            && (first.chars().all(|c| c.is_ascii_digit())
+                || first.chars().all(|c| "IVXLC".contains(c))
+                || first
+                    .chars()
+                    .all(|c| "一二三四五六七八九十百千零〇两".contains(c)))
+    };
+    if n.chars()
+        .all(|c| c.is_ascii_digit() || c.is_whitespace() || ".:-#".contains(c))
+    {
+        return true;
+    }
+    if HEADINGS.iter().any(|h| {
+        n.strip_prefix(h).is_some_and(|rest| {
+            // "prologue", "ngoại truyện" alone are headings too.
+            if rest.trim().is_empty() {
+                return h.chars().count() > 4;
+            }
+            let rest: String = original.iter().skip(h.chars().count()).collect();
+            rest.starts_with(|c: char| !c.is_alphabetic()) && numeral(&rest)
+        })
+    }) {
+        return true;
+    }
+    // 第三百二十章, 第12回, 제320화, 320화, 12장
+    let cjk = |s: &str| {
+        s.chars()
+            .all(|c| c.is_ascii_digit() || "一二三四五六七八九十百千零〇两".contains(c))
+            && !s.is_empty()
+    };
+    if let Some(rest) = n.strip_prefix('第') {
+        if let Some(num) = rest.strip_suffix(['章', '回', '节', '節', '卷', '话', '話', '集'])
+        {
+            return cjk(num.trim());
+        }
+    }
+    let n = n.strip_prefix('제').unwrap_or(&n).trim();
+    if let Some(num) = n.strip_suffix(['화', '장', '권']) {
+        return cjk(num.trim());
+    }
+    false
 }
 
 /// The live entry an AI item stands for when its own name is new: one that has any of
@@ -1324,9 +1585,22 @@ fn upsert_ai_entry(
     chapter: Option<i64>,
     mut item: AiEntry,
 ) -> rusqlite::Result<Option<String>> {
-    let name = item.name.trim().to_string();
+    let mut name = item.name.trim().to_string();
     if name.is_empty() {
         return Ok(None);
+    }
+    // A Vietnamese name written as the original of a book that is not Vietnamese takes
+    // its original from the other names given, and becomes the translation.
+    if let Some(raw) = raw_alias(&name, &item.aliases).map(str::to_string) {
+        if !vietnamese_book(conn, novel_id) {
+            if item.translated.trim().is_empty() {
+                item.translated = name.clone();
+            }
+            item.aliases.retain(|a| a.trim() != raw);
+            item.aliases.push(name.clone());
+            item.name = raw.clone();
+            name = raw;
+        }
     }
     let translated = item.translated.trim().to_string();
     let known = match find(conn, novel_id, &name)? {
@@ -1401,6 +1675,12 @@ fn upsert_ai_entry(
         }
         // A common noun ("núi", "the sect", "linh khí") is not kept as an entry.
         None if !proper_noun(&name, &translated) => Ok(None),
+        // Nor is a chapter's title ("Chapter 350", then "Those Who Leave Must Return").
+        None if title_kind(kind_of(&item.kind))
+            && chapter_title(conn, novel_id, &name).unwrap_or(false) =>
+        {
+            Ok(None)
+        }
         None => {
             let mut names = BTreeMap::new();
             if !translated.is_empty() {
@@ -1827,7 +2107,10 @@ fn near_names(
     if phrases.is_empty() {
         return Ok(Vec::new());
     }
-    let vectors: Vec<Vec<f32>> = phrases.iter().map(|p| super::genre_terms::embed(p)).collect();
+    let vectors: Vec<Vec<f32>> = phrases
+        .iter()
+        .map(|p| super::genre_terms::embed(p))
+        .collect();
     let mut stmt = conn.prepare(
         "select raw, translated, kind, entry_uid, vec_distance_cosine(embedding, ?3) as d
          from wiki_names
@@ -2050,7 +2333,14 @@ fn meta_schema(vi: bool, full: bool) -> Value {
     });
     if !full {
         let props = schema["properties"].as_object_mut().expect("properties");
-        for k in ["personality", "age", "origin", "abilities", "grade", "difficulty"] {
+        for k in [
+            "personality",
+            "age",
+            "origin",
+            "abilities",
+            "grade",
+            "difficulty",
+        ] {
             props.remove(k);
         }
     }
@@ -3564,11 +3854,23 @@ mod tests {
                 extract_prompt(lang, "@@", "xianxia"),
                 part_tools(lang)
             );
-            for word in ["personality", "difficulty", "ghi quan hệ equivalent_to", "record equivalent_to", "leader_of từ", "record leader_of"] {
+            for word in [
+                "personality",
+                "difficulty",
+                "ghi quan hệ equivalent_to",
+                "record equivalent_to",
+                "leader_of từ",
+                "record leader_of",
+            ] {
                 assert!(!part.contains(word), "{lang}: {word}");
             }
             assert!(part.contains("stage_name"), "{lang}");
-            let learn = format!("{}{}{}", learn_prompt(lang, "xianxia"), json_prompt(lang, "xianxia"), tools(lang));
+            let learn = format!(
+                "{}{}{}",
+                learn_prompt(lang, "xianxia"),
+                json_prompt(lang, "xianxia"),
+                tools(lang)
+            );
             for word in ["personality", "difficulty", "equivalent_to"] {
                 assert!(learn.contains(word), "{lang}: {word}");
             }
@@ -4614,5 +4916,205 @@ mod tests {
         // Not in Vietnamese yet: kept until it is translated.
         let qing = all.iter().find(|e| e.name == "青檀").unwrap();
         assert_eq!(qing.names["en"], "Qing Tan");
+    }
+
+    #[test]
+    fn chapter_headings_are_not_names() {
+        for h in [
+            "Chapter 320",
+            "Chương 318",
+            "Ch. 5",
+            "chapter 12: The End",
+            "Quyển III",
+            "Tập 4",
+            "Episode 7",
+            "第三百二十章",
+            "第12回",
+            "제320화",
+            "320화",
+            "Prologue",
+            "Ngoại truyện",
+            "320",
+            "Hồi 9",
+        ] {
+            assert!(chapter_heading(h), "{h}");
+            assert!(!proper_noun(h, h), "{h}");
+        }
+        for n in [
+            "Chapman",
+            "Chương Hàm",
+            "Lâm Động",
+            "Cheok Myeong",
+            "Volume Lord",
+            "Book of Lies",
+            "Tập Hiền Điện",
+            "Phần Thiên Cốc",
+            "Hồi Xuân Đan",
+            "Act",
+            "Mak Hwa",
+            "Chương Mi",
+            "Tập Di",
+            "Phần Lý",
+        ] {
+            assert!(!chapter_heading(n), "{n}");
+        }
+    }
+
+    #[test]
+    fn tidy_drops_chapter_headings_even_the_users() {
+        let (conn, novel) = super::super::translate::tests::book("wiki-headings");
+        let mut names = BTreeMap::new();
+        names.insert("vi".to_string(), "Chương 320".to_string());
+        let ch = save(
+            &conn,
+            novel,
+            EntryInput {
+                uid: None,
+                kind: "other".into(),
+                name: "Chapter 320".into(),
+                names,
+                aliases: vec![],
+                summaries: BTreeMap::new(),
+                rank: None,
+                meta: Default::default(),
+            },
+        )
+        .unwrap();
+        let mut names = BTreeMap::new();
+        names.insert("vi".to_string(), "Mặc Hoa".to_string());
+        let keep = save(
+            &conn,
+            novel,
+            EntryInput {
+                uid: None,
+                kind: "character".into(),
+                name: "Mak Hwa".into(),
+                names,
+                aliases: vec![],
+                summaries: BTreeMap::new(),
+                rank: None,
+                meta: Default::default(),
+            },
+        )
+        .unwrap();
+        let rule = |f: &str, r: &str| super::super::rules::Rule {
+            find: f.into(),
+            replace: r.into(),
+        };
+        super::super::rules::set(
+            &conn,
+            novel,
+            "vi",
+            &[rule("Chương 319", "Chương 318"), rule("Mak Hwa", "Mặc Hoa")],
+        )
+        .unwrap();
+        tidy_all(&conn).unwrap();
+        assert!(!by_uid_live(&conn, &ch.uid));
+        assert_eq!(
+            super::super::rules::get(&conn, novel, "vi")
+                .unwrap()
+                .unwrap(),
+            vec![rule("Chương 319", "Chương 318"), rule("Mak Hwa", "Mặc Hoa")],
+            "the user's replace list is theirs: the cleanup leaves it as it is"
+        );
+        assert!(by_uid_live(&conn, &keep.uid));
+    }
+
+    #[test]
+    fn chapter_titles_and_vietnamese_originals_are_put_right() {
+        let (conn, novel) = super::super::translate::tests::book("wiki-titles");
+        conn.execute_batch(
+            r#"insert into segments (chapter_id, lang, style, position, type, content) values
+                 (10, 'en', '', 50, 'text', '["Chapter 350"]'),
+                 (10, 'en', '', 51, 'text', '["Those Who Leave Must Return"]'),
+                 (10, 'en', '', 52, 'text', '["Seol-Hwi left the Black Moon Troops."]');"#,
+        )
+        .unwrap();
+        // While translating: a chapter's title is not a term, a numbered one no name.
+        let title = upsert_ai(
+            &conn,
+            novel,
+            "vi",
+            Some(1),
+            ai("Those Who Leave Must Return", "term", "Kẻ ra đi", &[]),
+        )
+        .unwrap();
+        assert_eq!(title, None);
+        let part = upsert_ai(
+            &conn,
+            novel,
+            "vi",
+            Some(1),
+            ai("Face To Face (2)", "other", "Mặt đối mặt (2)", &[]),
+        )
+        .unwrap();
+        assert_eq!(part, None);
+        // A Vietnamese name given as the original takes the original from its other names.
+        let seol = upsert_ai(
+            &conn,
+            novel,
+            "vi",
+            Some(1),
+            ai("Tuyết Huy", "character", "", &["Seol-Hwi"]),
+        )
+        .unwrap()
+        .unwrap();
+        let e = by_uid(&conn, &seol).unwrap().unwrap();
+        assert_eq!(e.name, "Seol-Hwi");
+        assert_eq!(e.names.get("vi").map(String::as_str), Some("Tuyết Huy"));
+        assert!(e.aliases.contains(&"Tuyết Huy".to_string()));
+
+        // What older versions kept is cleaned the same way.
+        let input = |kind: &str, name: &str, vi: &str, aliases: &[&str]| {
+            let mut names = BTreeMap::new();
+            names.insert("vi".to_string(), vi.to_string());
+            EntryInput {
+                uid: None,
+                kind: kind.into(),
+                name: name.into(),
+                names,
+                aliases: aliases.iter().map(|a| a.to_string()).collect(),
+                summaries: BTreeMap::new(),
+                rank: None,
+                meta: Default::default(),
+            }
+        };
+        let old_title = save(
+            &conn,
+            novel,
+            input("other", "Those Who Leave Must Return", "Kẻ ra đi", &[]),
+        )
+        .unwrap();
+        let old_part = save(
+            &conn,
+            novel,
+            input("other", "Confusion (3)", "Hỗn loạn (3)", &[]),
+        )
+        .unwrap();
+        let troops = save(
+            &conn,
+            novel,
+            input(
+                "faction",
+                "Hắc Nguyệt Quân",
+                "Hắc Nguyệt Quân",
+                &["Black Moon Troops"],
+            ),
+        )
+        .unwrap();
+        // A character named as a chapter's title is still a name.
+        let named = save(
+            &conn,
+            novel,
+            input("character", "Chapter Man", "Chương Nhân", &[]),
+        )
+        .unwrap();
+        tidy(&conn, novel).unwrap();
+        assert!(!by_uid_live(&conn, &old_title.uid));
+        assert!(!by_uid_live(&conn, &old_part.uid));
+        let t = by_uid(&conn, &troops.uid).unwrap().unwrap();
+        assert_eq!(t.name, "Black Moon Troops");
+        assert_eq!(t.aliases, vec!["Hắc Nguyệt Quân".to_string()]);
+        assert!(by_uid_live(&conn, &named.uid));
     }
 }

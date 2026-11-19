@@ -6,7 +6,8 @@
 //! are one, the entry to keep and the final name to use (`Group`); one entry alone with a
 //! better name is a group too. Nothing is merged until the user reviews the groups and
 //! picks them (`apply_groups`): the entries go into the kept one, it takes the final name,
-//! and every old name, as entries and chapters wrote it, goes in the replace rules.
+//! and every old name, as entries and chapters wrote it, is written over in the
+//! translated chapters (`smart_merge::rewrite`).
 //!
 //! The AI also puts right an original name that is not one: the translation requests
 //! sometimes wrote the Vietnamese name as the original ("Chích Minh" for "Cheok
@@ -56,7 +57,7 @@ pub struct Group {
     pub name: String,
     /// The right original name for the kept entry, when its own is wrong; else empty.
     pub raw: String,
-    /// The replace rules applying it adds (find → `name`).
+    /// The names applying it writes over in the translations (find → `name`).
     pub rules: Vec<Rule>,
     pub note: String,
 }
@@ -223,9 +224,10 @@ impl Records {
         s
     }
 
-    /// The replace rules for a group: every name its entries were written with (their
+    /// The names to write over for a group: every name its entries were written with (their
     /// translated names, original names, and the chapters' spellings) → `name`. A name
-    /// another entry outside the group still uses, or one unsafe as plain text, is left out.
+    /// another entry outside the group still uses, one unsafe as plain text, or a title or
+    /// nickname rather than the name misspelt (`smart_merge::rule_ok`) is left out.
     pub fn rules(&self, members: &[&Entry], into: &Entry, name: &str) -> Vec<Rule> {
         let inside: Vec<&str> = members
             .iter()
@@ -249,7 +251,7 @@ impl Records {
         }
         let mut out: Vec<Rule> = finds
             .into_iter()
-            .filter(|f| safe_find(f, name) && !taken(f))
+            .filter(|f| safe_find(f, name) && smart_merge::rule_ok(f, name) && !taken(f))
             .map(|find| Rule {
                 find,
                 replace: name.to_string(),
@@ -392,7 +394,11 @@ pub fn build(rec: &Records, a: &Answered) -> Option<Group> {
             .and_then(|k| entries.iter().find(|e| e.uid == k).copied())
             .unwrap_or(entries[0]),
     };
-    let members: Vec<&Entry> = entries.iter().copied().filter(|e| e.uid != into.uid).collect();
+    let members: Vec<&Entry> = entries
+        .iter()
+        .copied()
+        .filter(|e| e.uid != into.uid)
+        .collect();
     // A right original name is not the Vietnamese one, unless the book is Vietnamese;
     // nor one a member or the kept entry already has as its name.
     let raw = a.raw.trim();
@@ -655,9 +661,39 @@ pub fn for_wiki(
     }
 }
 
+/// Writes the wiki into the book's translations ("apply the wiki to the text"): for each
+/// entry, the other ways the chapters wrote it (its original names left untranslated,
+/// the spellings the translation used for them) become its Vietnamese name, as
+/// `smart_merge::rewrite` does after a merge. A spelling two entries claim is left as
+/// it is. Returns the paragraphs and titles changed.
+pub fn apply_wiki(conn: &Connection, novel_id: i64) -> rusqlite::Result<usize> {
+    let rec = Records::load(conn, novel_id)?;
+    let mut to: HashMap<String, Option<String>> = HashMap::new();
+    for e in &rec.all {
+        let name = shown(e).trim();
+        if name.is_empty() || name == e.name.trim() {
+            continue;
+        }
+        for r in rec.rules(&[], e, name) {
+            to.entry(r.find)
+                .and_modify(|t| {
+                    if t.as_deref() != Some(r.replace.as_str()) {
+                        *t = None;
+                    }
+                })
+                .or_insert(Some(r.replace));
+        }
+    }
+    let rules: Vec<Rule> = to
+        .into_iter()
+        .filter_map(|(find, replace)| replace.map(|replace| Rule { find, replace }))
+        .collect();
+    smart_merge::rewrite(conn, novel_id, &rules)
+}
+
 /// Applies the groups the user kept, after the pairs (`smart_merge::apply`) already
 /// merged: each group's entries go into the kept one (following earlier merges), it
-/// takes the final name, and its old names go in the replace rules.
+/// takes the final name, and its old names are written over in the translations.
 pub fn apply_groups(
     conn: &Connection,
     novel_id: i64,
@@ -754,7 +790,7 @@ pub fn apply_groups(
                 done.fixed += 1;
             }
         }
-        done.rules += smart_merge::add_rules(conn, novel_id, &rules)?;
+        done.rules += smart_merge::rewrite(conn, novel_id, &rules)?;
     }
     Ok(done)
 }
@@ -889,16 +925,8 @@ mod tests {
         let kept = w.entries.iter().find(|e| e.uid == a).unwrap();
         assert_eq!(kept.names.get("vi").map(String::as_str), Some("Tuyết Huy"));
         assert!(!w.entries.iter().any(|e| e.uid == b));
-        let list = rules::get(&conn, novel, "vi").unwrap().unwrap();
-        for find in ["Seol-Hwi", "Seol Hwi", "Tuyết Hui", "Tuyết Hy"] {
-            assert!(
-                list.contains(&Rule {
-                    find: find.into(),
-                    replace: "Tuyết Huy".into()
-                }),
-                "{find}: {list:?}"
-            );
-        }
+        // Nothing goes in the user's replace list.
+        assert_eq!(rules::get(&conn, novel, "vi").unwrap(), None);
     }
 
     #[test]
@@ -1042,5 +1070,40 @@ mod tests {
         let e = wiki::by_uid(&conn, &d).unwrap().unwrap();
         assert_eq!(e.name, "Heuk Ryong");
         assert_eq!(e.aliases, vec!["Hắc Long".to_string()]);
+    }
+
+    #[test]
+    fn the_wiki_is_written_into_the_translations() {
+        let (conn, novel) = book("smart-ai-apply");
+        add(&conn, novel, "character", "Seol-Hwi", "Tuyết Huy", "");
+        add(
+            &conn,
+            novel,
+            "faction",
+            "Black Moon Troops",
+            "Hắc Nguyệt Quân",
+            "",
+        );
+        conn.execute_batch(
+            r#"insert into chapter_translations (chapter_id, lang, style, source, state, title, content)
+                 values (10, 'vi', 'natural', 'ai', 'published', 'Chương 1', '');
+               insert into segments (chapter_id, lang, style, position, type, content) values
+                 (10, 'vi', 'natural', 0, 'text', '["Seol-Hwi dẫn Black Moon Troops đi.","Hắc Nguyệt Quân theo sau."]');"#,
+        )
+        .unwrap();
+        assert_eq!(apply_wiki(&conn, novel).unwrap(), 1);
+        let text: String = conn
+            .query_row(
+                "select content from segments where chapter_id = 10 and lang = 'vi'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            text,
+            r#"["Tuyết Huy dẫn Hắc Nguyệt Quân đi.","Hắc Nguyệt Quân theo sau."]"#
+        );
+        assert_eq!(apply_wiki(&conn, novel).unwrap(), 0);
+        assert_eq!(super::super::rules::get(&conn, novel, "vi").unwrap(), None);
     }
 }

@@ -203,7 +203,14 @@ fn parse(file: &str, tsv: &str) -> Result<Vec<Row>, String> {
             continue;
         }
         // A name file: the names to use, then the spellings of the sources.
-        let first = |c: &str| cell(col(c)).split('|').next().unwrap_or("").trim().to_string();
+        let first = |c: &str| {
+            cell(col(c))
+                .split('|')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        };
         let targets: Vec<(String, String)> = TARGETS
             .iter()
             .map(|t| (t.to_string(), first(t)))
@@ -262,7 +269,12 @@ fn suffixes() -> Result<Vec<[String; 6]>, String> {
     lines
         .into_iter()
         .map(|(n, cells)| {
-            let r = cols.map(|i| i.and_then(|i| cells.get(i)).copied().unwrap_or("").to_string());
+            let r = cols.map(|i| {
+                i.and_then(|i| cells.get(i))
+                    .copied()
+                    .unwrap_or("")
+                    .to_string()
+            });
             if r[0].is_empty() || r[2].is_empty() {
                 return Err(format!("global/org-suffixes.tsv line {n}: needs vi and zh"));
             }
@@ -335,7 +347,8 @@ pub fn build(path: &Path) -> Result<(), String> {
                 .prepare("insert into org_suffixes (vi, en, zh, ko, ja, meaning) values (?1, ?2, ?3, ?4, ?5, ?6)")
                 .map_err(e)?;
             for r in suffixes()? {
-                suf.execute(rusqlite::params_from_iter(r.iter())).map_err(e)?;
+                suf.execute(rusqlite::params_from_iter(r.iter()))
+                    .map_err(e)?;
             }
             let mut meta = tx
                 .prepare("insert into meta (key, value) values (?1, ?2)")
@@ -473,9 +486,12 @@ fn rules(
     } else {
         "Kinds of organisation by the end of the original name:\n"
     };
-    let mut stmt = conn.prepare("select vi, en, zh, ko, ja, meaning from org_suffixes order by id")?;
+    let mut stmt =
+        conn.prepare("select vi, en, zh, ko, ja, meaning from org_suffixes order by id")?;
     let rows = stmt.query_map([], |r| {
-        Ok((0..6).map(|i| r.get::<_, String>(i)).collect::<rusqlite::Result<Vec<_>>>())
+        Ok((0..6)
+            .map(|i| r.get::<_, String>(i))
+            .collect::<rusqlite::Result<Vec<_>>>())
     })?;
     let mut out = Vec::new();
     for r in rows {
@@ -519,14 +535,15 @@ impl Suffix {
     /// (Wudang Sect, Võ Đang phái). A bare 派, "sect" or "phái" is not a name.
     fn named_in(&self, text: &str) -> bool {
         self.forms.iter().any(|f| {
-            let Some(first) = f.chars().next() else { return false };
+            let Some(first) = f.chars().next() else {
+                return false;
+            };
             if !is_cjk(first) {
                 return after_a_name(text, f);
             }
             let need = if is_hangul(first) { 2 } else { 1 };
-            text.match_indices(f.as_str()).any(|(i, _)| {
-                text[..i].chars().rev().take_while(|&c| is_cjk(c)).count() >= need
-            })
+            text.match_indices(f.as_str())
+                .any(|(i, _)| text[..i].chars().rev().take_while(|&c| is_cjk(c)).count() >= need)
         })
     }
 }
@@ -648,7 +665,11 @@ impl Terms {
         // Phrases of two words or more that are not already a term, a part of one the
         // text has, or (a part of) a name to use: one word alone ("Hắn", "Bang") is too
         // often not a name. Longest first, so a phrase inside an accepted one is skipped.
-        let exact: Vec<String> = self.found(text).iter().map(|(t, _)| t.to_lowercase()).collect();
+        let exact: Vec<String> = self
+            .found(text)
+            .iter()
+            .map(|(t, _)| t.to_lowercase())
+            .collect();
         let values: Vec<String> = self.entries.iter().map(|(_, v)| fold(v)).collect();
         let mut phrases: Vec<String> = super::wiki::name_phrases(text)
             .into_iter()
@@ -680,7 +701,12 @@ impl Terms {
             let Some((i, d)) = best else { continue };
             let (term, value) = self.entries[i].clone();
             let close = d < NEAR || (d < FIND && (shares_word(p, &term) || shares_word(p, &value)));
-            if close && !self.entries.iter().any(|(t, _)| t.to_lowercase() == p.to_lowercase()) {
+            if close
+                && !self
+                    .entries
+                    .iter()
+                    .any(|(t, _)| t.to_lowercase() == p.to_lowercase())
+            {
                 self.entries.push((p.clone(), value));
                 taken.push(p.to_lowercase());
                 added += 1;
@@ -696,7 +722,9 @@ impl Terms {
     fn vectors(&self, conn: &Connection) -> rusqlite::Result<Vec<(usize, Vec<f32>)>> {
         let mut all: std::collections::HashMap<String, Vec<f32>> = Default::default();
         let mut stmt = conn.prepare("select term, embedding from term_vectors")?;
-        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
+        })?;
         for row in rows {
             let (t, b) = row?;
             all.insert(t, from_blob(&b));
@@ -741,7 +769,12 @@ pub(crate) fn fold(text: &str) -> String {
     const TO: &str = "aaaaaaaaaaaaaaaaaeeeeeeeeeeeiiiiiooooooooooooooooouuuuuuuuuuuyyyyyd";
     text.to_lowercase()
         .chars()
-        .map(|c| FROM.chars().position(|f| f == c).and_then(|i| TO.chars().nth(i)).unwrap_or(c))
+        .map(|c| {
+            FROM.chars()
+                .position(|f| f == c)
+                .and_then(|i| TO.chars().nth(i))
+                .unwrap_or(c)
+        })
         .collect()
 }
 
@@ -788,7 +821,10 @@ pub fn embed(text: &str) -> Vec<f32> {
         .chars()
         .map(|c| if c.is_alphanumeric() { c } else { ' ' })
         .collect();
-    let joined = format!(" {} ", folded.split_whitespace().collect::<Vec<_>>().join(" "));
+    let joined = format!(
+        " {} ",
+        folded.split_whitespace().collect::<Vec<_>>().join(" ")
+    );
     let chars: Vec<char> = joined.chars().collect();
     for w in chars.windows(3) {
         let h = w.iter().fold(0xcbf2_9ce4_8422_2325_u64, |h, c| {
@@ -847,9 +883,19 @@ mod tests {
             return;
         };
         let mut s = format!("# Bảng thuật ngữ dùng khi dịch (version {})\n", version());
-        for (_, file, tsv) in SOURCES.iter().copied().chain([("global", "global/org-suffixes.tsv", SUFFIXES)]) {
+        for (_, file, tsv) in
+            SOURCES
+                .iter()
+                .copied()
+                .chain([("global", "global/org-suffixes.tsv", SUFFIXES)])
+        {
             let (head, rows) = table(tsv);
-            s.push_str(&format!("\n## {file} ({} dòng)\n\n| {} |\n|{}\n", rows.len(), head.join(" | "), "---|".repeat(head.len())));
+            s.push_str(&format!(
+                "\n## {file} ({} dòng)\n\n| {} |\n|{}\n",
+                rows.len(),
+                head.join(" | "),
+                "---|".repeat(head.len())
+            ));
             for (_, cells) in rows {
                 let cells: Vec<String> = (0..head.len())
                     .map(|i| cells.get(i).copied().unwrap_or("").replace('|', " / "))
@@ -871,19 +917,34 @@ mod tests {
                 for (lang, v) in &r.values {
                     let key = (genre.to_string(), r.term.to_lowercase(), lang.clone());
                     if let Some((f, old)) = seen.insert(key, (file.to_string(), v.clone())) {
-                        assert_eq!(&old, v, "{}: {} is {old} in {f} but {v} in {file}", genre, r.term);
+                        assert_eq!(
+                            &old, v,
+                            "{}: {} is {old} in {f} but {v} in {file}",
+                            genre, r.term
+                        );
                     }
                 }
-                assert!(r.values.iter().any(|(l, _)| l == "vi") || r.src == "en", "{file}: {} has no vi", r.term);
+                assert!(
+                    r.values.iter().any(|(l, _)| l == "vi") || r.src == "en",
+                    "{file}: {} has no vi",
+                    r.term
+                );
             }
         }
         assert!(suffixes().unwrap().len() > 20);
-        assert!(version().parse::<u32>().is_ok(), "version.txt must be a number");
+        assert!(
+            version().parse::<u32>().is_ok(),
+            "version.txt must be a number"
+        );
     }
 
     #[test]
     fn parse_reads_both_shapes() {
-        let rows = parse("x", "term\tkind\ten\tvi\n# c\n\nA tông\tsect\tA Sect\tA phái\n").unwrap();
+        let rows = parse(
+            "x",
+            "term\tkind\ten\tvi\n# c\n\nA tông\tsect\tA Sect\tA phái\n",
+        )
+        .unwrap();
         assert_eq!(
             rows,
             vec![Row {
@@ -891,7 +952,10 @@ mod tests {
                 src: "vi".into(),
                 kind: "sect".into(),
                 note: "".into(),
-                values: vec![("en".into(), "A Sect".into()), ("vi".into(), "A phái".into())],
+                values: vec![
+                    ("en".into(), "A Sect".into()),
+                    ("vi".into(), "A phái".into())
+                ],
             }]
         );
         assert!(parse("x", "term\tvi\nA\t\n").is_err());
@@ -907,7 +971,10 @@ mod tests {
                 (
                     r.term.as_str(),
                     r.src.as_str(),
-                    r.values.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect(),
+                    r.values
+                        .iter()
+                        .map(|(a, b)| (a.as_str(), b.as_str()))
+                        .collect(),
                 )
             })
             .collect();
@@ -933,13 +1000,18 @@ mod tests {
         ensure(&path).unwrap();
         let conn = Connection::open(&path).unwrap();
         let v: String = conn
-            .query_row("select value from meta where key = 'version'", [], |r| r.get(0))
+            .query_row("select value from meta where key = 'version'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(v, version());
-        let n: i64 = conn.query_row("select count(*) from terms", [], |r| r.get(0)).unwrap();
+        let n: i64 = conn
+            .query_row("select count(*) from terms", [], |r| r.get(0))
+            .unwrap();
         assert!(n > 500, "{n}");
         // An older file is built again.
-        conn.execute("update meta set value = 'old' where key = 'data_hash'", []).unwrap();
+        conn.execute("update meta set value = 'old' where key = 'data_hash'", [])
+            .unwrap();
         drop(conn);
         ensure(&path).unwrap();
         assert_eq!(stamp(&path), Some((version().to_string(), data_hash())));
@@ -967,13 +1039,20 @@ mod tests {
         );
         let prompt = terms.prompt("Người của Võ Đang tông tới.");
         assert!(prompt.contains("- Võ Đang tông → Võ Đang phái"), "{prompt}");
-        assert!(prompt.contains("→ tông:"), "wuxia gets the suffix rules: {prompt}");
+        assert!(
+            prompt.contains("→ tông:"),
+            "wuxia gets the suffix rules: {prompt}"
+        );
         // Only the kinds the part names, and none for a part that names no organisation.
         assert!(!prompt.contains("→ bang:"), "{prompt}");
         assert!(terms.prompt("武当派弟子").contains("→ phái:"));
         assert!(terms.prompt("화산파의 검수").contains("→ phái:"));
         assert!(terms.prompt("the Wudang Sect").contains("→ phái:"));
-        for plain in ["Hắn rút kiếm.", "그는 질문을 했다. 학교 앞 상점.", "the sect"] {
+        for plain in [
+            "Hắn rút kiếm.",
+            "그는 질문을 했다. 학교 앞 상점.",
+            "the sect",
+        ] {
             let p = terms.prompt(plain);
             assert!(!p.contains("Loại tổ chức"), "{plain}: {p}");
             assert!(p.contains("Tokyo"), "{p}");
@@ -990,7 +1069,10 @@ mod tests {
         assert_eq!(romance.found("四川"), vec![("四川", "Tứ Xuyên")]);
         assert!(!romance.prompt("x").contains("→ phái:"));
         let xx = load_from(&conn, "xianxia", "vi").unwrap();
-        assert_eq!(xx.found("筑基 师兄"), vec![("筑基", "Trúc Cơ"), ("师兄", "sư huynh")]);
+        assert_eq!(
+            xx.found("筑基 师兄"),
+            vec![("筑基", "Trúc Cơ"), ("师兄", "sư huynh")]
+        );
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
@@ -999,17 +1081,30 @@ mod tests {
         let path = temp("vec");
         build(&path).unwrap();
         let conn = Connection::open(&path).unwrap();
-        let n: i64 = conn.query_row("select count(*) from term_vectors", [], |r| r.get(0)).unwrap();
+        let n: i64 = conn
+            .query_row("select count(*) from term_vectors", [], |r| r.get(0))
+            .unwrap();
         assert!(n > 300, "{n}");
         let mut terms = load_from(&conn, "wuxia", "vi").unwrap();
         let text = "Hắn là đệ tử Vo Dang Tong, từng tới Nga Mi Tong, quen người Cái Bang và Wu-dang Sect. Võ Đang hôm nay vắng.";
         assert!(terms.found("Vo Dang Tong").is_empty());
         let added = terms.near_with(&conn, text).unwrap();
         let found = terms.found(text);
-        assert!(found.contains(&("Vo Dang Tong", "Võ Đang phái")), "{found:?}");
-        assert!(found.contains(&("Wu-dang Sect", "Võ Đang phái")), "{found:?}");
+        assert!(
+            found.contains(&("Vo Dang Tong", "Võ Đang phái")),
+            "{found:?}"
+        );
+        assert!(
+            found.contains(&("Wu-dang Sect", "Võ Đang phái")),
+            "{found:?}"
+        );
         assert!(found.contains(&("Nga Mi Tong", "Nga Mi phái")), "{found:?}");
-        assert_eq!(added, 3, "{:?}", &terms.entries[terms.entries.len() - added..]);
+        assert_eq!(
+            added,
+            3,
+            "{:?}",
+            &terms.entries[terms.entries.len() - added..]
+        );
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
@@ -1017,7 +1112,11 @@ mod tests {
     fn close_spellings_have_close_vectors() {
         let d = |a: &str, b: &str| cosine_distance(&embed(a), &embed(b));
         assert!(d("Võ Đang tông", "vo dang tong") < 0.001);
-        assert!(d("Wudang Sect", "Wu-dang Sect") < 0.4, "{}", d("Wudang Sect", "Wu-dang Sect"));
+        assert!(
+            d("Wudang Sect", "Wu-dang Sect") < 0.4,
+            "{}",
+            d("Wudang Sect", "Wu-dang Sect")
+        );
         assert!(d("Wudang Sect", "Kunlun Sect") > 0.5);
     }
 
@@ -1030,11 +1129,16 @@ mod tests {
             .map(|i| (format!("门派{i}号"), format!("Môn phái {i}")))
             .chain((0..100_000).map(|i| (format!("Sect Name {i}"), format!("Phái {i}"))))
             .collect();
-        let t = Terms { lang: "vi".into(), entries, ..Default::default() };
+        let t = Terms {
+            lang: "vi".into(),
+            entries,
+            ..Default::default()
+        };
         let start = std::time::Instant::now();
         t.matcher();
         let built = start.elapsed();
-        let chapter = "武当派弟子从四川赶来，与丐帮长老在洛阳会合。门派42号 Sect Name 7 ".repeat(300);
+        let chapter =
+            "武当派弟子从四川赶来，与丐帮长老在洛阳会合。门派42号 Sect Name 7 ".repeat(300);
         let start = std::time::Instant::now();
         let found = t.found(&chapter);
         println!(

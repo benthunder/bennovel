@@ -133,6 +133,15 @@ async function nativeApp(page: Page) {
             return [{ members: [by('i')], into: by('a'), name: 'Lâm Động', raw: 'Lin Dong', rules: [{ find: 'Lâm Lang Thiên', replace: 'Lâm Động' }, { find: 'Lâm Đống', replace: 'Lâm Động' }], note: 'Cùng một người.' }];
           }
           case 'wiki_merge_apply': return { merged: (args.picks as unknown[]).length + ((args.groups as { fromUids: string[] }[]) ?? []).reduce((n, g) => n + g.fromUids.length, 0), rules: 2, renamed: 0 };
+          case 'wiki_remove_many': {
+            const uids = args.uids as string[];
+            wiki.entries = wiki.entries.filter(e => !uids.includes(e.uid));
+            return uids.length;
+          }
+          case 'plugin:dialog|message': return 'Yes';
+          case 'wiki_apply_to_text': return 7;
+          case 'replace_rules_get':
+            return args.lang === 'vi' ? [{ find: 'Hắc Ma Chiến Quân', replace: 'Cố Đại Diễm' }, { find: 'Cổ Đại Viêm', replace: 'Cố Đại Diễm' }, { find: 'Lâm Đống', replace: 'Lâm Động' }] : null;
           case 'ai_marks': case 'ai_progress': case 'ai_versions': return [];
           default: return null;
         }
@@ -392,8 +401,8 @@ test('smart merge lists pairs to review and merges only the ticked ones', async 
   await page.getByRole('button', { name: 'Gộp thông minh' }).click();
   const sheet = page.locator('[data-wiki-smart-merge-sheet]');
   await expect(sheet.locator('[data-merge-pair]')).toHaveCount(2);
-  // Each pair shows the replace line it adds; a near name is not ticked at first.
-  await expect(sheet.getByText('Thay thế: Seol-Hwi → Tuyết Huy, Seol Hwi → Tuyết Huy')).toBeVisible();
+  // Each pair shows the names it fixes in the translation; a near name is not ticked at first.
+  await expect(sheet.getByText('Sửa trong bản dịch: Seol-Hwi → Tuyết Huy, Seol Hwi → Tuyết Huy')).toBeVisible();
   const boxes = sheet.locator('input[type=checkbox]');
   await expect(boxes.nth(0)).toBeChecked();
   await expect(boxes.nth(1)).not.toBeChecked();
@@ -419,10 +428,10 @@ test('smart merge lists pairs to review and merges only the ticked ones', async 
   await expect(group.locator('input[type=checkbox]')).toBeChecked();
   // The final name can be changed before merging.
   await group.locator('[data-final-name]').fill('Lâm Khiếu lão gia');
-  await expect(group.getByText('Thay thế: Ứng Huyền Tử → Lâm Khiếu lão gia')).toBeVisible();
+  await expect(group.getByText('Sửa trong bản dịch: Ứng Huyền Tử → Lâm Khiếu lão gia')).toBeVisible();
   await page.screenshot({ path: `test-results/wiki-${info.project.name}-smart-merge-ai.png` });
   await sheet.getByRole('button', { name: 'Gộp 2 mục chọn' }).click();
-  await expect(page.getByText('Đã gộp 2 mục, thêm 2 dòng thay thế.')).toBeVisible();
+  await expect(page.getByText('Đã gộp 2 mục, sửa tên ở 2 đoạn đã dịch.')).toBeVisible();
   expect((await calls(page)).find(c => c.cmd === 'wiki_merge_apply')?.args).toMatchObject({
     novelId: 1, picks: [{ fromUid: 's2', intoUid: 's1' }], groups: [{ intoUid: 'h', fromUids: ['l'], name: 'Lâm Khiếu lão gia' }]
   });
@@ -446,4 +455,62 @@ test('smart merge lists pairs to review and merges only the ticked ones', async 
   await page.screenshot({ path: `test-results/wiki-${info.project.name}-entry-merge-ai.png` });
   await sheet.getByRole('button', { name: 'Hủy' }).click();
   await expect(page.locator('form.dialog')).toBeVisible();
+});
+
+test('many wiki entries and replace rules are picked and deleted at once', async ({ page }, info) => {
+  await nativeApp(page);
+  await page.addInitScript(() => {
+    localStorage.setItem('bennovel.aiView.:1', JSON.stringify({ lang: 'vi', style: 'Natural', dict: true, view: 'vi' }));
+  });
+  await page.goto('/');
+  await page.getByText('Võ Động Càn Khôn').filter({ visible: true }).first().click();
+  await page.getByRole('button', { name: /Wiki truyện/ }).filter({ visible: true }).first().click();
+  await expect(page.locator('[data-entry]')).toHaveCount(13);
+  // The wiki's names are written into the translated chapters.
+  await page.locator('[data-wiki-apply]').click();
+  await expect(page.getByText('Đã sửa tên ở 7 đoạn đã dịch.')).toBeVisible();
+  expect((await calls(page)).find(c => c.cmd === 'wiki_apply_to_text')?.args).toMatchObject({ novelId: 1 });
+  await page.locator('[data-wiki-pick]').click();
+  // Picking: a tap ticks the entry instead of opening it.
+  await page.locator('[data-entry="林啸"]').click();
+  await page.locator('[data-entry="石符"]').click();
+  await expect(page.locator('form.dialog')).toHaveCount(0);
+  await expect(page.locator('[data-entry="林啸"]')).toHaveAttribute('aria-checked', 'true');
+  await expect(page.locator('[data-wiki-pick-bar]')).toContainText('Đã chọn 2');
+  await page.screenshot({ path: `test-results/wiki-${info.project.name}-pick.png` });
+  await page.locator('[data-wiki-pick-remove]').click();
+  await expect(page.getByText('Đã xoá 2 mục khỏi wiki.')).toBeVisible();
+  expect((await calls(page)).find(c => c.cmd === 'wiki_remove_many')?.args).toMatchObject({ uids: ['h', 'm'] });
+  await expect(page.locator('[data-entry]')).toHaveCount(11);
+  await expect(page.locator('[data-wiki-pick-bar]')).toHaveCount(0);
+  // Select all takes what the list shows (one kind here), and unticks it again.
+  await page.locator('[data-wiki-pick]').click();
+  await page.getByRole('tab', { name: 'Cảnh giới' }).click();
+  await page.locator('[data-wiki-pick-all]').click();
+  await expect(page.locator('[data-wiki-pick-bar]')).toContainText('Đã chọn 3');
+  await expect(page.locator('[data-wiki-pick-all]')).toHaveText('Bỏ chọn tất cả');
+  await page.locator('[data-wiki-pick-all]').click();
+  await expect(page.locator('[data-wiki-pick-bar]')).toContainText('Đã chọn 0');
+  await page.locator('[data-wiki-pick-done]').click();
+
+  // The reader's replace list: pick some rules, or all, and delete them.
+  await page.getByRole('button', { name: 'Quay lại' }).filter({ visible: true }).first().click();
+  await page.getByRole('button', { name: /Bắt đầu đọc|Đọc tiếp/ }).filter({ visible: true }).first().click();
+  await page.getByRole('button', { name: 'Công cụ đọc' }).filter({ visible: true }).first().click();
+  await page.getByText('Thay thế', { exact: true }).click();
+  await expect(page.locator('[data-rule]')).toHaveCount(3);
+  await page.locator('[data-replace-pick]').click();
+  await page.getByText('Hắc Ma Chiến Quân').click();
+  await expect(page.locator('[data-replace-pick-bar]')).toContainText('Đã chọn 1');
+  await page.screenshot({ path: `test-results/wiki-${info.project.name}-replace-pick.png` });
+  await page.locator('[data-replace-pick-remove]').click();
+  await expect(page.getByText('Đã xoá 1 quy tắc.')).toBeVisible();
+  const saved = (await calls(page)).filter(c => c.cmd === 'replace_rules_set').at(-1)?.args;
+  expect(saved).toMatchObject({ lang: 'vi', rules: [{ find: 'Cổ Đại Viêm', replace: 'Cố Đại Diễm' }, { find: 'Lâm Đống', replace: 'Lâm Động' }] });
+  await expect(page.locator('[data-rule]')).toHaveCount(2);
+  await page.locator('[data-replace-pick]').click();
+  await page.locator('[data-replace-pick-all]').click();
+  await page.locator('[data-replace-pick-remove]').click();
+  await expect(page.getByText('Đã xoá 2 quy tắc.')).toBeVisible();
+  await expect(page.getByText(/Chưa có quy tắc/)).toBeVisible();
 });

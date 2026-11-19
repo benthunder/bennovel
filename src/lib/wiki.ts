@@ -117,6 +117,10 @@ export async function saveWikiEntry(user: string, novelId: number, entry: WikiEn
 }
 
 export const removeWikiEntry = (user: string, uid: string) => invoke<void>('wiki_remove', { user, uid });
+/** Writes the wiki's names into the book's translated chapters; returns the paragraphs changed. */
+export const applyWikiToText = (user: string, novelId: number) => invoke<number>('wiki_apply_to_text', { user, novelId });
+/** Removes the selected entries at once; returns how many went. */
+export const removeWikiEntries = (user: string, uids: string[]) => invoke<number>('wiki_remove_many', { user, uids });
 /** `kind`: a `RelType`, or free words written in `lang`. */
 export const addWikiRelation = (user: string, novelId: number, fromUid: string, toUid: string, kind: string, lang: string, note = '') =>
   invoke<string>('wiki_relate', { user, novelId, fromUid, toUid, kind, lang, note });
