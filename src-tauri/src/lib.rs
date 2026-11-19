@@ -168,6 +168,7 @@ pub fn run() {
             library::commands::wiki_remove,
             library::commands::wiki_remove_many,
             library::commands::wiki_apply_to_text,
+            library::commands::wiki_merge_skip,
             library::commands::wiki_relate,
             library::commands::wiki_unrelate,
             library::commands::wiki_set_auto,

@@ -1352,6 +1352,26 @@ pub async fn wiki_merge_ai_control<R: Runtime>(
     Ok(status)
 }
 
+/// Sets a smart merge suggestion aside as already right (`uids`: the entries it holds);
+/// it is not suggested again.
+#[tauri::command]
+pub async fn wiki_merge_skip<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+    uids: Vec<String>,
+) -> Result<(), AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || {
+        Ok(super::smart_merge::skip(
+            &db::open(&path)?,
+            novel_id,
+            &uids,
+        )?)
+    })
+    .await
+}
+
 /// Smart merge for one entry: the original names translated as its name, and the
 /// entries that look like it.
 #[tauri::command]

@@ -119,6 +119,8 @@ export async function saveWikiEntry(user: string, novelId: number, entry: WikiEn
 export const removeWikiEntry = (user: string, uid: string) => invoke<void>('wiki_remove', { user, uid });
 /** Writes the wiki's names into the book's translated chapters; returns the paragraphs changed. */
 export const applyWikiToText = (user: string, novelId: number) => invoke<number>('wiki_apply_to_text', { user, novelId });
+/** Sets a smart merge suggestion (the entries it holds) aside as already right; it is not suggested again. */
+export const skipWikiMerge = (user: string, novelId: number, uids: string[]) => invoke<void>('wiki_merge_skip', { user, novelId, uids });
 /** Removes the selected entries at once; returns how many went. */
 export const removeWikiEntries = (user: string, uids: string[]) => invoke<number>('wiki_remove_many', { user, uids });
 /** `kind`: a `RelType`, or free words written in `lang`. */

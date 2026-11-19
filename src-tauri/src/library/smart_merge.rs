@@ -199,9 +199,49 @@ pub fn suggest(conn: &Connection, novel_id: i64) -> rusqlite::Result<Vec<Suggest
             });
         }
     }
+    let skips = skipped(conn, novel_id)?;
+    out.retain(|p| !pair_skipped(&skips, p));
     out.sort_by(|x, y| x.reason.cmp(&y.reason));
     out.truncate(MAX);
     Ok(out)
+}
+
+/// The key of a set of entries a suggestion would merge (or rename): their uids,
+/// sorted, joined by '+'.
+pub fn skip_key<'a>(uids: impl IntoIterator<Item = &'a str>) -> String {
+    let mut v: Vec<&str> = uids.into_iter().collect();
+    v.sort_unstable();
+    v.dedup();
+    v.join("+")
+}
+
+/// Sets a suggestion aside as already right: the same entries are never suggested
+/// together again (nor, for one entry alone, with another name).
+pub fn skip(conn: &Connection, novel_id: i64, uids: &[String]) -> rusqlite::Result<()> {
+    conn.execute(
+        "insert or ignore into wiki_merge_skips (novel_id, uids, created_at) values (?1, ?2, ?3)",
+        rusqlite::params![
+            novel_id,
+            skip_key(uids.iter().map(String::as_str)),
+            super::db::now_ms()
+        ],
+    )?;
+    Ok(())
+}
+
+/// The keys (`skip_key`) of the book's suggestions set aside.
+pub fn skipped(
+    conn: &Connection,
+    novel_id: i64,
+) -> rusqlite::Result<std::collections::HashSet<String>> {
+    let mut stmt = conn.prepare("select uids from wiki_merge_skips where novel_id = ?1")?;
+    let rows = stmt.query_map([novel_id], |r| r.get(0))?;
+    rows.collect()
+}
+
+/// Whether a pair was set aside.
+fn pair_skipped(skips: &std::collections::HashSet<String>, s: &Suggestion) -> bool {
+    skips.contains(&skip_key([s.from.uid.as_str(), s.into.uid.as_str()]))
 }
 
 /// An original name the translation wrote as an entry's name (or close to it).
@@ -379,6 +419,11 @@ pub fn for_entry(conn: &Connection, novel_id: i64, uid: &str) -> rusqlite::Resul
             note: String::new(),
         });
     }
+    let skips = skipped(conn, novel_id)?;
+    let pairs = pairs
+        .into_iter()
+        .filter(|p| !pair_skipped(&skips, p))
+        .collect();
     Ok(EntryMerge { raws, pairs })
 }
 
@@ -778,5 +823,18 @@ mod tests {
         assert!(!rule_ok("Hắc Ma Chiến Quân", "Cố Đại Diễm"));
         assert!(!rule_ok("Hắc Ma Chiến Tướng", "Cố Đại Diễm"));
         assert!(!rule_ok("Thiếu chủ", "Tuyết Huy"));
+    }
+
+    #[test]
+    fn a_pair_set_aside_is_not_suggested_again() {
+        let (conn, novel) = book("smart-merge-skip");
+        let a = add(&conn, novel, "character", "Seol-Hwi", "Tuyết Huy");
+        let b = add(&conn, novel, "character", "Seol Hwi", "Tuyết Huy");
+        assert_eq!(suggest(&conn, novel).unwrap().len(), 1);
+        skip(&conn, novel, &[b.clone(), a.clone()]).unwrap();
+        skip(&conn, novel, &[a.clone(), b.clone()]).unwrap();
+        assert!(suggest(&conn, novel).unwrap().is_empty());
+        assert!(for_entry(&conn, novel, &a).unwrap().pairs.is_empty());
+        assert_eq!(skipped(&conn, novel).unwrap().len(), 1);
     }
 }
