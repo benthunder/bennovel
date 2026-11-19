@@ -62,6 +62,16 @@ pub struct Group {
     pub note: String,
 }
 
+impl Group {
+    /// The entries it holds, as `smart_merge::skip_key` names them.
+    pub fn key(&self) -> String {
+        smart_merge::skip_key(
+            std::iter::once(self.into.uid.as_str())
+                .chain(self.members.iter().map(|m| m.uid.as_str())),
+        )
+    }
+}
+
 /// A group the user kept, maybe with another final name.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -488,7 +498,11 @@ pub fn for_entry(
         })
         .map(|(_, e)| e)
         .collect();
-    ask(&rec, llm, &block, true)
+    let skips = smart_merge::skipped(conn, novel_id)?;
+    Ok(ask(&rec, llm, &block, true)?
+        .into_iter()
+        .filter(|g| !skips.contains(&g.key()))
+        .collect())
 }
 
 /// The units of the whole wiki: each group the device found (entries joined by its

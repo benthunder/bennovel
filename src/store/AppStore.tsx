@@ -271,6 +271,9 @@ function useAppState() {
   const [aiRev, reloadAi] = useAiQueue(libKey, showToast);
   /** Lists everything again after the library file changed (a backup brought back). */
   const reloadLibrary = useCallback(() => setLibraryRev(n => n + 1), []);
+  /** Bumped when the wiki changed the translated text (a merge, an edited name), so the reader loads it again. */
+  const [textRev, setTextRev] = useState(0);
+  const reloadText = useCallback(() => setTextRev(n => n + 1), []);
 
   const account = useAccount(showToast, setStack, setTab);
 
@@ -285,7 +288,7 @@ function useAppState() {
     push, back, switchTab,
     setContentLang, openLangDialog: () => setLangDialogOpen(true), closeLangDialog: () => setLangDialogOpen(false), setReaderPrefs,
     showToast, markLocalRead, forgetLocal, ...account,
-    libraryRev, aiRev, reloadAi, reloadLibrary
+    libraryRev, aiRev, reloadAi, reloadLibrary, textRev, reloadText
   };
 }
 

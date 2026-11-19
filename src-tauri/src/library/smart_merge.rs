@@ -184,6 +184,7 @@ pub fn suggest(conn: &Connection, novel_id: i64) -> rusqlite::Result<Vec<Suggest
                 && sa.words.len() == sb.words.len()
                 && sa.words.iter().any(|w| sb.words.contains(w))
                 && distance(&sa.vec, &sb.vec) < NEAR
+                && raws_close(a, b)
             {
                 Reason::NearName
             } else {
@@ -199,9 +200,49 @@ pub fn suggest(conn: &Connection, novel_id: i64) -> rusqlite::Result<Vec<Suggest
             });
         }
     }
+    let skips = skipped(conn, novel_id)?;
+    out.retain(|p| !pair_skipped(&skips, p));
     out.sort_by(|x, y| x.reason.cmp(&y.reason));
     out.truncate(MAX);
     Ok(out)
+}
+
+/// The key of a set of entries a suggestion would merge (or rename): their uids,
+/// sorted, joined by '+'.
+pub fn skip_key<'a>(uids: impl IntoIterator<Item = &'a str>) -> String {
+    let mut v: Vec<&str> = uids.into_iter().collect();
+    v.sort_unstable();
+    v.dedup();
+    v.join("+")
+}
+
+/// Sets a suggestion aside as already right: the same entries are never suggested
+/// together again (nor, for one entry alone, with another name).
+pub fn skip(conn: &Connection, novel_id: i64, uids: &[String]) -> rusqlite::Result<()> {
+    conn.execute(
+        "insert or ignore into wiki_merge_skips (novel_id, uids, created_at) values (?1, ?2, ?3)",
+        rusqlite::params![
+            novel_id,
+            skip_key(uids.iter().map(String::as_str)),
+            super::db::now_ms()
+        ],
+    )?;
+    Ok(())
+}
+
+/// The keys (`skip_key`) of the book's suggestions set aside.
+pub fn skipped(
+    conn: &Connection,
+    novel_id: i64,
+) -> rusqlite::Result<std::collections::HashSet<String>> {
+    let mut stmt = conn.prepare("select uids from wiki_merge_skips where novel_id = ?1")?;
+    let rows = stmt.query_map([novel_id], |r| r.get(0))?;
+    rows.collect()
+}
+
+/// Whether a pair was set aside.
+fn pair_skipped(skips: &std::collections::HashSet<String>, s: &Suggestion) -> bool {
+    skips.contains(&skip_key([s.from.uid.as_str(), s.into.uid.as_str()]))
 }
 
 /// An original name the translation wrote as an entry's name (or close to it).
@@ -291,6 +332,46 @@ fn edits(a: &[char], b: &[char]) -> usize {
     row[b.len()]
 }
 
+/// Whether two original names are one written another way, more strictly than
+/// `spelled_alike`: more than half of the words the same, or few letters apart
+/// ("Heuk Bi" and "Ack Bi" are two people, though both end in "Bi").
+pub(crate) fn raw_close(a: &str, b: &str) -> bool {
+    let (fa, fb) = (fold(&key(a)), fold(&key(b)));
+    if fa == fb {
+        return true;
+    }
+    let wa: Vec<&str> = fa.split_whitespace().collect();
+    let wb: Vec<&str> = fb.split_whitespace().collect();
+    if wa.len() == wb.len() && wa.iter().zip(&wb).filter(|(x, y)| x == y).count() * 2 > wa.len() {
+        return true;
+    }
+    let (ca, cb): (Vec<char>, Vec<char>) = (
+        fa.chars().filter(|c| !c.is_whitespace()).collect(),
+        fb.chars().filter(|c| !c.is_whitespace()).collect(),
+    );
+    let longest = ca.len().max(cb.len());
+    longest > 0 && edits(&ca, &cb) * 4 <= longest
+}
+
+/// The original names of an entry: its name and aliases.
+fn raws_of(e: &Entry) -> impl Iterator<Item = &str> {
+    std::iter::once(e.name.trim()).chain(e.aliases.iter().map(|a| a.trim()))
+}
+
+/// Whether two entries with near translated names are also near in the original:
+/// a near translation of two different originals is two people (or places).
+/// Names in other scripts (Han and a romanised one, or two Han names) can't be told
+/// apart by their letters, so they don't count against the pair.
+fn raws_close(a: &Entry, b: &Entry) -> bool {
+    raws_of(a).any(|x| raws_of(b).any(|y| raw_close(x, y) || !latin_pair(x, y)))
+}
+
+/// Whether two names are both in Latin letters (so `raw_close` can judge them).
+fn latin_pair(a: &str, b: &str) -> bool {
+    let latin = |s: &str| matches!(super::detect_lang(s), "en" | "vi");
+    latin(a) && latin(b)
+}
+
 /// What smart merge finds for entry `uid`: the original names the translations (and
 /// the wiki) wrote as its name or close to it, and the pairs with this entry, from
 /// `suggest` and from those names when another entry of the same kind has them.
@@ -314,6 +395,10 @@ pub fn for_entry(conn: &Connection, novel_id: i64, uid: &str) -> rusqlite::Resul
             return;
         }
         let exact = key(&name) == key(tr);
+        // Only near in the translation: the original must be near one of this entry's too.
+        if !exact && !raws_of(me).any(|r| raw_close(r, raw) || !latin_pair(r, raw)) {
+            return;
+        }
         match raws.iter_mut().find(|r| r.raw == raw && r.translated == tr) {
             Some(r) => {
                 if let Some(c) = chapter {
@@ -379,6 +464,11 @@ pub fn for_entry(conn: &Connection, novel_id: i64, uid: &str) -> rusqlite::Resul
             note: String::new(),
         });
     }
+    let skips = skipped(conn, novel_id)?;
+    let pairs = pairs
+        .into_iter()
+        .filter(|p| !pair_skipped(&skips, p))
+        .collect();
     Ok(EntryMerge { raws, pairs })
 }
 
@@ -513,6 +603,47 @@ pub(crate) fn replace_words(text: &str, find: &str, to: &str) -> Option<String> 
     }
     out.push_str(&text[last..]);
     Some(out)
+}
+
+/// Saves an entry the user edited; when its Vietnamese name changed, the old name is
+/// written over with the new one in the translated chapters too (`rewrite`), and the
+/// names table the translation reads follows. Returns the entry and the paragraphs changed.
+pub fn save_entry(
+    conn: &Connection,
+    novel_id: i64,
+    input: wiki::EntryInput,
+) -> Result<(Entry, usize), AiError> {
+    let before = match input.uid.as_deref() {
+        Some(uid) => wiki::entries(conn, novel_id)?
+            .into_iter()
+            .find(|e| e.uid == uid),
+        None => None,
+    };
+    let saved = wiki::save(conn, novel_id, input)?;
+    let mut changed = 0;
+    if let Some(old) = before {
+        let (from, to) = (
+            shown(&old).trim().to_string(),
+            shown(&saved).trim().to_string(),
+        );
+        if !from.is_empty()
+            && !to.is_empty()
+            && from != to
+            && from.chars().count() >= 2
+            && !to.contains(&from)
+        {
+            changed = rewrite(
+                conn,
+                novel_id,
+                &[Rule {
+                    find: from,
+                    replace: to,
+                }],
+            )?;
+        }
+    }
+    wiki::index_names(conn, None, novel_id, WIKI_LANG)?;
+    Ok((saved, changed))
 }
 
 /// Merges `from_uid` into `into_uid` as the user asked and writes the kept name over
@@ -778,5 +909,78 @@ mod tests {
         assert!(!rule_ok("Hắc Ma Chiến Quân", "Cố Đại Diễm"));
         assert!(!rule_ok("Hắc Ma Chiến Tướng", "Cố Đại Diễm"));
         assert!(!rule_ok("Thiếu chủ", "Tuyết Huy"));
+    }
+
+    #[test]
+    fn a_pair_set_aside_is_not_suggested_again() {
+        let (conn, novel) = book("smart-merge-skip");
+        let a = add(&conn, novel, "character", "Seol-Hwi", "Tuyết Huy");
+        let b = add(&conn, novel, "character", "Seol Hwi", "Tuyết Huy");
+        assert_eq!(suggest(&conn, novel).unwrap().len(), 1);
+        skip(&conn, novel, &[b.clone(), a.clone()]).unwrap();
+        skip(&conn, novel, &[a.clone(), b.clone()]).unwrap();
+        assert!(suggest(&conn, novel).unwrap().is_empty());
+        assert!(for_entry(&conn, novel, &a).unwrap().pairs.is_empty());
+        assert_eq!(skipped(&conn, novel).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn near_translations_of_two_different_originals_are_not_a_pair() {
+        let (conn, novel) = book("smart-merge-near-raw");
+        let a = add(&conn, novel, "character", "Ack Bi", "Ác Bi");
+        add(&conn, novel, "character", "Heuk Bi", "Hắc Bỉ");
+        assert!(suggest(&conn, novel).unwrap().is_empty());
+        let m = for_entry(&conn, novel, &a).unwrap();
+        assert!(m.pairs.is_empty(), "{:?}", m.pairs);
+        assert!(m.raws.iter().all(|r| r.raw != "Heuk Bi"), "{:?}", m.raws);
+        // The same original spelled another way is still one.
+        assert!(raw_close("Seol-Hwi", "Seol Hwi"));
+        assert!(raw_close("Gu Dae-yeom", "Gu Dae-yeon"));
+        assert!(!raw_close("Heuk Bi", "Ack Bi"));
+    }
+
+    #[test]
+    fn an_edited_name_is_written_into_the_translations() {
+        let (conn, novel) = book("smart-merge-edit");
+        let a = add(&conn, novel, "character", "Ack Bi", "Ác Bi");
+        conn.execute_batch(
+            r#"insert into chapter_translations (chapter_id, lang, style, source, state, title, content)
+                 values (10, 'vi', 'natural', 'ai', 'published', 'Chương 1', '');
+               insert into segments (chapter_id, lang, style, position, type, content) values
+                 (10, 'vi', 'natural', 0, 'text', '["Ác Bi cười, Ác Binh đứng sau."]');"#,
+        )
+        .unwrap();
+        let e = wiki::entries(&conn, novel)
+            .unwrap()
+            .into_iter()
+            .find(|e| e.uid == a)
+            .unwrap();
+        let mut names = e.names.clone();
+        names.insert("vi".into(), "Ách Bi".into());
+        let (saved, n) = save_entry(
+            &conn,
+            novel,
+            wiki::EntryInput {
+                uid: Some(a.clone()),
+                kind: e.kind.clone(),
+                name: e.name.clone(),
+                names,
+                aliases: e.aliases.clone(),
+                summaries: e.summaries.clone(),
+                rank: e.rank,
+                meta: e.meta.clone(),
+            },
+        )
+        .unwrap();
+        assert_eq!(shown(&saved), "Ách Bi");
+        assert_eq!(n, 1);
+        let text: String = conn
+            .query_row(
+                "select content from segments where chapter_id = 10 and lang = 'vi'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(text, r#"["Ách Bi cười, Ác Binh đứng sau."]"#);
     }
 }

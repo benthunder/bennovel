@@ -140,6 +140,7 @@ async function nativeApp(page: Page) {
           }
           case 'plugin:dialog|message': return 'Yes';
           case 'wiki_apply_to_text': return 7;
+          case 'wiki_merge_skip': return null;
           case 'replace_rules_get':
             return args.lang === 'vi' ? [{ find: 'Hắc Ma Chiến Quân', replace: 'Cố Đại Diễm' }, { find: 'Cổ Đại Viêm', replace: 'Cố Đại Diễm' }, { find: 'Lâm Đống', replace: 'Lâm Động' }] : null;
           case 'ai_marks': case 'ai_progress': case 'ai_versions': return [];
@@ -513,4 +514,23 @@ test('many wiki entries and replace rules are picked and deleted at once', async
   await page.locator('[data-replace-pick-remove]').click();
   await expect(page.getByText('Đã xoá 2 quy tắc.')).toBeVisible();
   await expect(page.getByText(/Chưa có quy tắc/)).toBeVisible();
+});
+
+test('a smart merge suggestion that is already right is skipped for good', async ({ page }) => {
+  await nativeApp(page);
+  await page.goto('/');
+  await page.getByText('Võ Động Càn Khôn').filter({ visible: true }).first().click();
+  await page.getByRole('button', { name: /Wiki truyện/ }).filter({ visible: true }).first().click();
+  await page.getByRole('button', { name: 'Gộp thông minh' }).click();
+  const sheet = page.locator('[data-wiki-smart-merge-sheet]');
+  await expect(sheet.locator('[data-merge-pair]')).toHaveCount(2);
+  // One pair, by its own button.
+  await sheet.locator('[data-merge-pair]').nth(1).locator('[data-merge-skip-one]').click();
+  await expect(page.getByText('Đã bỏ qua 1 gợi ý, sẽ không gợi ý lại.')).toBeVisible();
+  await expect(sheet.locator('[data-merge-pair]')).toHaveCount(1);
+  expect((await calls(page)).filter(c => c.cmd === 'wiki_merge_skip').map(c => c.args)).toEqual([{ user: expect.anything(), novelId: 1, uids: ['i', 'a'] }]);
+  // The ticked ones, all at once.
+  await sheet.locator('[data-merge-skip]').click();
+  await expect(sheet.locator('[data-merge-pair]')).toHaveCount(0);
+  expect((await calls(page)).filter(c => c.cmd === 'wiki_merge_skip').at(-1)?.args).toMatchObject({ uids: ['s2', 's1'] });
 });

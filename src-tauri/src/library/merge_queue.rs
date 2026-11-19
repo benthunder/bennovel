@@ -15,6 +15,7 @@
 
 use super::db;
 use super::llm::{self, AiError, Chat};
+use super::smart_merge;
 use super::smart_merge_ai::{self, Answered, Group, Records, PARALLEL};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
@@ -201,13 +202,12 @@ pub fn status(conn: &Connection, novel_id: i64) -> rusqlite::Result<Status> {
         .query_map([novel_id], |r| r.get::<_, Option<String>>(0))?
         .filter_map(|r| r.transpose())
         .collect::<rusqlite::Result<_>>()?;
-    let mut seen: Vec<String> = Vec::new();
+    // Groups the user set aside as already right are not shown again.
+    let mut seen: Vec<String> = smart_merge::skipped(conn, novel_id)?.into_iter().collect();
     for a in answers {
         let list: Vec<Answered> = serde_json::from_str(&a).unwrap_or_default();
         for g in list.iter().filter_map(|a| smart_merge_ai::build(&rec, a)) {
-            let mut id: Vec<&str> = g.members.iter().map(|m| m.uid.as_str()).collect();
-            id.sort();
-            let id = format!("{}+{}", g.into.uid, id.join("+"));
+            let id = g.key();
             if !seen.contains(&id) {
                 seen.push(id);
                 s.groups.push(g);

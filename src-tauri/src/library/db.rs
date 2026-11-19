@@ -622,6 +622,16 @@ create table wiki_merge_blocks (
 -- versions let the AI write those (`wiki::tidy_all` runs after this one).
 select 1;
 "#,
+    r#"
+-- Smart merge suggestions the user set aside as already right (smart_merge.rs `skip`):
+-- one row per set of entries (`uids`, sorted, joined by '+'), never suggested again.
+create table wiki_merge_skips (
+  novel_id   integer not null references novels (id) on delete cascade,
+  uids       text not null,
+  created_at integer not null,
+  primary key (novel_id, uids)
+);
+"#,
 ];
 
 /// The migration (1-based) after which `content` holds blocks.
@@ -1010,13 +1020,13 @@ mod tests {
             .unwrap();
         assert_eq!(books, 1);
         // Only the last migration missing: it alone runs.
-        conn.execute_batch("drop table wiki_merge_blocks").unwrap();
+        conn.execute_batch("drop table wiki_merge_skips").unwrap();
         conn.pragma_update(None, "user_version", 3).unwrap();
         drop(conn);
         let conn = open(&path).unwrap();
         let n: i64 = conn
             .query_row(
-                "select count(*) from sqlite_master where name = 'wiki_merge_blocks'",
+                "select count(*) from sqlite_master where name = 'wiki_merge_skips'",
                 [],
                 |r| r.get(0),
             )
@@ -1026,7 +1036,7 @@ mod tests {
 
     #[test]
     fn every_migration_with_a_table_or_column_is_seen() {
-        let e = effects(MIGRATIONS[MIGRATIONS.len() - 2]);
+        let e = effects(MIGRATIONS[22]);
         assert_eq!(e, vec![("wiki_merge_blocks".to_string(), None)]);
         let seen = MIGRATIONS.iter().filter(|m| !effects(m).is_empty()).count();
         assert!(seen >= 15, "{seen}");
@@ -1034,6 +1044,7 @@ mod tests {
 
     #[test]
     fn the_last_wiki_cleanup_is_the_last_migration() {
-        assert_eq!(TIDY_VERSION, MIGRATIONS.len());
+        assert_eq!(TIDY_VERSION, 24);
+        assert!(MIGRATIONS[TIDY_VERSION - 1].contains("tidy_all"));
     }
 }
