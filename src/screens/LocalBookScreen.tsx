@@ -76,9 +76,11 @@ export function LocalBookScreen({ book, place, path, live: liveStart }: { book: 
   const lang: ContentLang = known ?? app.contentLang ?? 'vi';
   const rulesKey = `localRules.${place ? `${place.user}:${place.novelId}` : `file:${book.title ?? ''}`}.${lang}`;
   // Library books keep their list in the library file (synced); a file opened once, on the device.
+  // Raised when a wiki merge added replace rules, so they load again.
+  const [rulesRev, setRulesRev] = useState(0);
   const rulesQ = useAsync(
     () => (place ? getBookRules(place.user, place.novelId, lang, rulesKey) : Promise.resolve(load<ReplaceRule[]>(rulesKey, []))),
-    [rulesKey]
+    [rulesKey, rulesRev]
   );
   // Edits made here win over what was loaded until the book or language changes.
   const [edited, setEdited] = useState<{ key: string; rules: ReplaceRule[] } | null>(null);
@@ -579,6 +581,7 @@ export function LocalBookScreen({ book, place, path, live: liveStart }: { book: 
       {wikiPop && place && (
         <WikiPopup key={wikiPop.entry.uid} wiki={wikiPop.wiki} entry={wikiPop.entry} lang={wikiPop.lang}
           onPick={e => setWikiPop(w => w && { ...w, entry: e })} onClose={() => setWikiPop(null)}
+          novelId={place.novelId} onMerged={() => { setEdited(null); setRulesRev(n => n + 1); app.reloadAi(); }}
           onOpenWiki={() => { setWikiPop(null); app.push({ s: 'bookWiki', novelId: place.novelId, title: book.title ?? t('book.untitled'), lang: wikiPop.lang }); }} />
       )}
 

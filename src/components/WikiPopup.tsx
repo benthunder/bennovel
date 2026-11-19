@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { messageIn, useI18n } from '../i18n';
 import type { MessageKey } from '../i18n/en';
 import {
@@ -6,6 +6,8 @@ import {
   type RelGroup, type Wiki, type WikiEntry, type WikiRelation
 } from '../lib/wiki';
 import { Modal } from './Modal';
+import { SmartMergeSheet } from './SmartMergeSheet';
+import { SparklesIcon } from './Icons';
 
 /**
  * The words of the app in the wiki's language: relation types and such follow the
@@ -281,11 +283,14 @@ export function markWikiTerms(text: string, terms: WikiTerms, onPick: (e: WikiEn
  * One wiki entry over the reader: everything the wiki knows of it, later chapters
  * included, and the entries it is linked to (tap one to go there).
  */
-export function WikiPopup({ wiki, entry, onPick, onOpenWiki, onClose }: {
+export function WikiPopup({ wiki, entry, onPick, onOpenWiki, onClose, novelId, onMerged }: {
   wiki: Wiki; entry: WikiEntry; lang: string;
   onPick: (e: WikiEntry) => void; onOpenWiki: () => void; onClose: () => void;
+  /** With the book's library id, smart merge for this entry is offered; `onMerged` follows a merge. */
+  novelId?: number; onMerged?: () => void;
 }) {
   const { t } = useI18n();
+  const [smart, setSmart] = useState(false);
   const wt = useWikiT(WIKI_LANG);
   const label = wikiLabel(entry, WIKI_LANG);
   const sum = wikiSummary(entry, WIKI_LANG);
@@ -303,6 +308,13 @@ export function WikiPopup({ wiki, entry, onPick, onOpenWiki, onClose }: {
     && !(isLevel && r.kind === 'equivalent_to')
     && !(isSkill && r.kind === 'has_skill')
     && !(isFaction && r.kind === 'leader_of' && r.toUid === entry.uid));
+  // Smart merge takes the card's place (one sheet at a time), and Cancel brings it back.
+  if (smart && novelId != null) {
+    return (
+      <SmartMergeSheet novelId={novelId} lang={WIKI_LANG} entry={entry} onClose={() => setSmart(false)}
+        onMerged={() => { onMerged?.(); onClose(); }} />
+    );
+  }
   return (
     <Modal onClose={onClose}>
       <div className="dialog dialog--sheet" role="dialog" aria-modal="true" aria-label={label} onClick={e => e.stopPropagation()}>
@@ -354,6 +366,11 @@ export function WikiPopup({ wiki, entry, onPick, onOpenWiki, onClose }: {
           );
         }} />
         <div className="dialog-actions">
+          {novelId != null && (
+            <button type="button" className="btn btn-ghost" data-entry-smart-merge style={{ height: 44, padding: '0 12px', gap: 6, marginRight: 'auto' }} onClick={() => setSmart(true)}>
+              <SparklesIcon size={14} />{t('wiki.smartMerge')}
+            </button>
+          )}
           <button type="button" className="btn btn-secondary" style={{ height: 44, padding: '0 18px' }} onClick={onOpenWiki}>{t('wiki.open')}</button>
           <button type="button" className="btn btn-primary" style={{ height: 44, padding: '0 22px' }} onClick={onClose}>{t('common.close')}</button>
         </div>

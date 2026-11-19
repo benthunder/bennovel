@@ -155,7 +155,85 @@ export const wikiChapter = (x: { firstChapter: number | null; firstChapterShown?
 export const wikiMissingIn = (e: WikiEntry, lang: string) =>
   lang !== RAW && (!e.names[lang] || (Object.keys(e.summaries).length > 0 && !e.summaries[lang]));
 
-/** Makes entry `fromUid` part of `intoUid` (one character written two ways): its names become aliases, its relations move over. */
+/** Why smart merge thinks two entries are one. */
+export type MergeReason = 'same_name' | 'same_raw' | 'near_name';
+
+/** A pair smart merge found, for the user to review: `from` goes into `into`, with the replace rules that adds. */
+export interface MergeSuggestion {
+  from: WikiEntry;
+  into: WikiEntry;
+  reason: MergeReason;
+  rules: { find: string; replace: string }[];
+  note: string;
+}
+
+/** A group the AI found: `members` go into `into`, which takes the final `name` (no members: only a better name). */
+export interface MergeGroup {
+  members: WikiEntry[];
+  into: WikiEntry;
+  name: string;
+  rules: { find: string; replace: string }[];
+  note: string;
+}
+
+/** The book's entries that look like one written two ways (nothing is merged yet). */
+export async function suggestWikiMerges(user: string, novelId: number) {
+  try {
+    return await invoke<MergeSuggestion[]>('wiki_merge_suggest', { user, novelId });
+  } catch (e) {
+    throw new AiFailure(e);
+  }
+}
+
+/** The AI's groups for the whole wiki, block by block (about 10k letters each, never cutting an entry), with their final names. */
+export async function suggestWikiMergesAi(user: string, novelId: number) {
+  try {
+    return await invoke<MergeGroup[]>('wiki_merge_suggest_ai', { user, novelId });
+  } catch (e) {
+    throw new AiFailure(e);
+  }
+}
+
+/** An original name the translation wrote as an entry's name (or close to it). */
+export interface RawName {
+  raw: string;
+  translated: string;
+  /** Chapters where it was written so, the first ones. */
+  chapters: number[];
+  /** The entry whose name or alias it is, if any. */
+  entryUid: string | null;
+  exact: boolean;
+}
+
+/** Smart merge for one entry: the original names translated as its name, and the entries that look like it. */
+export async function entryWikiMerges(user: string, novelId: number, uid: string) {
+  try {
+    return await invoke<{ raws: RawName[]; pairs: MergeSuggestion[] }>('wiki_merge_entry', { user, novelId, uid });
+  } catch (e) {
+    throw new AiFailure(e);
+  }
+}
+
+/** The AI's group for one entry, with the final name, from everything known about it and its candidates. */
+export async function entryWikiMergesAi(user: string, novelId: number, uid: string) {
+  try {
+    return await invoke<MergeGroup[]>('wiki_merge_entry_ai', { user, novelId, uid });
+  } catch (e) {
+    throw new AiFailure(e);
+  }
+}
+
+/** Merges the pairs the user kept; each merge also adds its line to the book's replace rules. */
+export async function applyWikiMerges(user: string, novelId: number, picks: { fromUid: string; intoUid: string }[],
+  groups: { intoUid: string; fromUids: string[]; name: string }[] = []) {
+  try {
+    return await invoke<{ merged: number; rules: number; renamed: number }>('wiki_merge_apply', { user, novelId, picks, groups });
+  } catch (e) {
+    throw new AiFailure(e);
+  }
+}
+
+/** Makes entry `fromUid` part of `intoUid` (one character written two ways): its names become aliases, its relations move over, and its old name goes in the replace rules. */
 export async function mergeWikiEntry(user: string, novelId: number, fromUid: string, intoUid: string) {
   try {
     return await invoke<WikiEntry>('wiki_merge', { user, novelId, fromUid, intoUid });
