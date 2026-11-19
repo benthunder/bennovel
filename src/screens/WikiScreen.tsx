@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ask } from '@tauri-apps/plugin-dialog';
 import { Modal } from '../components/Modal';
+import { SmartMergeSheet } from '../components/SmartMergeSheet';
 import { GroupedRelations, equivalentsOf, levelOf, relWords, useWikiT } from '../components/WikiPopup';
 import { ChevronLeftIcon, ChevronRightIcon, PencilIcon, SparklesIcon, XIcon } from '../components/Icons';
 import { Checkbox, SearchField, Spinner } from '../components/ui';
@@ -11,7 +12,7 @@ import { useLayout } from '../lib/useLayout';
 import { useThrottledValue } from '../lib/useThrottledValue';
 import {
   PROFILE_FIELDS, RAW, REL_TYPES, SKILL_FIELDS, WIKI_KINDS, WIKI_LANG, addWikiRelation, getWiki, getWikiMissing, mergeWikiEntry, removeWikiEntry, removeWikiRelation, saveWikiEntry,
-  searchWiki, setWikiAuto, translateWiki, wikiChapter, wikiLabel, wikiSummary,
+  searchWiki, setWikiAuto,  translateWiki, wikiChapter, wikiLabel, wikiSummary,
   type ProfileField, type SkillField, type Wiki, type WikiEntry, type WikiKind, metaStage } from '../lib/wiki';
 import { useApp } from '../store/AppStore';
 
@@ -39,6 +40,7 @@ export function WikiScreen({ novelId, title }: { novelId: number; title: string;
   const [kind, setKind] = useState<WikiKind | 'all'>('all');
   // The entry open in the sheet: an existing one, or `new`.
   const [open, setOpen] = useState<WikiEntry | 'new' | null>(null);
+  const [merging, setMerging] = useState(false);
   const reload = () => setRev(n => n + 1);
 
   const wiki = q.status === 'ready' ? q.data : null;
@@ -157,6 +159,10 @@ export function WikiScreen({ novelId, title }: { novelId: number; title: string;
             <h3 style={{ margin: 0, fontSize: 22 }}>{t('wiki.title')}</h3>
             <div className="muted" style={{ fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{title}</div>
           </div>
+          <button className="btn btn-secondary" data-wiki-smart-merge aria-label={t('wiki.smartMerge')} title={t('wiki.smartMerge')}
+            style={{ height: 40, padding: lay.isPhone ? 0 : '0 14px', width: lay.isPhone ? 40 : undefined, gap: 6 }} disabled={!wiki || !wiki.entries.length} onClick={() => setMerging(true)}>
+            <SparklesIcon size={14} />{!lay.isPhone && t('wiki.smartMerge')}
+          </button>
           <button className="btn btn-primary" style={{ height: 40, padding: '0 16px', gap: 6 }} disabled={!wiki} onClick={() => setOpen('new')}>
             <PencilIcon size={14} />{t('wiki.add')}
           </button>
@@ -212,6 +218,9 @@ export function WikiScreen({ novelId, title }: { novelId: number; title: string;
           </>
         )}
       </div>
+      {merging && (
+        <SmartMergeSheet novelId={novelId} lang={lang} onClose={() => setMerging(false)} onMerged={reload} />
+      )}
       {open && wiki && (
         <EntrySheet key={open === 'new' ? 'new' : open.uid} novelId={novelId} wiki={wiki} entry={open === 'new' ? null : open} lang={lang}
           onClose={() => setOpen(null)} onChanged={reload} />
@@ -372,6 +381,7 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
   const [relWordsIn, setRelWordsIn] = useState('');
   const [relNote, setRelNote] = useState('');
   const [mergeInto, setMergeInto] = useState('');
+  const [smart, setSmart] = useState(false);
   const [rels, setRels] = useState(() => wiki.relations.filter(r => entry && (r.fromUid === entry.uid || r.toUid === entry.uid)));
 
   const byUid = useMemo(() => new Map(wiki.entries.map(e => [e.uid, e])), [wiki]);
@@ -462,7 +472,10 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
   const level = saved && saved.kind === 'character' ? levelOf(wiki, saved.uid) : null;
 
   return (
-    <Modal onClose={busy ? undefined : onClose}>
+    smart && saved ? (
+      <SmartMergeSheet novelId={novelId} lang={lang} entry={saved} onClose={() => setSmart(false)}
+        onMerged={() => { onChanged(); onClose(); }} />
+    ) : <Modal onClose={busy ? undefined : onClose}>
       <form className="dialog dialog--sheet" role="dialog" aria-modal="true" aria-label={t(saved ? 'wiki.editTitle' : 'wiki.newTitle')}
         onClick={e => e.stopPropagation()} onSubmit={submit}>
         <div className="dialog-title" style={{ fontSize: 22 }}>{saved ? wikiLabel(saved, lang) : t('wiki.newTitle')}</div>
@@ -597,7 +610,12 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
 
         {saved && others.length > 0 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <div style={{ fontSize: 12, fontWeight: 700 }}>{t('wiki.mergeTitle')}</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, flex: 1 }}>{t('wiki.mergeTitle')}</div>
+              <button type="button" className="btn btn-secondary" data-entry-smart-merge style={{ height: 34, padding: '0 12px', gap: 6, fontSize: 13 }} disabled={busy} onClick={() => setSmart(true)}>
+                <SparklesIcon size={13} />{t('wiki.smartMerge')}
+              </button>
+            </div>
             <div className="muted" style={{ fontSize: 12 }}>{t('wiki.mergeSub')}</div>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
               <select className="input" style={{ height: 38, flex: '1 1 180px' }} aria-label={t('wiki.mergeInto')} value={mergeInto} onChange={e => setMergeInto(e.target.value)}>

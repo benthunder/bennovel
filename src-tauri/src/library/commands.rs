@@ -1215,7 +1215,107 @@ pub async fn wiki_merge<R: Runtime>(
     let path = db_path(&app, &user)?;
     ai_blocking(move || {
         let conn = db::open(&path)?;
-        wiki::merge(&conn, novel_id, &from_uid, &into_uid, true)
+        Ok(super::smart_merge::merge_with_rules(&conn, novel_id, &from_uid, &into_uid)?.0)
+    })
+    .await
+}
+
+/// The book's wiki entries that look like one written two ways, for the user to review
+/// before anything is merged.
+#[tauri::command]
+pub async fn wiki_merge_suggest<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+) -> Result<Vec<super::smart_merge::Suggestion>, AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || Ok(super::smart_merge::suggest(&db::open(&path)?, novel_id)?)).await
+}
+
+/// More pairs for smart merge, found by the user's LLM from the names, aliases and
+/// descriptions (a title and the name of the one who holds it).
+#[tauri::command]
+pub async fn wiki_merge_suggest_ai<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+) -> Result<Vec<super::smart_merge_ai::Group>, AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || {
+        let conn = db::open(&path)?;
+        let model = llm::load(&conn)?
+            .map(llm::OpenAi::new)
+            .ok_or(AiError::NotSet)?;
+        let user = user.clone();
+        let tell = move |done: usize, total: usize| {
+            let _ = app.emit(
+                "wiki-merge-progress",
+                serde_json::json!({ "user": user, "novelId": novel_id, "done": done, "total": total }),
+            );
+        };
+        super::smart_merge_ai::for_wiki(&conn, &model, novel_id, Some(&tell))
+    })
+    .await
+}
+
+/// Smart merge for one entry: the original names translated as its name, and the
+/// entries that look like it.
+#[tauri::command]
+pub async fn wiki_merge_entry<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+    uid: String,
+) -> Result<super::smart_merge::EntryMerge, AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || Ok(super::smart_merge::for_entry(&db::open(&path)?, novel_id, &uid)?))
+        .await
+}
+
+/// More pairs for one entry, found by the user's LLM.
+#[tauri::command]
+pub async fn wiki_merge_entry_ai<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+    uid: String,
+) -> Result<Vec<super::smart_merge_ai::Group>, AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || {
+        let conn = db::open(&path)?;
+        let model = llm::load(&conn)?
+            .map(llm::OpenAi::new)
+            .ok_or(AiError::NotSet)?;
+        super::smart_merge_ai::for_entry(&conn, &model, novel_id, &uid)
+    })
+    .await
+}
+
+/// Merges the pairs the user kept from `wiki_merge_suggest`; each merge also adds its
+/// line to the book's replace rules.
+#[tauri::command]
+pub async fn wiki_merge_apply<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+    picks: Vec<super::smart_merge::Pick>,
+    groups: Option<Vec<super::smart_merge_ai::GroupPick>>,
+) -> Result<super::smart_merge::Applied, AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || {
+        let conn = db::open(&path)?;
+        let mut moved = std::collections::HashMap::new();
+        let mut done = super::smart_merge::apply_with(&conn, novel_id, &picks, &mut moved)?;
+        let g = super::smart_merge_ai::apply_groups(
+            &conn,
+            novel_id,
+            groups.as_deref().unwrap_or_default(),
+            &mut moved,
+        )?;
+        done.merged += g.merged;
+        done.rules += g.rules;
+        done.renamed += g.renamed;
+        Ok(done)
     })
     .await
 }

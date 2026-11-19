@@ -97,6 +97,35 @@ async function nativeApp(page: Page) {
             wiki.relations.push({ uid: 'r2', fromUid: String(args.fromUid), toUid: String(args.toUid), kind: String(args.kind), labels: {}, note: '', firstChapter: null });
             return 'r2';
           }
+          case 'wiki_merge_suggest': {
+            const by = (u: string) => wiki.entries.find(e => e.uid === u)!;
+            const seol = entry('s1', 'character', 'Seol-Hwi', 'Tuyết Huy', 'Đệ tử Hoa Sơn.', 1);
+            const seol2 = entry('s2', 'character', 'Seol Hwi', 'Seol-Hwi', '', 4);
+            return [
+              { from: seol2, into: seol, reason: 'same_raw', rules: [{ find: 'Seol-Hwi', replace: 'Tuyết Huy' }, { find: 'Seol Hwi', replace: 'Tuyết Huy' }], note: '' },
+              { from: by('i'), into: by('a'), reason: 'near_name', rules: [{ find: 'Lâm Lang Thiên', replace: 'Lâm Động' }], note: '' }
+            ];
+          }
+          case 'wiki_merge_suggest_ai': {
+            const by = (u: string) => wiki.entries.find(e => e.uid === u)!;
+            return [{ members: [by('l')], into: by('h'), name: 'Lâm Khiếu', rules: [{ find: 'Ứng Huyền Tử', replace: 'Lâm Khiếu' }], note: 'Mô tả cho thấy là một người.' }];
+          }
+          case 'wiki_merge_entry': {
+            const by = (u: string) => wiki.entries.find(e => e.uid === u)!;
+            return {
+              raws: [
+                { raw: '林动', translated: 'Lâm Động', chapters: [], entryUid: 'a', exact: true },
+                { raw: 'Lin Dong', translated: 'Lâm Động', chapters: [3, 7], entryUid: null, exact: true },
+                { raw: '林栋', translated: 'Lâm Đống', chapters: [12], entryUid: 'i', exact: false }
+              ],
+              pairs: [{ from: by('i'), into: by('a'), reason: 'near_name', rules: [], note: '' }]
+            };
+          }
+          case 'wiki_merge_entry_ai': {
+            const by = (u: string) => wiki.entries.find(e => e.uid === u)!;
+            return [{ members: [by('i')], into: by('a'), name: 'Lâm Động', rules: [{ find: 'Lâm Lang Thiên', replace: 'Lâm Động' }, { find: 'Lâm Đống', replace: 'Lâm Động' }], note: 'Cùng một người.' }];
+          }
+          case 'wiki_merge_apply': return { merged: (args.picks as unknown[]).length + ((args.groups as { fromUids: string[] }[]) ?? []).reduce((n, g) => n + g.fromUids.length, 0), rules: 2, renamed: 0 };
           case 'ai_marks': case 'ai_progress': case 'ai_versions': return [];
           default: return null;
         }
@@ -247,6 +276,17 @@ test('names in a chapter open the whole wiki with its links', async ({ page }, i
   await page.getByRole('dialog', { name: 'Tiểu Điêu' }).getByRole('button', { name: /Lâm Động/ }).click();
   await page.waitForTimeout(500);
   await page.screenshot({ path: `test-results/wiki-${info.project.name}-reader-card.png` });
+  // Smart merge for the entry open while reading: the original names translated as its name.
+  await card.getByRole('button', { name: 'Gộp thông minh' }).click();
+  const merge = page.locator('[data-wiki-smart-merge-sheet]');
+  await expect(merge.locator('[data-merge-raw]')).toHaveCount(3);
+  await expect(merge.locator('[data-merge-raw]').nth(1)).toContainText('Lin Dong');
+  await expect(merge.locator('[data-merge-raw]').nth(1)).toContainText('chương 3, 7');
+  await expect(merge.locator('[data-merge-raw]').nth(1)).toContainText('chưa có trong wiki');
+  expect((await calls(page)).find(c => c.cmd === 'wiki_merge_entry')?.args).toMatchObject({ novelId: 1, uid: 'a' });
+  await page.screenshot({ path: `test-results/wiki-${info.project.name}-entry-merge.png` });
+  await merge.getByRole('button', { name: 'Hủy' }).click();
+  await expect(merge).toHaveCount(0);
   await card.getByRole('button', { name: 'Wiki truyện' }).click();
   await expect(page.locator('[data-entry="林动"]').getByText('Lâm Động', { exact: true })).toBeVisible();
 });
@@ -331,4 +371,51 @@ test('a skill tells its grade and difficulty, a faction its leaders in turn', as
   await expect(fist.locator('[data-relation]')).toHaveCount(0);
   await page.waitForTimeout(600);
   await page.screenshot({ path: `test-results/wiki-${info.project.name}-skill.png` });
+});
+
+test('smart merge lists pairs to review and merges only the ticked ones', async ({ page }, info) => {
+  await nativeApp(page);
+  await page.goto('/');
+  await page.getByText('Võ Động Càn Khôn').filter({ visible: true }).first().click();
+  await page.getByRole('button', { name: /Wiki truyện/ }).filter({ visible: true }).first().click();
+  await page.getByRole('button', { name: 'Gộp thông minh' }).click();
+  const sheet = page.locator('[data-wiki-smart-merge-sheet]');
+  await expect(sheet.locator('[data-merge-pair]')).toHaveCount(2);
+  // Each pair shows the replace line it adds; a near name is not ticked at first.
+  await expect(sheet.getByText('Thay thế: Seol-Hwi → Tuyết Huy, Seol Hwi → Tuyết Huy')).toBeVisible();
+  const boxes = sheet.locator('input[type=checkbox]');
+  await expect(boxes.nth(0)).toBeChecked();
+  await expect(boxes.nth(1)).not.toBeChecked();
+  await page.screenshot({ path: `test-results/wiki-${info.project.name}-smart-merge.png` });
+  // The AI finds more from the descriptions; what it finds is ticked, with its reason.
+  await sheet.getByRole('button', { name: 'Hỏi AI tìm thêm' }).click();
+  const group = sheet.locator('[data-merge-group]');
+  await expect(group).toHaveCount(1);
+  await expect(sheet.getByText('Mô tả cho thấy là một người.')).toBeVisible();
+  await expect(group.locator('input[type=checkbox]')).toBeChecked();
+  // The final name can be changed before merging.
+  await group.locator('[data-final-name]').fill('Lâm Khiếu lão gia');
+  await expect(group.getByText('Thay thế: Ứng Huyền Tử → Lâm Khiếu lão gia')).toBeVisible();
+  await page.screenshot({ path: `test-results/wiki-${info.project.name}-smart-merge-ai.png` });
+  await sheet.getByRole('button', { name: 'Gộp 2 mục chọn' }).click();
+  await expect(page.getByText('Đã gộp 2 mục, thêm 2 dòng thay thế.')).toBeVisible();
+  expect((await calls(page)).find(c => c.cmd === 'wiki_merge_apply')?.args).toMatchObject({
+    novelId: 1, picks: [{ fromUid: 's2', intoUid: 's1' }], groups: [{ intoUid: 'h', fromUids: ['l'], name: 'Lâm Khiếu lão gia' }]
+  });
+  await expect(sheet).toHaveCount(0);
+
+  // One entry's own smart merge, from its sheet: it takes the sheet's place, Cancel brings it back.
+  await page.getByText('Lâm Động', { exact: true }).click();
+  await page.locator('[data-entry-smart-merge]').click();
+  await expect(sheet.locator('[data-merge-raw]')).toHaveCount(3);
+  await expect(page.locator('form.dialog')).toHaveCount(0);
+  await expect(sheet.locator('[data-merge-pair]')).toHaveCount(1);
+  await sheet.getByRole('button', { name: 'Hỏi AI tìm thêm' }).click();
+  // The AI's group holds the device's pair, so the pair is shown there only.
+  await expect(sheet.locator('[data-merge-group]')).toHaveCount(1);
+  await expect(sheet.locator('[data-merge-pair]')).toHaveCount(0);
+  await expect(sheet.locator('[data-final-name]')).toHaveValue('Lâm Động');
+  await page.screenshot({ path: `test-results/wiki-${info.project.name}-entry-merge-ai.png` });
+  await sheet.getByRole('button', { name: 'Hủy' }).click();
+  await expect(page.locator('form.dialog')).toBeVisible();
 });

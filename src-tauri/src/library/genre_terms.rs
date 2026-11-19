@@ -736,7 +736,7 @@ impl Terms {
 }
 
 /// Vietnamese letters without their marks, lower case ("Võ Đang" → "vo dang").
-fn fold(text: &str) -> String {
+pub(crate) fn fold(text: &str) -> String {
     const FROM: &str = "àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ";
     const TO: &str = "aaaaaaaaaaaaaaaaaeeeeeeeeeeeiiiiiooooooooooooooooouuuuuuuuuuuyyyyyd";
     text.to_lowercase()
