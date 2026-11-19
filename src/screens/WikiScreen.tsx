@@ -11,7 +11,7 @@ import { useAsync } from '../lib/useAsync';
 import { useLayout } from '../lib/useLayout';
 import { useThrottledValue } from '../lib/useThrottledValue';
 import {
-  PROFILE_FIELDS, RAW, REL_TYPES, SKILL_FIELDS, WIKI_KINDS, WIKI_LANG, addWikiRelation, getWiki, getWikiMissing, mergeWikiEntry, removeWikiEntries, removeWikiEntry, removeWikiRelation, saveWikiEntry,
+  PROFILE_FIELDS, RAW, REL_TYPES, SKILL_FIELDS, WIKI_KINDS, WIKI_LANG, addWikiRelation, applyWikiToText, getWiki, getWikiMissing, mergeWikiEntry, removeWikiEntries, removeWikiEntry, removeWikiRelation, saveWikiEntry,
   searchWiki, setWikiAuto,  translateWiki, wikiChapter, wikiLabel, wikiSummary,
   type ProfileField, type SkillField, type Wiki, type WikiEntry, type WikiKind, metaStage } from '../lib/wiki';
 import { useApp } from '../store/AppStore';
@@ -45,6 +45,7 @@ export function WikiScreen({ novelId, title }: { novelId: number; title: string;
   const [picking, setPicking] = useState(false);
   const [picked, setPicked] = useState<Set<string>>(() => new Set());
   const [removing, setRemoving] = useState(false);
+  const [applying, setApplying] = useState(false);
   const reload = () => setRev(n => n + 1);
 
   const wiki = q.status === 'ready' ? q.data : null;
@@ -85,6 +86,21 @@ export function WikiScreen({ novelId, title }: { novelId: number; title: string;
       app.showToast(String(e));
     } finally {
       setRemoving(false);
+    }
+  };
+
+  const applyText = async () => {
+    if (applying || !(await ask(t('wiki.applyTextAsk'), { kind: 'info' }))) return;
+    setApplying(true);
+    try {
+      const n = await applyWikiToText(user, novelId);
+      app.showToast(t('wiki.applyTextDone', { n }));
+      app.reloadAi();
+    } catch (e) {
+      console.error(e);
+      app.showToast(String(e));
+    } finally {
+      setApplying(false);
     }
   };
 
@@ -239,6 +255,12 @@ export function WikiScreen({ novelId, title }: { novelId: number; title: string;
 
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <div style={{ flex: 1, minWidth: 0 }}><SearchField value={query} onChange={setQuery} placeholder={t('wiki.search')} /></div>
+              {!picking && wiki.entries.length > 0 && (
+                <button type="button" className="btn btn-secondary" data-wiki-apply title={t('wiki.applyText')} aria-label={t('wiki.applyText')}
+                  style={{ height: 40, padding: lay.isPhone ? 0 : '0 14px', width: lay.isPhone ? 40 : undefined, flex: 'none', gap: 6 }} disabled={applying} onClick={applyText}>
+                  {applying ? <Spinner size={13} /> : <SparklesIcon size={14} />}{!lay.isPhone && t('wiki.applyText')}
+                </button>
+              )}
               {!picking && wiki.entries.length > 0 && (
                 <button type="button" className="btn btn-secondary" data-wiki-pick style={{ height: 40, padding: '0 14px', flex: 'none' }} onClick={() => setPicking(true)}>
                   {t('common.pickMany')}

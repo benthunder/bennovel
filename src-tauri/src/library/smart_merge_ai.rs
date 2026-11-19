@@ -661,6 +661,36 @@ pub fn for_wiki(
     }
 }
 
+/// Writes the wiki into the book's translations ("apply the wiki to the text"): for each
+/// entry, the other ways the chapters wrote it (its original names left untranslated,
+/// the spellings the translation used for them) become its Vietnamese name, as
+/// `smart_merge::rewrite` does after a merge. A spelling two entries claim is left as
+/// it is. Returns the paragraphs and titles changed.
+pub fn apply_wiki(conn: &Connection, novel_id: i64) -> rusqlite::Result<usize> {
+    let rec = Records::load(conn, novel_id)?;
+    let mut to: HashMap<String, Option<String>> = HashMap::new();
+    for e in &rec.all {
+        let name = shown(e).trim();
+        if name.is_empty() || name == e.name.trim() {
+            continue;
+        }
+        for r in rec.rules(&[], e, name) {
+            to.entry(r.find)
+                .and_modify(|t| {
+                    if t.as_deref() != Some(r.replace.as_str()) {
+                        *t = None;
+                    }
+                })
+                .or_insert(Some(r.replace));
+        }
+    }
+    let rules: Vec<Rule> = to
+        .into_iter()
+        .filter_map(|(find, replace)| replace.map(|replace| Rule { find, replace }))
+        .collect();
+    smart_merge::rewrite(conn, novel_id, &rules)
+}
+
 /// Applies the groups the user kept, after the pairs (`smart_merge::apply`) already
 /// merged: each group's entries go into the kept one (following earlier merges), it
 /// takes the final name, and its old names are written over in the translations.
@@ -1040,5 +1070,40 @@ mod tests {
         let e = wiki::by_uid(&conn, &d).unwrap().unwrap();
         assert_eq!(e.name, "Heuk Ryong");
         assert_eq!(e.aliases, vec!["Hắc Long".to_string()]);
+    }
+
+    #[test]
+    fn the_wiki_is_written_into_the_translations() {
+        let (conn, novel) = book("smart-ai-apply");
+        add(&conn, novel, "character", "Seol-Hwi", "Tuyết Huy", "");
+        add(
+            &conn,
+            novel,
+            "faction",
+            "Black Moon Troops",
+            "Hắc Nguyệt Quân",
+            "",
+        );
+        conn.execute_batch(
+            r#"insert into chapter_translations (chapter_id, lang, style, source, state, title, content)
+                 values (10, 'vi', 'natural', 'ai', 'published', 'Chương 1', '');
+               insert into segments (chapter_id, lang, style, position, type, content) values
+                 (10, 'vi', 'natural', 0, 'text', '["Seol-Hwi dẫn Black Moon Troops đi.","Hắc Nguyệt Quân theo sau."]');"#,
+        )
+        .unwrap();
+        assert_eq!(apply_wiki(&conn, novel).unwrap(), 1);
+        let text: String = conn
+            .query_row(
+                "select content from segments where chapter_id = 10 and lang = 'vi'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            text,
+            r#"["Tuyết Huy dẫn Hắc Nguyệt Quân đi.","Hắc Nguyệt Quân theo sau."]"#
+        );
+        assert_eq!(apply_wiki(&conn, novel).unwrap(), 0);
+        assert_eq!(super::super::rules::get(&conn, novel, "vi").unwrap(), None);
     }
 }

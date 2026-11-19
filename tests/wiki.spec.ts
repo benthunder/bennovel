@@ -139,6 +139,7 @@ async function nativeApp(page: Page) {
             return uids.length;
           }
           case 'plugin:dialog|message': return 'Yes';
+          case 'wiki_apply_to_text': return 7;
           case 'replace_rules_get':
             return args.lang === 'vi' ? [{ find: 'Hắc Ma Chiến Quân', replace: 'Cố Đại Diễm' }, { find: 'Cổ Đại Viêm', replace: 'Cố Đại Diễm' }, { find: 'Lâm Đống', replace: 'Lâm Động' }] : null;
           case 'ai_marks': case 'ai_progress': case 'ai_versions': return [];
@@ -465,6 +466,10 @@ test('many wiki entries and replace rules are picked and deleted at once', async
   await page.getByText('Võ Động Càn Khôn').filter({ visible: true }).first().click();
   await page.getByRole('button', { name: /Wiki truyện/ }).filter({ visible: true }).first().click();
   await expect(page.locator('[data-entry]')).toHaveCount(13);
+  // The wiki's names are written into the translated chapters.
+  await page.locator('[data-wiki-apply]').click();
+  await expect(page.getByText('Đã sửa tên ở 7 đoạn đã dịch.')).toBeVisible();
+  expect((await calls(page)).find(c => c.cmd === 'wiki_apply_to_text')?.args).toMatchObject({ novelId: 1 });
   await page.locator('[data-wiki-pick]').click();
   // Picking: a tap ticks the entry instead of opening it.
   await page.locator('[data-entry="林啸"]').click();

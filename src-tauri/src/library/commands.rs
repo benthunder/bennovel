@@ -1190,6 +1190,23 @@ pub async fn wiki_remove<R: Runtime>(
     ai_blocking(move || Ok(wiki::remove(&db::open(&path)?, &uid)?)).await
 }
 
+/// Writes the wiki's names into the book's translations; returns the paragraphs changed.
+#[tauri::command]
+pub async fn wiki_apply_to_text<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+) -> Result<usize, AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || {
+        Ok(super::smart_merge_ai::apply_wiki(
+            &db::open(&path)?,
+            novel_id,
+        )?)
+    })
+    .await
+}
+
 /// Removes the entries the user selected; returns how many went.
 #[tauri::command]
 pub async fn wiki_remove_many<R: Runtime>(
