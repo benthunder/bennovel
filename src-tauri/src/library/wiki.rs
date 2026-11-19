@@ -1075,6 +1075,19 @@ pub fn merge(
 pub fn tidy(conn: &Connection, novel_id: i64) -> rusqlite::Result<usize> {
     let all = entries(conn, novel_id)?;
     let mut changes = 0;
+    // A chapter's heading is never a name, whoever's entry it is (merging entries makes
+    // the kept one the user's).
+    for e in &all {
+        let vi = e.names.get("vi").map(String::as_str).unwrap_or("");
+        if chapter_heading(&e.name) || (!vi.is_empty() && chapter_heading(vi)) {
+            remove(conn, &e.uid)?;
+            changes += 1;
+        }
+    }
+    let all: Vec<Entry> = all
+        .into_iter()
+        .filter(|e| by_uid_live(conn, &e.uid))
+        .collect();
     for e in all.iter().filter(|e| e.source == "ai") {
         // Judged by the Vietnamese name when there is one (the raw one may be Chinese).
         let translated = e
@@ -1118,6 +1131,27 @@ pub fn tidy_all(conn: &Connection) -> rusqlite::Result<()> {
         .collect::<rusqlite::Result<_>>()?;
     for b in books {
         tidy(conn, b)?;
+    }
+    // Merging those entries added replace rules from one chapter's heading to another's
+    // ("Chương 319" → "Chương 318"), which would rename the chapters' titles.
+    let mut stmt = conn.prepare("select rowid, rules from rule_lists")?;
+    let lists: Vec<(i64, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (row, json) in lists {
+        let Ok(rules) = serde_json::from_str::<Vec<super::rules::Rule>>(&json) else {
+            continue;
+        };
+        let kept: Vec<&super::rules::Rule> = rules
+            .iter()
+            .filter(|r| !(chapter_heading(&r.find) && chapter_heading(&r.replace)))
+            .collect();
+        if kept.len() != rules.len() {
+            conn.execute(
+                "update rule_lists set rules = ?2, updated_at = ?3 where rowid = ?1",
+                params![row, to_json(&kept, "[]"), super::db::now_ms()],
+            )?;
+        }
     }
     Ok(())
 }
@@ -1249,13 +1283,103 @@ fn capitalised_name(name: &str) -> Option<bool> {
 /// has capitals (`capitalised_name`: "núi", "linh khí", "Bé gái váy hồng" are not). A
 /// Chinese name has no capitals, so its translation tells.
 fn proper_noun(name: &str, translated: &str) -> bool {
-    if name.trim().chars().count() < 2 {
+    if name.trim().chars().count() < 2 || chapter_heading(name) || chapter_heading(translated) {
         return false;
     }
     match capitalised_name(name) {
         Some(ok) => ok,
         None => capitalised_name(translated).unwrap_or(true),
     }
+}
+
+/// Words that head a chapter, volume or episode title ("Chapter 320", "Chương 12",
+/// "Quyển 3", "Episode 4"), lower case.
+const HEADINGS: &[&str] = &[
+    "chapter",
+    "chap",
+    "ch",
+    "chương",
+    "chuong",
+    "episode",
+    "ep",
+    "part",
+    "phần",
+    "volume",
+    "vol",
+    "quyển",
+    "tập",
+    "hồi",
+    "book",
+    "act",
+    "arc",
+    "prologue",
+    "epilogue",
+    "side story",
+    "extra",
+    "ngoại truyện",
+    "phiên ngoại",
+    "mở đầu",
+    "kết thúc",
+];
+
+/// Whether a name is only a chapter's (or volume's, episode's) heading: a heading word
+/// and a number ("Chapter 320", "Chương 318", "Ch. 5", "Quyển III"), "第三百二十章",
+/// "제320화", or a number alone. The AI sometimes lists a chapter's title as a wiki entry;
+/// it is not a name, and the wiki would fill with hundreds of them.
+pub(crate) fn chapter_heading(name: &str) -> bool {
+    let n = name.trim().to_lowercase();
+    if n.is_empty() {
+        return false;
+    }
+    let original: Vec<char> = name.trim().chars().collect();
+    // A number, a Roman one in capitals ("III", not "Mi"), or a Chinese one.
+    let numeral = |s: &str| {
+        let s = s.trim_start_matches(|c: char| c.is_whitespace() || ".:#-–—".contains(c));
+        let first = s
+            .split(|c: char| c.is_whitespace() || ":.-–—".contains(c))
+            .next()
+            .unwrap_or("");
+        !first.is_empty()
+            && (first.chars().all(|c| c.is_ascii_digit())
+                || first.chars().all(|c| "IVXLC".contains(c))
+                || first
+                    .chars()
+                    .all(|c| "一二三四五六七八九十百千零〇两".contains(c)))
+    };
+    if n.chars()
+        .all(|c| c.is_ascii_digit() || c.is_whitespace() || ".:-#".contains(c))
+    {
+        return true;
+    }
+    if HEADINGS.iter().any(|h| {
+        n.strip_prefix(h).is_some_and(|rest| {
+            // "prologue", "ngoại truyện" alone are headings too.
+            if rest.trim().is_empty() {
+                return h.chars().count() > 4;
+            }
+            let rest: String = original.iter().skip(h.chars().count()).collect();
+            rest.starts_with(|c: char| !c.is_alphabetic()) && numeral(&rest)
+        })
+    }) {
+        return true;
+    }
+    // 第三百二十章, 第12回, 제320화, 320화, 12장
+    let cjk = |s: &str| {
+        s.chars()
+            .all(|c| c.is_ascii_digit() || "一二三四五六七八九十百千零〇两".contains(c))
+            && !s.is_empty()
+    };
+    if let Some(rest) = n.strip_prefix('第') {
+        if let Some(num) = rest.strip_suffix(['章', '回', '节', '節', '卷', '话', '話', '集'])
+        {
+            return cjk(num.trim());
+        }
+    }
+    let n = n.strip_prefix('제').unwrap_or(&n).trim();
+    if let Some(num) = n.strip_suffix(['화', '장', '권']) {
+        return cjk(num.trim());
+    }
+    false
 }
 
 /// The live entry an AI item stands for when its own name is new: one that has any of
@@ -1827,7 +1951,10 @@ fn near_names(
     if phrases.is_empty() {
         return Ok(Vec::new());
     }
-    let vectors: Vec<Vec<f32>> = phrases.iter().map(|p| super::genre_terms::embed(p)).collect();
+    let vectors: Vec<Vec<f32>> = phrases
+        .iter()
+        .map(|p| super::genre_terms::embed(p))
+        .collect();
     let mut stmt = conn.prepare(
         "select raw, translated, kind, entry_uid, vec_distance_cosine(embedding, ?3) as d
          from wiki_names
@@ -2050,7 +2177,14 @@ fn meta_schema(vi: bool, full: bool) -> Value {
     });
     if !full {
         let props = schema["properties"].as_object_mut().expect("properties");
-        for k in ["personality", "age", "origin", "abilities", "grade", "difficulty"] {
+        for k in [
+            "personality",
+            "age",
+            "origin",
+            "abilities",
+            "grade",
+            "difficulty",
+        ] {
             props.remove(k);
         }
     }
@@ -3564,11 +3698,23 @@ mod tests {
                 extract_prompt(lang, "@@", "xianxia"),
                 part_tools(lang)
             );
-            for word in ["personality", "difficulty", "ghi quan hệ equivalent_to", "record equivalent_to", "leader_of từ", "record leader_of"] {
+            for word in [
+                "personality",
+                "difficulty",
+                "ghi quan hệ equivalent_to",
+                "record equivalent_to",
+                "leader_of từ",
+                "record leader_of",
+            ] {
                 assert!(!part.contains(word), "{lang}: {word}");
             }
             assert!(part.contains("stage_name"), "{lang}");
-            let learn = format!("{}{}{}", learn_prompt(lang, "xianxia"), json_prompt(lang, "xianxia"), tools(lang));
+            let learn = format!(
+                "{}{}{}",
+                learn_prompt(lang, "xianxia"),
+                json_prompt(lang, "xianxia"),
+                tools(lang)
+            );
             for word in ["personality", "difficulty", "equivalent_to"] {
                 assert!(learn.contains(word), "{lang}: {word}");
             }
@@ -4614,5 +4760,106 @@ mod tests {
         // Not in Vietnamese yet: kept until it is translated.
         let qing = all.iter().find(|e| e.name == "青檀").unwrap();
         assert_eq!(qing.names["en"], "Qing Tan");
+    }
+
+    #[test]
+    fn chapter_headings_are_not_names() {
+        for h in [
+            "Chapter 320",
+            "Chương 318",
+            "Ch. 5",
+            "chapter 12: The End",
+            "Quyển III",
+            "Tập 4",
+            "Episode 7",
+            "第三百二十章",
+            "第12回",
+            "제320화",
+            "320화",
+            "Prologue",
+            "Ngoại truyện",
+            "320",
+            "Hồi 9",
+        ] {
+            assert!(chapter_heading(h), "{h}");
+            assert!(!proper_noun(h, h), "{h}");
+        }
+        for n in [
+            "Chapman",
+            "Chương Hàm",
+            "Lâm Động",
+            "Cheok Myeong",
+            "Volume Lord",
+            "Book of Lies",
+            "Tập Hiền Điện",
+            "Phần Thiên Cốc",
+            "Hồi Xuân Đan",
+            "Act",
+            "Mak Hwa",
+            "Chương Mi",
+            "Tập Di",
+            "Phần Lý",
+        ] {
+            assert!(!chapter_heading(n), "{n}");
+        }
+    }
+
+    #[test]
+    fn tidy_drops_chapter_headings_even_the_users() {
+        let (conn, novel) = super::super::translate::tests::book("wiki-headings");
+        let mut names = BTreeMap::new();
+        names.insert("vi".to_string(), "Chương 320".to_string());
+        let ch = save(
+            &conn,
+            novel,
+            EntryInput {
+                uid: None,
+                kind: "other".into(),
+                name: "Chapter 320".into(),
+                names,
+                aliases: vec![],
+                summaries: BTreeMap::new(),
+                rank: None,
+                meta: Default::default(),
+            },
+        )
+        .unwrap();
+        let mut names = BTreeMap::new();
+        names.insert("vi".to_string(), "Mặc Hoa".to_string());
+        let keep = save(
+            &conn,
+            novel,
+            EntryInput {
+                uid: None,
+                kind: "character".into(),
+                name: "Mak Hwa".into(),
+                names,
+                aliases: vec![],
+                summaries: BTreeMap::new(),
+                rank: None,
+                meta: Default::default(),
+            },
+        )
+        .unwrap();
+        let rule = |f: &str, r: &str| super::super::rules::Rule {
+            find: f.into(),
+            replace: r.into(),
+        };
+        super::super::rules::set(
+            &conn,
+            novel,
+            "vi",
+            &[rule("Chương 319", "Chương 318"), rule("Mak Hwa", "Mặc Hoa")],
+        )
+        .unwrap();
+        tidy_all(&conn).unwrap();
+        assert!(!by_uid_live(&conn, &ch.uid));
+        assert_eq!(
+            super::super::rules::get(&conn, novel, "vi")
+                .unwrap()
+                .unwrap(),
+            vec![rule("Mak Hwa", "Mặc Hoa")]
+        );
+        assert!(by_uid_live(&conn, &keep.uid));
     }
 }

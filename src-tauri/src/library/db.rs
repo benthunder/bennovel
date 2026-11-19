@@ -615,6 +615,11 @@ create table wiki_merge_blocks (
   primary key (novel_id, idx)
 );
 "#,
+    r#"
+-- The wiki drops entries that are only a chapter's heading ("Chapter 320" → "Chương 320"),
+-- which older versions let the AI add (`wiki::tidy_all` runs after this one).
+select 1;
+"#,
 ];
 
 /// The migration (1-based) after which `content` holds blocks.
@@ -622,8 +627,8 @@ const BLOCKS_VERSION: usize = 18;
 /// The migration (1-based) that moves `content` into table `segments`.
 const SEGMENTS_VERSION: usize = 19;
 /// The migration (1-based) after which the wiki only keeps proper nouns: common nouns
-/// older versions let in are cleaned out by `wiki::tidy_all`.
-const TIDY_VERSION: usize = 20;
+/// and chapter headings older versions let in are cleaned out by `wiki::tidy_all`.
+const TIDY_VERSION: usize = 24;
 
 /// Epoch milliseconds now.
 pub fn now_ms() -> i64 {
@@ -1019,9 +1024,14 @@ mod tests {
 
     #[test]
     fn every_migration_with_a_table_or_column_is_seen() {
-        let e = effects(MIGRATIONS[MIGRATIONS.len() - 1]);
+        let e = effects(MIGRATIONS[MIGRATIONS.len() - 2]);
         assert_eq!(e, vec![("wiki_merge_blocks".to_string(), None)]);
         let seen = MIGRATIONS.iter().filter(|m| !effects(m).is_empty()).count();
         assert!(seen >= 15, "{seen}");
+    }
+
+    #[test]
+    fn the_last_wiki_cleanup_is_the_last_migration() {
+        assert_eq!(TIDY_VERSION, MIGRATIONS.len());
     }
 }
