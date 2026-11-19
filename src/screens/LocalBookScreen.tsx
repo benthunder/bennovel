@@ -159,6 +159,13 @@ export function LocalBookScreen({ book, place, path, live: liveStart }: { book: 
   const aiRunning = useRef(false);
   /** Bumped per chapter each time it gets a new AI text, so its part loads it again. */
   const [aiRev, setAiRev] = useState<Record<number, number>>({});
+  // The wiki changed the translated text (a merge, an edited name): each part loads it again.
+  const textRev = useRef(app.textRev);
+  useEffect(() => {
+    if (textRev.current === app.textRev) return;
+    textRev.current = app.textRev;
+    setAiRev(r => { const o = { ...r }; book.sections.forEach((_, i) => { o[i] = (o[i] ?? 0) + 1; }); return o; });
+  }, [app.textRev, book.sections]);
   const aiLangName = (l: string) => AI_LANGS.find(x => x.code === l)?.native ?? l;
   const aiFail = (e: unknown) => {
     console.error(e);
@@ -584,7 +591,7 @@ export function LocalBookScreen({ book, place, path, live: liveStart }: { book: 
           onPick={e => setWikiPop(w => w && { ...w, entry: e })} onClose={() => setWikiPop(null)}
           novelId={place.novelId} onMerged={() => {
             // The merge wrote the kept name into the translated chapters: each part loads its text again.
-            setAiRev(r => { const o = { ...r }; book.sections.forEach((_, i) => { o[i] = (o[i] ?? 0) + 1; }); return o; });
+            app.reloadText();
             app.reloadAi();
           }}
           onOpenWiki={() => { setWikiPop(null); app.push({ s: 'bookWiki', novelId: place.novelId, title: book.title ?? t('book.untitled'), lang: wikiPop.lang }); }} />

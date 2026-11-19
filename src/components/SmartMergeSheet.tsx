@@ -7,7 +7,7 @@ import { AiFailure, aiErrorDetail, aiErrorKey } from '../lib/ai';
 import { useAsync } from '../lib/useAsync';
 import {
   applyWikiMerges, controlWikiMergeAi, entryWikiMerges, entryWikiMergesAi, startWikiMergeAi, suggestWikiMerges, wikiLabel,
-  wikiMergeAiStatus, type MergeGroup, type MergeRun, type MergeSuggestion, type RawName, type WikiEntry } from '../lib/wiki';
+  skipWikiMerge, wikiMergeAiStatus, type MergeGroup, type MergeRun, type MergeSuggestion, type RawName, type WikiEntry } from '../lib/wiki';
 import { useApp } from '../store/AppStore';
 
 /**
@@ -36,7 +36,11 @@ export function SmartMergeSheet({ novelId, lang, entry, onClose, onMerged }: {
   // One entry's groups come back from one request; the whole wiki's from its run.
   const [entryGroups, setEntryGroups] = useState<MergeGroup[]>([]);
   const [run, setRun] = useState<MergeRun | null>(null);
-  const groups = entry ? entryGroups : run?.groups ?? [];
+  // Suggestions set aside as already right (kept on the device, never suggested again).
+  const [hidden, setHidden] = useState<Set<string>>(() => new Set());
+  const sk = (uids: string[]) => [...new Set(uids)].sort().join('+');
+  const gsk = (g: MergeGroup) => sk([g.into.uid, ...g.members.map(m => m.uid)]);
+  const groups = (entry ? entryGroups : run?.groups ?? []).filter(g => !hidden.has(gsk(g)));
   // The final name per group, as the user may have changed it.
   const [names, setNames] = useState<Record<string, string>>({});
   // The right original name per group, as the user may have changed it.
@@ -48,7 +52,7 @@ export function SmartMergeSheet({ novelId, lang, entry, onClose, onMerged }: {
     const u = [g.into.uid, ...g.members.map(m => m.uid)];
     return u.includes(s.from.uid) && u.includes(s.into.uid);
   });
-  const pairs = pairsAll?.filter(s => !inGroup(s)) ?? null;
+  const pairs = pairsAll?.filter(s => !inGroup(s) && !hidden.has(sk([s.from.uid, s.into.uid]))) ?? null;
   const [picked, setPicked] = useState<Set<string> | null>(null);
   useEffect(() => {
     if (pairsAll && !picked) setPicked(new Set(pairsAll.filter(s => s.reason !== 'near_name').map(pid)));
@@ -151,6 +155,29 @@ export function SmartMergeSheet({ novelId, lang, entry, onClose, onMerged }: {
       setBusy(false);
     }
   };
+  /** Sets suggestions aside as already right: they leave the list and don't come back. */
+  const skip = async (sets: string[][], keys: string[]) => {
+    if (!sets.length || busy) return;
+    setBusy(true);
+    try {
+      for (const uids of sets) await skipWikiMerge(user, novelId, uids);
+      setHidden(h => new Set([...h, ...sets.map(sk)]));
+      setPicked(p => new Set([...(p ?? [])].filter(k => !keys.includes(k))));
+      app.showToast(t('wiki.smartSkipped', { n: sets.length }));
+    } catch (e) {
+      fail(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const skipChosen = () => skip(
+    [...chosenPairs.map(s => [s.from.uid, s.into.uid]), ...groups.filter(g => picked?.has(gid(g))).map(g => [g.into.uid, ...g.members.map(m => m.uid)])],
+    [...chosenPairs.map(pid), ...groups.filter(g => picked?.has(gid(g))).map(gid)]);
+  const pickedAny = chosenPairs.length + groups.filter(g => picked?.has(gid(g))).length;
+  const skipButton = (uids: string[], k: string) => (
+    <button type="button" className="btn btn-ghost" data-merge-skip-one style={{ height: 30, padding: '0 10px', fontSize: 12, alignSelf: 'flex-start' }}
+      disabled={busy} onClick={() => skip([uids], [k])}>{t('wiki.smartSkip')}</button>
+  );
   const label = (e: WikiEntry) => {
     const l = wikiLabel(e, lang);
     return l !== e.name ? `${l} (${e.name})` : l;
@@ -245,6 +272,7 @@ export function SmartMergeSheet({ novelId, lang, entry, onClose, onMerged }: {
                         {t('wiki.smartMergeRules')}: {g.rules.filter(r => r.find !== name.trim()).map(r => `${r.find} → ${name.trim()}`).join(', ')}
                       </span>
                     )}
+                    {skipButton([g.into.uid, ...g.members.map(m => m.uid)], k)}
                   </div>
                 </div>
               );
@@ -267,12 +295,18 @@ export function SmartMergeSheet({ novelId, lang, entry, onClose, onMerged }: {
                     )}
                   </span>
                 </Checkbox>
+                <div style={{ paddingLeft: 30, marginTop: 4 }}>{skipButton([s.from.uid, s.into.uid], pid(s))}</div>
               </div>
             ))}
           </div>
         )}
         <div className="dialog-actions">
           <button type="button" className="btn btn-secondary" style={{ height: 44, padding: '0 18px' }} disabled={busy} onClick={onClose}>{t('common.cancel')}</button>
+          {pickedAny > 0 && (
+            <button type="button" className="btn btn-secondary" data-merge-skip style={{ height: 44, padding: '0 16px' }} disabled={busy} onClick={skipChosen}>
+              {t('wiki.smartSkipN', { n: pickedAny })}
+            </button>
+          )}
           <button type="button" className="btn btn-primary" style={{ height: 44, padding: '0 22px' }} disabled={busy || asking || !count} onClick={apply}>
             {busy ? <Spinner size={14} /> : t('wiki.smartMergeApply', { n: count })}
           </button>
