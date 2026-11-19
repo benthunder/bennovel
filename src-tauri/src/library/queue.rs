@@ -275,7 +275,7 @@ fn progress_of(conn: &Connection, job: &Job) -> rusqlite::Result<Option<Progress
 
 /// Errors that stop the whole queue instead of one chapter: they would fail every
 /// chapter the same way.
-fn pauses(e: &AiError) -> bool {
+pub(crate) fn pauses(e: &AiError) -> bool {
     matches!(
         e,
         AiError::NotSet

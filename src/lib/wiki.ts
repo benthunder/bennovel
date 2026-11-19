@@ -196,6 +196,47 @@ export async function suggestWikiMergesAi(user: string, novelId: number) {
   }
 }
 
+/** The AI step of smart merge for the whole wiki, run in the background like the translation queue: its blocks by state and the groups found so far. */
+export interface MergeRun {
+  novelId: number;
+  total: number;
+  done: number;
+  failed: number;
+  queued: number;
+  running: number;
+  paused: number;
+  /** Why the run waits or a block failed. */
+  error: string | null;
+  groups: MergeGroup[];
+}
+
+/** Starts the AI step in the background (or carries on the run left); `fresh` starts over. */
+export async function startWikiMergeAi(user: string, novelId: number, fresh = false) {
+  try {
+    return await invoke<MergeRun>('wiki_merge_ai_start', { user, novelId, fresh });
+  } catch (e) {
+    throw new AiFailure(e);
+  }
+}
+
+/** The book's AI run with the groups found so far (they survive closing the app). */
+export async function wikiMergeAiStatus(user: string, novelId: number) {
+  try {
+    return await invoke<MergeRun>('wiki_merge_ai_status', { user, novelId });
+  } catch (e) {
+    throw new AiFailure(e);
+  }
+}
+
+/** Pauses, carries on, tries the failed blocks again or clears the book's AI run. */
+export async function controlWikiMergeAi(user: string, novelId: number, action: 'pause' | 'resume' | 'retry' | 'clear') {
+  try {
+    return await invoke<MergeRun>('wiki_merge_ai_control', { user, novelId, action });
+  } catch (e) {
+    throw new AiFailure(e);
+  }
+}
+
 /** An original name the translation wrote as an entry's name (or close to it). */
 export interface RawName {
   raw: string;

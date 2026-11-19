@@ -44,6 +44,8 @@ pub fn run() {
             }
             // AI translation runs in the background, one chapter at a time.
             _app.manage(library::queue::Queue::start(_app.handle().clone()));
+            // Smart merge's AI step, in the background too.
+            _app.manage(library::merge_queue::MergeQueue::start(_app.handle().clone()));
             // Android: a foreground service with the progress keeps it going with the
             // screen off.
             #[cfg(target_os = "android")]
@@ -141,6 +143,9 @@ pub fn run() {
             library::commands::wiki_merge,
             library::commands::wiki_merge_suggest,
             library::commands::wiki_merge_suggest_ai,
+            library::commands::wiki_merge_ai_start,
+            library::commands::wiki_merge_ai_status,
+            library::commands::wiki_merge_ai_control,
             library::commands::wiki_merge_entry,
             library::commands::wiki_merge_entry_ai,
             library::commands::wiki_merge_apply,

@@ -106,9 +106,16 @@ async function nativeApp(page: Page) {
               { from: by('i'), into: by('a'), reason: 'near_name', rules: [{ find: 'Lâm Lang Thiên', replace: 'Lâm Động' }], note: '' }
             ];
           }
-          case 'wiki_merge_suggest_ai': {
+          // The whole wiki's AI run, in the background: 3 blocks, one read, one waiting on a lost connection.
+          case 'wiki_merge_ai_start': w.__mergeRun = 'paused'; return { novelId: 1, total: 3, done: 0, failed: 0, queued: 3, running: 0, paused: 0, error: null, groups: [] };
+          case 'wiki_merge_ai_control': w.__mergeRun = args.action === 'resume' ? 'going' : w.__mergeRun; return { novelId: 1, total: 3, done: 1, failed: 0, queued: 2, running: 0, paused: 0, error: null, groups: [] };
+          case 'wiki_merge_ai_status': {
+            if (!w.__mergeRun) return { novelId: 1, total: 0, done: 0, failed: 0, queued: 0, running: 0, paused: 0, error: null, groups: [] };
             const by = (u: string) => wiki.entries.find(e => e.uid === u)!;
-            return [{ members: [by('l')], into: by('h'), name: 'Lâm Khiếu', raw: '', rules: [{ find: 'Ứng Huyền Tử', replace: 'Lâm Khiếu' }], note: 'Mô tả cho thấy là một người.' }];
+            const groups = [{ members: [by('l')], into: by('h'), name: 'Lâm Khiếu', raw: '', rules: [{ find: 'Ứng Huyền Tử', replace: 'Lâm Khiếu' }], note: 'Mô tả cho thấy là một người.' }];
+            return w.__mergeRun === 'paused'
+              ? { novelId: 1, total: 3, done: 1, failed: 0, queued: 0, running: 0, paused: 2, error: 'llm-network: connection reset', groups }
+              : { novelId: 1, total: 3, done: 1, failed: 0, queued: 1, running: 1, paused: 0, error: null, groups };
           }
           case 'wiki_merge_entry': {
             const by = (u: string) => wiki.entries.find(e => e.uid === u)!;
@@ -387,10 +394,23 @@ test('smart merge lists pairs to review and merges only the ticked ones', async 
   await expect(boxes.nth(0)).toBeChecked();
   await expect(boxes.nth(1)).not.toBeChecked();
   await page.screenshot({ path: `test-results/wiki-${info.project.name}-smart-merge.png` });
-  // The AI finds more from the descriptions; what it finds is ticked, with its reason.
+  // The AI finds more from the descriptions, in the background; what it finds is ticked, with its reason.
   await sheet.getByRole('button', { name: 'Hỏi AI tìm thêm' }).click();
   const group = sheet.locator('[data-merge-group]');
   await expect(group).toHaveCount(1);
+  // A lost connection pauses the run with the reason; carrying on picks it up.
+  await expect(sheet.locator('[data-merge-run]')).toContainText('Tạm dừng ở khối 1/3');
+  await sheet.locator('[data-merge-run-resume]').click();
+  await expect(sheet.locator('[data-merge-run]')).toContainText('AI đang đọc khối 1/3');
+  await expect(sheet.locator('[data-merge-run-pause]')).toBeVisible();
+  // Select all ticks every pair and group, and unticks them all again.
+  await sheet.locator('[data-merge-pick-all]').click();
+  await expect(sheet.getByRole('button', { name: 'Gộp 3 mục chọn' })).toBeVisible();
+  await sheet.locator('[data-merge-pick-all]').click();
+  await expect(sheet.getByRole('button', { name: 'Gộp 0 mục chọn' })).toBeVisible();
+  await sheet.locator('[data-merge-pick-all]').click();
+  await sheet.locator('[data-merge-pair]').nth(1).click();
+  await expect(boxes.nth(2)).not.toBeChecked();
   await expect(sheet.getByText('Mô tả cho thấy là một người.')).toBeVisible();
   await expect(group.locator('input[type=checkbox]')).toBeChecked();
   // The final name can be changed before merging.

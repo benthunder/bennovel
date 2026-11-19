@@ -1052,7 +1052,14 @@ pub async fn ai_resume<R: Runtime>(
 ) -> Result<(), AiError> {
     let path = db_path(&app, &user)?;
     let db_file = path.clone();
-    ai_blocking(move || Ok(queue::recover(&db::open(&db_file)?)?)).await?;
+    ai_blocking(move || {
+        let conn = db::open(&db_file)?;
+        super::merge_queue::recover(&conn)?;
+        Ok(queue::recover(&conn)?)
+    })
+    .await?;
+    app.state::<super::merge_queue::MergeQueue>()
+        .kick(path.clone(), user.clone());
     queue.kick(path, user, ui_lang);
     Ok(())
 }
@@ -1256,6 +1263,61 @@ pub async fn wiki_merge_suggest_ai<R: Runtime>(
         super::smart_merge_ai::for_wiki(&conn, &model, novel_id, Some(&tell))
     })
     .await
+}
+
+/// Starts (or carries on) the AI step of smart merge for the whole wiki in the
+/// background (merge_queue.rs); `fresh` starts over. Returns the run's counts.
+#[tauri::command]
+pub async fn wiki_merge_ai_start<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+    fresh: Option<bool>,
+) -> Result<super::merge_queue::Status, AiError> {
+    let path = db_path(&app, &user)?;
+    let db_file = path.clone();
+    let status = ai_blocking(move || {
+        let conn = db::open(&db_file)?;
+        super::merge_queue::start(&conn, novel_id, fresh.unwrap_or(false))?;
+        Ok(super::merge_queue::counts(&conn, novel_id)?)
+    })
+    .await?;
+    app.state::<super::merge_queue::MergeQueue>().kick(path, user);
+    Ok(status)
+}
+
+/// The AI step's run for a book, with the groups found so far.
+#[tauri::command]
+pub async fn wiki_merge_ai_status<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+) -> Result<super::merge_queue::Status, AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || Ok(super::merge_queue::status(&db::open(&path)?, novel_id)?)).await
+}
+
+/// Pauses, carries on, tries the failed blocks again or clears a book's run.
+#[tauri::command]
+pub async fn wiki_merge_ai_control<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+    action: String,
+) -> Result<super::merge_queue::Status, AiError> {
+    let path = db_path(&app, &user)?;
+    let db_file = path.clone();
+    let kick = matches!(action.as_str(), "resume" | "retry");
+    let status = ai_blocking(move || {
+        let conn = db::open(&db_file)?;
+        super::merge_queue::control(&conn, novel_id, &action)?;
+        Ok(super::merge_queue::counts(&conn, novel_id)?)
+    })
+    .await?;
+    if kick {
+        app.state::<super::merge_queue::MergeQueue>().kick(path, user);
+    }
+    Ok(status)
 }
 
 /// Smart merge for one entry: the original names translated as its name, and the

@@ -35,7 +35,7 @@ use std::sync::Mutex;
 /// Letters in one request's list, about: a unit is never cut, so one may go over.
 pub const BLOCK: usize = 10_000;
 /// Requests at the same time for the whole wiki.
-const PARALLEL: usize = 3;
+pub const PARALLEL: usize = 3;
 /// A description is cut to this many letters.
 const SUMMARY: usize = 300;
 /// Relationships told per entry at most.
@@ -142,7 +142,7 @@ impl Records {
         })
     }
 
-    fn get(&self, uid: &str) -> Option<&Entry> {
+    pub fn get(&self, uid: &str) -> Option<&Entry> {
         self.all.iter().find(|e| e.uid == uid)
     }
 
@@ -313,10 +313,29 @@ fn parse(reply: &str) -> Option<Answer> {
     serde_json::from_str(reply.get(a..=b)?).ok()
 }
 
-/// Asks about one block of entries (numbered from 1 in order) and reads the groups back.
-/// The user's own entry is the one kept; two of the user's are never merged; a group of
-/// one entry counts only when its name changes.
-fn ask(rec: &Records, llm: &dyn Chat, block: &[&Entry], one: bool) -> Result<Vec<Group>, AiError> {
+/// One group as the AI answered it, by entry uid, kept as it came (the merge queue
+/// stores these, `merge_queue.rs`) and turned into a `Group` against the wiki as it is
+/// when read (`build`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Answered {
+    pub uids: Vec<String>,
+    #[serde(default)]
+    pub keep: Option<String>,
+    pub name: String,
+    #[serde(default)]
+    pub raw: String,
+    #[serde(default)]
+    pub why: String,
+}
+
+/// Asks about one block of entries (numbered from 1 in order) and reads the groups back
+/// by uid. With `one`, only the group holding entry [1].
+pub fn ask_block(
+    rec: &Records,
+    llm: &dyn Chat,
+    block: &[&Entry],
+    one: bool,
+) -> Result<Vec<Answered>, AiError> {
     let list: Vec<String> = block
         .iter()
         .enumerate()
@@ -325,7 +344,6 @@ fn ask(rec: &Records, llm: &dyn Chat, block: &[&Entry], one: bool) -> Result<Vec
     let reply = llm.chat(&prompt(one, &rec.book), &list.join("\n"))?;
     let mut out = Vec::new();
     for g in parse(&reply).map(|a| a.groups).unwrap_or_default() {
-        let name = g.name.trim().to_string();
         let mut ids: Vec<usize> = g
             .ids
             .into_iter()
@@ -333,49 +351,77 @@ fn ask(rec: &Records, llm: &dyn Chat, block: &[&Entry], one: bool) -> Result<Vec
             .collect();
         ids.sort();
         ids.dedup();
-        if name.is_empty() || ids.is_empty() || (one && !ids.contains(&1)) {
+        if g.name.trim().is_empty() || ids.is_empty() || (one && !ids.contains(&1)) {
             continue;
         }
-        let entries: Vec<&Entry> = ids.iter().map(|i| block[i - 1]).collect();
-        if entries.iter().any(|e| e.kind != entries[0].kind) {
-            continue;
-        }
-        let users: Vec<&&Entry> = entries.iter().filter(|e| e.source == "user").collect();
-        if users.len() > 1 {
-            continue;
-        }
-        let into: &Entry = match users.first() {
-            Some(u) => u,
-            None => g
+        out.push(Answered {
+            keep: g
                 .keep
                 .filter(|k| ids.contains(k))
-                .map(|k| block[k - 1])
-                .unwrap_or(entries[0]),
-        };
-        let members: Vec<&Entry> = entries.into_iter().filter(|e| e.uid != into.uid).collect();
-        // A right original name is not the Vietnamese one, unless the book is Vietnamese.
-        let raw = g.raw.trim();
-        let raw = if raw.is_empty()
-            || raw == into.name.trim()
-            || (rec.book != "Vietnamese" && smart_merge::key(raw) == smart_merge::key(&name))
-        {
-            String::new()
-        } else {
-            raw.to_string()
-        };
-        if members.is_empty() && name == shown(into) && raw.is_empty() {
-            continue;
-        }
-        out.push(Group {
-            rules: rec.rules(&members, into, &name),
-            members: members.into_iter().cloned().collect(),
-            into: into.clone(),
-            name,
-            raw,
-            note: g.why.trim().to_string(),
+                .map(|k| block[k - 1].uid.clone()),
+            uids: ids.iter().map(|i| block[i - 1].uid.clone()).collect(),
+            name: g.name.trim().to_string(),
+            raw: g.raw.trim().to_string(),
+            why: g.why.trim().to_string(),
         });
     }
     Ok(out)
+}
+
+/// A group the AI answered, against the wiki now: entries gone since (merged, removed)
+/// are left out. The user's own entry is the one kept; two of the user's are never
+/// merged; a group of one entry counts only when its name or original name changes.
+pub fn build(rec: &Records, a: &Answered) -> Option<Group> {
+    let name = a.name.trim().to_string();
+    let entries: Vec<&Entry> = a.uids.iter().filter_map(|u| rec.get(u)).collect();
+    if name.is_empty() || entries.is_empty() {
+        return None;
+    }
+    if entries.iter().any(|e| e.kind != entries[0].kind) {
+        return None;
+    }
+    let users: Vec<&&Entry> = entries.iter().filter(|e| e.source == "user").collect();
+    if users.len() > 1 {
+        return None;
+    }
+    let into: &Entry = match users.first() {
+        Some(u) => u,
+        None => a
+            .keep
+            .as_deref()
+            .and_then(|k| entries.iter().find(|e| e.uid == k).copied())
+            .unwrap_or(entries[0]),
+    };
+    let members: Vec<&Entry> = entries.iter().copied().filter(|e| e.uid != into.uid).collect();
+    // A right original name is not the Vietnamese one, unless the book is Vietnamese;
+    // nor one a member or the kept entry already has as its name.
+    let raw = a.raw.trim();
+    let raw = if raw.is_empty()
+        || raw == into.name.trim()
+        || (rec.book != "Vietnamese" && smart_merge::key(raw) == smart_merge::key(&name))
+    {
+        String::new()
+    } else {
+        raw.to_string()
+    };
+    if members.is_empty() && name == shown(into) && raw.is_empty() {
+        return None;
+    }
+    Some(Group {
+        rules: rec.rules(&members, into, &name),
+        members: members.into_iter().cloned().collect(),
+        into: into.clone(),
+        name,
+        raw,
+        note: a.why.trim().to_string(),
+    })
+}
+
+fn ask(rec: &Records, llm: &dyn Chat, block: &[&Entry], one: bool) -> Result<Vec<Group>, AiError> {
+    Ok(ask_block(rec, llm, block, one)?
+        .iter()
+        .filter_map(|a| build(rec, a))
+        .collect())
 }
 
 /// The size of an entry's record, in letters.
@@ -545,6 +591,16 @@ fn blocks(rec: &Records, units: &[Vec<usize>]) -> Vec<Vec<usize>> {
         out.push(cur);
     }
     out
+}
+
+/// The whole wiki cut in blocks, as entry uids: what the merge queue stores.
+pub fn wiki_blocks(conn: &Connection, novel_id: i64) -> rusqlite::Result<Vec<Vec<String>>> {
+    let rec = Records::load(conn, novel_id)?;
+    let pairs = smart_merge::suggest(conn, novel_id)?;
+    Ok(blocks(&rec, &units(&rec, &pairs))
+        .into_iter()
+        .map(|b| b.into_iter().map(|i| rec.all[i].uid.clone()).collect())
+        .collect())
 }
 
 /// The AI's groups for the whole wiki, the blocks `PARALLEL` at a time. `progress` gets
