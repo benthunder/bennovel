@@ -45,7 +45,9 @@ pub fn run() {
             // AI translation runs in the background, one chapter at a time.
             _app.manage(library::queue::Queue::start(_app.handle().clone()));
             // Smart merge's AI step, in the background too.
-            _app.manage(library::merge_queue::MergeQueue::start(_app.handle().clone()));
+            _app.manage(library::merge_queue::MergeQueue::start(
+                _app.handle().clone(),
+            ));
             // Android: a foreground service with the progress keeps it going with the
             // screen off.
             #[cfg(target_os = "android")]
@@ -59,18 +61,28 @@ pub fn run() {
             #[cfg(target_os = "android")]
             if let Some(window) = _app.get_webview_window("main") {
                 let version = _app.package_info().version.to_string();
-                let marker = _app.path().app_data_dir().ok().map(|d| d.join("webview-version"));
-                let updated = marker
-                    .as_ref()
-                    .map_or(false, |m| std::fs::read_to_string(m).ok().as_deref() != Some(version.as_str()));
+                let marker = _app
+                    .path()
+                    .app_data_dir()
+                    .ok()
+                    .map(|d| d.join("webview-version"));
+                let updated = marker.as_ref().map_or(false, |m| {
+                    std::fs::read_to_string(m).ok().as_deref() != Some(version.as_str())
+                });
                 let _ = window.with_webview(move |webview| {
                     use jni::objects::JValue;
                     webview.jni_handle().exec(move |env, _, webview| {
                         if updated {
-                            let _ = env.call_method(webview, "clearCache", "(Z)V", &[JValue::Bool(1)]);
+                            let _ =
+                                env.call_method(webview, "clearCache", "(Z)V", &[JValue::Bool(1)]);
                             let _ = env.call_method(webview, "reload", "()V", &[]);
                         }
-                        let _ = env.call_method(webview, "setFocusableInTouchMode", "(Z)V", &[JValue::Bool(1)]);
+                        let _ = env.call_method(
+                            webview,
+                            "setFocusableInTouchMode",
+                            "(Z)V",
+                            &[JValue::Bool(1)],
+                        );
                         let _ = env.call_method(webview, "requestFocus", "()Z", &[]);
                     });
                 });
@@ -154,6 +166,7 @@ pub fn run() {
             library::commands::wiki_search,
             library::commands::wiki_save,
             library::commands::wiki_remove,
+            library::commands::wiki_remove_many,
             library::commands::wiki_relate,
             library::commands::wiki_unrelate,
             library::commands::wiki_set_auto,

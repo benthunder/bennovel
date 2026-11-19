@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { ask } from '@tauri-apps/plugin-dialog';
 import { DICTIONARY, DICT_SUGGEST, TRANSLATE_STYLES } from '../data/mock';
 import { CONTENT_LANG_INFO, CONTENT_LANGS, type ContentLang, type ContentLangInfo, type DictEntry, type GlossaryTerm, type ReplaceRule, type TranslateStyle } from '../data/types';
 import { useI18n } from '../i18n';
@@ -129,6 +130,24 @@ function ReplaceTab({ lang, rules, onChange }: { lang: ContentLang; rules: Repla
   const [find, setFind] = useState('');
   const [replace, setReplace] = useState('');
   const langName = CONTENT_LANG_INFO.find(l => l.code === lang)?.native ?? lang;
+  const app = useApp();
+  // Picking many rules to delete them at once.
+  const [picking, setPicking] = useState(false);
+  const [picked, setPicked] = useState<Set<string>>(() => new Set());
+  const allPicked = rules.length > 0 && rules.every(r => picked.has(r.find));
+  const togglePick = (f: string) => setPicked(p => {
+    const n = new Set(p);
+    if (n.has(f)) n.delete(f); else n.add(f);
+    return n;
+  });
+  const stopPicking = () => { setPicking(false); setPicked(new Set()); };
+  const removePicked = async () => {
+    const n = rules.filter(r => picked.has(r.find)).length;
+    if (!n || !(await ask(t('replace.removeManyAsk', { n }), { kind: 'warning' }))) return;
+    onChange(rules.filter(r => !picked.has(r.find)));
+    app.showToast(t('replace.removedMany', { n }));
+    stopPicking();
+  };
 
   const add = () => {
     const f = find.trim();
@@ -151,17 +170,48 @@ function ReplaceTab({ lang, rules, onChange }: { lang: ContentLang; rules: Repla
         <input className="input" style={{ height: 42, background: 'var(--color-bg)' }} aria-label={t('replace.with')} placeholder={t('replace.with')} value={replace} onChange={e => setReplace(e.target.value)} maxLength={200} />
         <button type="submit" className="btn btn-primary" style={{ height: 42 }} disabled={!find.trim()}>{t('replace.add')}</button>
       </form>
+      {rules.length > 0 && (
+        <div data-replace-pick-bar role="toolbar" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          {picking ? (
+            <>
+              <span style={{ flex: '1 1 auto', fontSize: 13, fontWeight: 700 }}>{t('common.picked', { n: picked.size })}</span>
+              <button type="button" className="btn btn-secondary" data-replace-pick-all style={{ height: 34, padding: '0 12px' }}
+                onClick={() => setPicked(allPicked ? new Set() : new Set(rules.map(r => r.find)))}>
+                {t(allPicked ? 'common.unselectAll' : 'common.selectAll')}
+              </button>
+              <button type="button" className="btn btn-primary" data-replace-pick-remove style={{ height: 34, padding: '0 12px' }} disabled={!picked.size} onClick={removePicked}>
+                {t('common.deleteN', { n: picked.size })}
+              </button>
+              <button type="button" className="btn btn-ghost" data-replace-pick-done style={{ height: 34, padding: '0 12px' }} onClick={stopPicking}>{t('common.done')}</button>
+            </>
+          ) : (
+            <button type="button" className="btn btn-secondary" data-replace-pick style={{ height: 34, padding: '0 12px', marginLeft: 'auto' }} onClick={() => setPicking(true)}>
+              {t('common.pickMany')}
+            </button>
+          )}
+        </div>
+      )}
       {rules.length === 0
         ? <div className="muted" style={{ fontSize: 12 }}>{t('replace.empty')}</div>
-        : rules.map(r => (
-          <div key={r.find} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, padding: '8px 8px 8px 12px', borderRadius: 16, background: 'var(--color-bg)' }}>
+        : rules.map(r => {
+          const text = (
             <span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>
               <span style={{ fontWeight: 700 }}>{r.find}</span> → {r.replace || <span className="muted">{t('replace.removed')}</span>}
             </span>
-            <button className="btn btn-icon btn-secondary" style={{ width: 32, height: 32, flex: 'none' }} aria-label={t('replace.delete', { w: r.find })}
-              onClick={() => onChange(rules.filter(x => x !== r))}><XIcon size={14} /></button>
-          </div>
-        ))}
+          );
+          return picking ? (
+            <Checkbox key={r.find} checked={picked.has(r.find)} onChange={() => togglePick(r.find)} size={22}
+              style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, padding: '8px 12px', borderRadius: 16, background: picked.has(r.find) ? 'color-mix(in srgb, var(--color-accent) 14%, var(--color-bg))' : 'var(--color-bg)' }}>
+              {text}
+            </Checkbox>
+          ) : (
+            <div key={r.find} data-rule={r.find} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, padding: '8px 8px 8px 12px', borderRadius: 16, background: 'var(--color-bg)' }}>
+              {text}
+              <button className="btn btn-icon btn-secondary" style={{ width: 32, height: 32, flex: 'none' }} aria-label={t('replace.delete', { w: r.find })}
+                onClick={() => onChange(rules.filter(x => x !== r))}><XIcon size={14} /></button>
+            </div>
+          );
+        })}
     </div>
   );
 }

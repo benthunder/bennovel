@@ -117,8 +117,8 @@ pub(crate) fn safe_find(find: &str, to: &str) -> bool {
 /// The replace rules merging `from` into `into` adds: the names `from` was written
 /// with in the translation → the kept name. A name is left out when replacing it as
 /// plain text would harm other words or other entries: a short one-word name, one the
-/// kept name holds (it would be replaced inside the kept name), or one that is another
-/// live entry's name.
+/// kept name holds (it would be replaced inside the kept name), one that is another
+/// live entry's name, or a title or nickname rather than the name misspelt (`rule_ok`).
 pub fn rules_for(from: &Entry, into: &Entry, others: &[Entry]) -> Vec<Rule> {
     let to = shown(into).to_string();
     let mut finds: Vec<String> = vec![shown(from).to_string(), from.name.trim().to_string()];
@@ -130,7 +130,7 @@ pub fn rules_for(from: &Entry, into: &Entry, others: &[Entry]) -> Vec<Rule> {
     };
     finds
         .into_iter()
-        .filter(|f| safe_find(f, &to) && !taken(f))
+        .filter(|f| safe_find(f, &to) && rule_ok(f, &to) && !taken(f))
         .map(|find| Rule {
             find,
             replace: to.clone(),
@@ -244,6 +244,51 @@ pub(crate) fn near(a: &str, b: &str) -> bool {
         && wa.len() == wb.len()
         && wa.iter().any(|w| wb.contains(w))
         && distance(&embed(a), &embed(b)) < NEAR
+}
+
+/// Whether `find` may become `to` as a replace rule: the same name written another way
+/// ("Cổ Đại Viêm" → "Cố Đại Diễm", "Dạ Tô Quang" → "Dữ Tú Quang"), or an original name
+/// the translation left as it was ("Gu Dae-yeom"), or any name while the kept one is not
+/// translated yet (a later merge carries the rule on to its translation). A title or a nickname ("Hắc Ma Chiến
+/// Quân" → "Cố Đại Diễm") is another word for the person, not a misspelling: replacing
+/// it in the text would put the person's name where the story says the title.
+pub(crate) fn rule_ok(find: &str, to: &str) -> bool {
+    super::detect_lang(find) != "vi" || super::detect_lang(to) != "vi" || spelled_alike(find, to)
+}
+
+/// Whether two names are one written another way: the same number of words with half
+/// of them the same, or few letters apart (marks, hyphens and case aside).
+pub(crate) fn spelled_alike(a: &str, b: &str) -> bool {
+    let (fa, fb) = (fold(&key(a)), fold(&key(b)));
+    if fa == fb {
+        return true;
+    }
+    let wa: Vec<&str> = fa.split_whitespace().collect();
+    let wb: Vec<&str> = fb.split_whitespace().collect();
+    if wa.len() == wb.len() && wa.iter().zip(&wb).filter(|(x, y)| x == y).count() * 2 >= wa.len() {
+        return true;
+    }
+    let (ca, cb): (Vec<char>, Vec<char>) = (
+        fa.chars().filter(|c| !c.is_whitespace()).collect(),
+        fb.chars().filter(|c| !c.is_whitespace()).collect(),
+    );
+    let longest = ca.len().max(cb.len());
+    longest > 0 && edits(&ca, &cb) * 3 <= longest
+}
+
+/// The letters to change, add or remove to turn `a` into `b`.
+fn edits(a: &[char], b: &[char]) -> usize {
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.iter().enumerate() {
+        let mut prev = row[0];
+        row[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cur = row[j + 1];
+            row[j + 1] = (prev + usize::from(ca != cb)).min(row[j] + 1).min(cur + 1);
+            prev = cur;
+        }
+    }
+    row[b.len()]
 }
 
 /// What smart merge finds for entry `uid`: the original names the translations (and
@@ -621,5 +666,15 @@ mod tests {
             (m.pairs[0].from.uid.as_str(), m.pairs[0].into.uid.as_str()),
             (b.as_str(), a.as_str())
         );
+    }
+
+    #[test]
+    fn a_title_or_nickname_gets_no_rule_but_a_misspelling_does() {
+        assert!(rule_ok("Cổ Đại Viêm", "Cố Đại Diễm"));
+        assert!(rule_ok("Dạ Tô Quang", "Dữ Tú Quang"));
+        assert!(rule_ok("Gu Dae-yeom", "Cố Đại Diễm"));
+        assert!(!rule_ok("Hắc Ma Chiến Quân", "Cố Đại Diễm"));
+        assert!(!rule_ok("Hắc Ma Chiến Tướng", "Cố Đại Diễm"));
+        assert!(!rule_ok("Thiếu chủ", "Tuyết Huy"));
     }
 }

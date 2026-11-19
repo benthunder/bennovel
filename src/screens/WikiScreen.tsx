@@ -3,7 +3,7 @@ import { ask } from '@tauri-apps/plugin-dialog';
 import { Modal } from '../components/Modal';
 import { SmartMergeSheet } from '../components/SmartMergeSheet';
 import { GroupedRelations, equivalentsOf, levelOf, relWords, useWikiT } from '../components/WikiPopup';
-import { ChevronLeftIcon, ChevronRightIcon, PencilIcon, SparklesIcon, XIcon } from '../components/Icons';
+import { CheckIcon, ChevronLeftIcon, ChevronRightIcon, PencilIcon, SparklesIcon, XIcon } from '../components/Icons';
 import { Checkbox, SearchField, Spinner } from '../components/ui';
 import { useI18n } from '../i18n';
 import { AI_LANGS, AiFailure, aiErrorDetail } from '../lib/ai';
@@ -11,7 +11,7 @@ import { useAsync } from '../lib/useAsync';
 import { useLayout } from '../lib/useLayout';
 import { useThrottledValue } from '../lib/useThrottledValue';
 import {
-  PROFILE_FIELDS, RAW, REL_TYPES, SKILL_FIELDS, WIKI_KINDS, WIKI_LANG, addWikiRelation, getWiki, getWikiMissing, mergeWikiEntry, removeWikiEntry, removeWikiRelation, saveWikiEntry,
+  PROFILE_FIELDS, RAW, REL_TYPES, SKILL_FIELDS, WIKI_KINDS, WIKI_LANG, addWikiRelation, getWiki, getWikiMissing, mergeWikiEntry, removeWikiEntries, removeWikiEntry, removeWikiRelation, saveWikiEntry,
   searchWiki, setWikiAuto,  translateWiki, wikiChapter, wikiLabel, wikiSummary,
   type ProfileField, type SkillField, type Wiki, type WikiEntry, type WikiKind, metaStage } from '../lib/wiki';
 import { useApp } from '../store/AppStore';
@@ -41,6 +41,10 @@ export function WikiScreen({ novelId, title }: { novelId: number; title: string;
   // The entry open in the sheet: an existing one, or `new`.
   const [open, setOpen] = useState<WikiEntry | 'new' | null>(null);
   const [merging, setMerging] = useState(false);
+  // Picking many entries to delete them at once.
+  const [picking, setPicking] = useState(false);
+  const [picked, setPicked] = useState<Set<string>>(() => new Set());
+  const [removing, setRemoving] = useState(false);
   const reload = () => setRev(n => n + 1);
 
   const wiki = q.status === 'ready' ? q.data : null;
@@ -54,6 +58,35 @@ export function WikiScreen({ novelId, title }: { novelId: number; title: string;
   const shown = base?.filter(e => kind === 'all' || e.kind === kind) ?? null;
   const kinds = WIKI_KINDS.filter(k => wiki?.entries.some(e => e.kind === k));
   const missing = missingQ.status === 'ready' ? missingQ.data : 0;
+
+  const togglePick = (uid: string) => setPicked(p => {
+    const n = new Set(p);
+    if (n.has(uid)) n.delete(uid); else n.add(uid);
+    return n;
+  });
+  const allPicked = !!shown?.length && shown.every(e => picked.has(e.uid));
+  const pickAll = () => setPicked(p => {
+    const n = new Set(p);
+    for (const e of shown ?? []) { if (allPicked) n.delete(e.uid); else n.add(e.uid); }
+    return n;
+  });
+  const stopPicking = () => { setPicking(false); setPicked(new Set()); };
+  const removePicked = async () => {
+    const uids = [...picked];
+    if (!uids.length || removing || !(await ask(t('wiki.removeManyAsk', { n: uids.length }), { kind: 'warning' }))) return;
+    setRemoving(true);
+    try {
+      const n = await removeWikiEntries(user, uids);
+      app.showToast(t('wiki.removedMany', { n }));
+      stopPicking();
+      reload();
+    } catch (e) {
+      console.error(e);
+      app.showToast(String(e));
+    } finally {
+      setRemoving(false);
+    }
+  };
 
   const toggleAuto = async () => {
     if (!wiki) return;
@@ -94,8 +127,16 @@ export function WikiScreen({ novelId, title }: { novelId: number; title: string;
     const rels = relCount.get(e.uid) ?? 0;
     const level = wiki && e.kind === 'character' ? levelOf(wiki, e.uid) : null;
     return (
-      <div key={e.uid} data-entry={e.name} role="button" tabIndex={0} className="novel-row" style={{ alignItems: 'flex-start', gap: 10, padding: '12px 14px', borderRadius: 22, background: 'var(--frost)', minWidth: 0, textAlign: 'left', width: '100%' }}
-        onClick={() => setOpen(e)} onKeyDown={ev => { if (ev.target === ev.currentTarget && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); setOpen(e); } }}>
+      <div key={e.uid} data-entry={e.name} role={picking ? 'checkbox' : 'button'} aria-checked={picking ? picked.has(e.uid) : undefined} tabIndex={0} className="novel-row"
+        style={{ alignItems: 'flex-start', gap: 10, padding: '12px 14px', borderRadius: 22, background: picking && picked.has(e.uid) ? 'color-mix(in srgb, var(--color-accent) 14%, var(--color-surface))' : 'var(--frost)', minWidth: 0, textAlign: 'left', width: '100%' }}
+        onClick={() => (picking ? togglePick(e.uid) : setOpen(e))}
+        onKeyDown={ev => { if (ev.target === ev.currentTarget && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); if (picking) togglePick(e.uid); else setOpen(e); } }}>
+        {picking && (
+          <span className="check" aria-hidden style={{ flex: 'none', marginTop: 1, pointerEvents: 'none' }}>
+            <input type="checkbox" checked={picked.has(e.uid)} readOnly tabIndex={-1} />
+            <span className="check__box" style={{ width: 22, height: 22 }}><CheckIcon size={12} /></span>
+          </span>
+        )}
         <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 3 }}>
           <span style={{ display: 'flex', gap: 6, alignItems: 'baseline', flexWrap: 'wrap' }}>
             <span style={{ fontSize: 15, fontWeight: 700 }}>{label}</span>
@@ -121,7 +162,7 @@ export function WikiScreen({ novelId, title }: { novelId: number; title: string;
           </span>
           {extra}
         </span>
-        <ChevronRightIcon size={16} style={{ flex: 'none', marginTop: 4, color: 'var(--color-neutral-500)' }} />
+        {!picking && <ChevronRightIcon size={16} style={{ flex: 'none', marginTop: 4, color: 'var(--color-neutral-500)' }} />}
       </div>
     );
   };
@@ -196,9 +237,26 @@ export function WikiScreen({ novelId, title }: { novelId: number; title: string;
               )}
             </div>
 
-            <div>
-              <SearchField value={query} onChange={setQuery} placeholder={t('wiki.search')} />
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <div style={{ flex: 1, minWidth: 0 }}><SearchField value={query} onChange={setQuery} placeholder={t('wiki.search')} /></div>
+              {!picking && wiki.entries.length > 0 && (
+                <button type="button" className="btn btn-secondary" data-wiki-pick style={{ height: 40, padding: '0 14px', flex: 'none' }} onClick={() => setPicking(true)}>
+                  {t('common.pickMany')}
+                </button>
+              )}
             </div>
+            {picking && (
+              <div data-wiki-pick-bar role="toolbar" style={{ position: 'sticky', top: 8, zIndex: 2, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '10px 12px', borderRadius: 20, background: 'var(--color-surface)', boxShadow: '0 4px 16px rgba(0,0,0,.08)' }}>
+                <span style={{ flex: '1 1 auto', fontSize: 13, fontWeight: 700 }}>{t('common.picked', { n: picked.size })}</span>
+                <button type="button" className="btn btn-secondary" data-wiki-pick-all style={{ height: 36, padding: '0 12px' }} disabled={!shown?.length} onClick={pickAll}>
+                  {t(allPicked ? 'common.unselectAll' : 'common.selectAll')}
+                </button>
+                <button type="button" className="btn btn-primary" data-wiki-pick-remove style={{ height: 36, padding: '0 12px', gap: 6 }} disabled={!picked.size || removing} onClick={removePicked}>
+                  {removing && <Spinner size={12} />}{t('common.deleteN', { n: picked.size })}
+                </button>
+                <button type="button" className="btn btn-ghost" data-wiki-pick-done style={{ height: 36, padding: '0 12px' }} onClick={stopPicking}>{t('common.done')}</button>
+              </div>
+            )}
 
             {kinds.length > 0 && (
               <div role="tablist" style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -212,7 +270,8 @@ export function WikiScreen({ novelId, title }: { novelId: number; title: string;
 
             {shown == null ? <Spinner size={16} />
               : shown.length === 0 ? <p className="muted" style={{ fontSize: 14 }}>{t(wiki.entries.length ? 'wiki.noMatch' : 'wiki.empty')}</p>
-                : !term && kind === 'level' ? <Ladder wiki={wiki} lang={lang} row={row} />
+                : picking ? list(shown)
+                  : !term && kind === 'level' ? <Ladder wiki={wiki} lang={lang} row={row} />
                   : !term && kind === 'place' ? <MapTree wiki={wiki} card={row} />
                     : list(shown)}
           </>

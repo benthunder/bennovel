@@ -225,7 +225,8 @@ impl Records {
 
     /// The replace rules for a group: every name its entries were written with (their
     /// translated names, original names, and the chapters' spellings) → `name`. A name
-    /// another entry outside the group still uses, or one unsafe as plain text, is left out.
+    /// another entry outside the group still uses, one unsafe as plain text, or a title or
+    /// nickname rather than the name misspelt (`smart_merge::rule_ok`) is left out.
     pub fn rules(&self, members: &[&Entry], into: &Entry, name: &str) -> Vec<Rule> {
         let inside: Vec<&str> = members
             .iter()
@@ -249,7 +250,7 @@ impl Records {
         }
         let mut out: Vec<Rule> = finds
             .into_iter()
-            .filter(|f| safe_find(f, name) && !taken(f))
+            .filter(|f| safe_find(f, name) && smart_merge::rule_ok(f, name) && !taken(f))
             .map(|find| Rule {
                 find,
                 replace: name.to_string(),
@@ -392,7 +393,11 @@ pub fn build(rec: &Records, a: &Answered) -> Option<Group> {
             .and_then(|k| entries.iter().find(|e| e.uid == k).copied())
             .unwrap_or(entries[0]),
     };
-    let members: Vec<&Entry> = entries.iter().copied().filter(|e| e.uid != into.uid).collect();
+    let members: Vec<&Entry> = entries
+        .iter()
+        .copied()
+        .filter(|e| e.uid != into.uid)
+        .collect();
     // A right original name is not the Vietnamese one, unless the book is Vietnamese;
     // nor one a member or the kept entry already has as its name.
     let raw = a.raw.trim();

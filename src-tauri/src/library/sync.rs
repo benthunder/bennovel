@@ -60,7 +60,15 @@ pub fn backup_to(
     settings: Option<&str>,
     originals: Option<&Path>,
 ) -> Result<u64, SyncError> {
-    snapshot(conn, tmp, out, Some(Extras { settings, originals }))
+    snapshot(
+        conn,
+        tmp,
+        out,
+        Some(Extras {
+            settings,
+            originals,
+        }),
+    )
 }
 
 /// `backup`: `Some` for a backup, `None` for a synced copy.
@@ -672,15 +680,23 @@ mod tests {
         let (mut b, pb) = device("seg-b");
         let id =
             super::super::import(&mut a, BookFormat::Txt, &mut Book, "thu.txt", |_, _| {}).unwrap();
-        let chapter = |conn: &Connection| translate::chapter_at(conn, id_of(conn), 0).unwrap().unwrap();
+        let chapter = |conn: &Connection| {
+            translate::chapter_at(conn, id_of(conn), 0)
+                .unwrap()
+                .unwrap()
+        };
         fn id_of(conn: &Connection) -> i64 {
-            conn.query_row("select id from novels", [], |r| r.get(0)).unwrap()
+            conn.query_row("select id from novels", [], |r| r.get(0))
+                .unwrap()
         }
         assert_eq!(id, id_of(&a));
         let raw = segments::paragraphs(&a, chapter(&a), "vi", None).unwrap();
         assert!(!raw.is_empty());
         send(&a, &pa, &mut b, &pb);
-        assert_eq!(segments::paragraphs(&b, chapter(&b), "vi", None).unwrap(), raw);
+        assert_eq!(
+            segments::paragraphs(&b, chapter(&b), "vi", None).unwrap(),
+            raw
+        );
 
         // Translated on A afterwards: B gets the segments at the same positions.
         let translate = |conn: &Connection, text: &str| {
@@ -705,7 +721,9 @@ mod tests {
         send(&b, &pb, &mut a, &pa);
         assert_eq!(on(&a), vec!["Newer."]);
         let rows: i64 = a
-            .query_row("select count(*) from segments where lang = 'en'", [], |r| r.get(0))
+            .query_row("select count(*) from segments where lang = 'en'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(rows, 1);
     }
@@ -737,7 +755,14 @@ mod tests {
         ai_text(&a, id, 2, "Bản dịch 2");
         super::super::save_progress(&a, id, 1, 0.5).unwrap();
         let backup = pa.with_extension("bak.gz");
-        backup_to(&a, &pa.with_extension("bak"), &backup, Some(r#"{"uiLang":"vi"}"#), None).unwrap();
+        backup_to(
+            &a,
+            &pa.with_extension("bak"),
+            &backup,
+            Some(r#"{"uiLang":"vi"}"#),
+            None,
+        )
+        .unwrap();
         let chapters = |c: &Connection| -> Vec<(i64, i64)> {
             c.prepare("select novel_id, number from chapters order by novel_id, number")
                 .unwrap()
@@ -749,13 +774,21 @@ mod tests {
         let before = chapters(&a);
 
         // Since then: a chapter more, another book, then the book deleted.
-        a.execute("insert into chapters (novel_id, number) values (?1, 3)", [id])
-            .unwrap();
+        a.execute(
+            "insert into chapters (novel_id, number) values (?1, 3)",
+            [id],
+        )
+        .unwrap();
         super::super::import(&mut a, BookFormat::Txt, &mut Book, "khac.txt", |_, _| {}).unwrap();
         super::super::delete(&a, id).unwrap();
 
-        let restored =
-            restore_from(&mut a, std::fs::File::open(&backup).unwrap(), &pa.with_extension("in"), None).unwrap();
+        let restored = restore_from(
+            &mut a,
+            std::fs::File::open(&backup).unwrap(),
+            &pa.with_extension("in"),
+            None,
+        )
+        .unwrap();
         assert_eq!(restored.settings.as_deref(), Some(r#"{"uiLang":"vi"}"#));
         assert_eq!(chapters(&a), before);
         let books = super::super::list(&a).unwrap();
@@ -784,8 +817,13 @@ mod tests {
         let backup = pa.with_extension("llm.gz");
         backup_to(&a, &pa.with_extension("llm"), &backup, Some("{}"), None).unwrap();
 
-        let restored =
-            restore_from(&mut c, std::fs::File::open(&backup).unwrap(), &pa.with_extension("llm-in"), None).unwrap();
+        let restored = restore_from(
+            &mut c,
+            std::fs::File::open(&backup).unwrap(),
+            &pa.with_extension("llm-in"),
+            None,
+        )
+        .unwrap();
         assert_eq!(restored.settings.as_deref(), Some("{}"));
         let key: String = c
             .query_row("select api_key from llm_config", [], |r| r.get(0))
@@ -845,12 +883,19 @@ mod tests {
         std::fs::write(dir_c.join("1.pdf"), b"other").unwrap();
 
         super::super::import(&mut a, BookFormat::Txt, &mut Book, "thu.txt", |_, _| {}).unwrap();
-        let id = super::super::import(&mut a, BookFormat::Pdf, &mut Pdf, "sach.pdf", |_, _| {})
-            .unwrap();
+        let id =
+            super::super::import(&mut a, BookFormat::Pdf, &mut Pdf, "sach.pdf", |_, _| {}).unwrap();
         let pdf: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
         std::fs::write(dir_a.join(format!("{id}.pdf")), &pdf).unwrap();
         let backup = pa.with_extension("pdf.gz");
-        backup_to(&a, &pa.with_extension("pdf-bak"), &backup, None, Some(&dir_a)).unwrap();
+        backup_to(
+            &a,
+            &pa.with_extension("pdf-bak"),
+            &backup,
+            None,
+            Some(&dir_a),
+        )
+        .unwrap();
 
         restore_from(
             &mut c,
@@ -860,7 +905,11 @@ mod tests {
         )
         .unwrap();
         // C now holds A's library: same ids, same chapters and pages, A's originals only.
-        let titles: Vec<_> = super::super::list(&c).unwrap().into_iter().map(|b| b.title).collect();
+        let titles: Vec<_> = super::super::list(&c)
+            .unwrap()
+            .into_iter()
+            .map(|b| b.title)
+            .collect();
         assert_eq!(titles.len(), 2);
         let want = vec![Some([1, 2]), Some([3, 4]), Some([5, 5])];
         assert_eq!(pages_of(&pa, id), want);
@@ -869,7 +918,11 @@ mod tests {
         assert!(!dir_c.join("1.pdf").exists());
         // The originals don't stay in the library file.
         let left: i64 = c
-            .query_row("select count(*) from sqlite_master where name = 'book_files'", [], |r| r.get(0))
+            .query_row(
+                "select count(*) from sqlite_master where name = 'book_files'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(left, 0);
     }
@@ -877,13 +930,16 @@ mod tests {
     #[test]
     fn a_book_imported_before_page_ranges_takes_them_from_its_original() {
         let (mut a, pa) = device("pdf-old");
-        let id = super::super::import(&mut a, BookFormat::Pdf, &mut Pdf, "sach.pdf", |_, _| {})
-            .unwrap();
+        let id =
+            super::super::import(&mut a, BookFormat::Pdf, &mut Pdf, "sach.pdf", |_, _| {}).unwrap();
         a.execute("update chapters set page_from = null, page_to = null", [])
             .unwrap();
         assert_eq!(pages_of(&pa, id), vec![None, None, None]);
         crate::library::DbBook::open(&pa, id, Some(Box::new(Pdf))).unwrap();
-        assert_eq!(pages_of(&pa, id), vec![Some([1, 2]), Some([3, 4]), Some([5, 5])]);
+        assert_eq!(
+            pages_of(&pa, id),
+            vec![Some([1, 2]), Some([3, 4]), Some([5, 5])]
+        );
     }
 
     #[test]

@@ -1190,6 +1190,17 @@ pub async fn wiki_remove<R: Runtime>(
     ai_blocking(move || Ok(wiki::remove(&db::open(&path)?, &uid)?)).await
 }
 
+/// Removes the entries the user selected; returns how many went.
+#[tauri::command]
+pub async fn wiki_remove_many<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    uids: Vec<String>,
+) -> Result<usize, AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || Ok(wiki::remove_many(&db::open(&path)?, &uids)?)).await
+}
+
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn wiki_relate<R: Runtime>(
@@ -1282,7 +1293,8 @@ pub async fn wiki_merge_ai_start<R: Runtime>(
         Ok(super::merge_queue::counts(&conn, novel_id)?)
     })
     .await?;
-    app.state::<super::merge_queue::MergeQueue>().kick(path, user);
+    app.state::<super::merge_queue::MergeQueue>()
+        .kick(path, user);
     Ok(status)
 }
 
@@ -1315,7 +1327,8 @@ pub async fn wiki_merge_ai_control<R: Runtime>(
     })
     .await?;
     if kick {
-        app.state::<super::merge_queue::MergeQueue>().kick(path, user);
+        app.state::<super::merge_queue::MergeQueue>()
+            .kick(path, user);
     }
     Ok(status)
 }
@@ -1330,8 +1343,14 @@ pub async fn wiki_merge_entry<R: Runtime>(
     uid: String,
 ) -> Result<super::smart_merge::EntryMerge, AiError> {
     let path = db_path(&app, &user)?;
-    ai_blocking(move || Ok(super::smart_merge::for_entry(&db::open(&path)?, novel_id, &uid)?))
-        .await
+    ai_blocking(move || {
+        Ok(super::smart_merge::for_entry(
+            &db::open(&path)?,
+            novel_id,
+            &uid,
+        )?)
+    })
+    .await
 }
 
 /// More pairs for one entry, found by the user's LLM.

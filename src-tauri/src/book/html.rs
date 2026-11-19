@@ -437,9 +437,13 @@ mod tests {
         std::fs::create_dir_all(base.join("img")).unwrap();
         std::fs::write(base.join("img/a b.png"), b"\x89PNG").unwrap();
         let html = r#"<p>Một</p><img src="img/a%20b.png"><img src="data:image/gif;base64,R0lGOA=="><img src="http://x/y.png">"#;
-        let mut book =
-            extract_html(Cursor::new(html.as_bytes().to_vec()), &test_dir(), None, Some(&base))
-                .unwrap();
+        let mut book = extract_html(
+            Cursor::new(html.as_bytes().to_vec()),
+            &test_dir(),
+            None,
+            Some(&base),
+        )
+        .unwrap();
         let paras = texts(&mut book);
         assert_eq!(paras.len(), 4);
         assert_eq!(book.image("img/a%20b.png").unwrap().mime, "image/png");
@@ -448,7 +452,8 @@ mod tests {
         assert!(book.image("http://x/y.png").is_err());
 
         let msg = "MIME-Version: 1.0\r\nContent-Type: multipart/related; boundary=\"B\"\r\n\r\n--B\r\nContent-Type: text/html; charset=utf-8\r\nContent-Location: http://site/page/index.html\r\n\r\n<p>Trang</p><img src=\"pics/p.png\"><img src=\"cid:c1\">\r\n--B\r\nContent-Type: image/png\r\nContent-Transfer-Encoding: base64\r\nContent-Location: http://site/page/pics/p.png\r\n\r\niVBORw==\r\n--B\r\nContent-Type: image/jpeg\r\nContent-Transfer-Encoding: base64\r\nContent-ID: <c1>\r\n\r\n/9g=\r\n--B--\r\n";
-        let mut book = extract_mht(Cursor::new(msg.as_bytes().to_vec()), &test_dir(), None).unwrap();
+        let mut book =
+            extract_mht(Cursor::new(msg.as_bytes().to_vec()), &test_dir(), None).unwrap();
         assert_eq!(texts(&mut book).len(), 3);
         assert_eq!(book.image("pics/p.png").unwrap().mime, "image/png");
         assert_eq!(book.image("cid:c1").unwrap().mime, "image/jpeg");

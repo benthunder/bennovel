@@ -616,8 +616,10 @@ create table wiki_merge_blocks (
 );
 "#,
     r#"
--- The wiki drops entries that are only a chapter's heading ("Chapter 320" → "Chương 320"),
--- which older versions let the AI add (`wiki::tidy_all` runs after this one).
+-- The wiki drops entries that are only a chapter's heading ("Chapter 320" → "Chương 320")
+-- or title ("Those Who Leave Must Return (2)"), and an entry whose original name is
+-- Vietnamese in a book that is not takes its original from its other names. Older
+-- versions let the AI write those (`wiki::tidy_all` runs after this one).
 select 1;
 "#,
 ];
