@@ -1238,6 +1238,31 @@ pub async fn wiki_remove<R: Runtime>(
     ai_blocking(move || Ok(wiki::remove(&db::open(&path)?, &uid)?)).await
 }
 
+/// Unlinks a word from an entry (a wrong alias, or a word the reader marked as it); the
+/// AI and merges never add it back. Returns the entry as it is now.
+#[tauri::command]
+pub async fn wiki_unlink<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    uid: String,
+    word: String,
+) -> Result<wiki::Entry, AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || wiki::unlink(&db::open(&path)?, &uid, &word)).await
+}
+
+/// Lets words unlinked before be the entry's aliases again (the user wrote them back).
+#[tauri::command]
+pub async fn wiki_unblock<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    uid: String,
+    words: Vec<String>,
+) -> Result<(), AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || Ok(wiki::unblock(&db::open(&path)?, &uid, &words)?)).await
+}
+
 /// Writes the wiki's names into the book's translations; returns the paragraphs changed.
 #[tauri::command]
 pub async fn wiki_apply_to_text<R: Runtime>(

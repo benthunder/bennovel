@@ -1,14 +1,16 @@
 import { useState, type ReactNode } from 'react';
+import { ask } from '@tauri-apps/plugin-dialog';
 import { messageIn, useI18n } from '../i18n';
 import type { MessageKey } from '../i18n/en';
 import {
   PROFILE_FIELDS, RAW, REL_GROUPS, SKILL_FIELDS, WIKI_LANG, isRelType, metaStage, relGroup, wikiChapter, wikiLabel, wikiSummary,
-  type RelGroup, type Wiki, type WikiEntry, type WikiRelation
+  removeWikiEntry, unlinkWikiWord, type RelGroup, type Wiki, type WikiEntry, type WikiRelation
 } from '../lib/wiki';
+import { useApp } from '../store/AppStore';
 import { Modal } from './Modal';
 import { SmartMergeSheet } from './SmartMergeSheet';
 import { EntryMergeCheck, MergeIntoSheet, RetranslateSheet } from './WikiNameTools';
-import { LanguagesIcon } from './Icons';
+import { LanguagesIcon, XIcon } from './Icons';
 
 /**
  * The words of the app in the wiki's language: relation types and such follow the
@@ -22,7 +24,9 @@ export function useWikiT(lang: string) {
 /** How relation `r` reads from entry `uid`'s side ("master of", or "disciple of" from the other end). */
 export function relWords(r: WikiRelation, uid: string, lang: string, wt: (k: MessageKey) => string) {
   if (isRelType(r.kind)) return wt(`wiki.rel.${r.kind}${r.fromUid === uid ? '' : '.rev'}` as MessageKey);
-  return r.labels[lang] ?? Object.values(r.labels)[0] ?? r.kind;
+  const words = r.labels[lang] ?? Object.values(r.labels)[0] ?? r.kind;
+  // An English code the AI left ("ally_of", "other") never shows in the Vietnamese wiki.
+  return lang === WIKI_LANG && /^[A-Za-z0-9_ /-]+$/.test(words) && /[A-Za-z]/.test(words) ? wt('wiki.relRelated') : words;
 }
 
 /** The level a character is at: the one it reached last. */
@@ -79,7 +83,10 @@ export function GroupedRelations({ wiki, uid, rels, profiled, row, titled = true
   titled?: boolean;
 }) {
   const { t } = useI18n();
-  const { groups, more } = groupRelations(wiki, uid, rels, profiled);
+  const app = useApp();
+  // A relation of no known type is hidden unless the settings say to show them.
+  const shown = app.wikiUnknownRels ? rels : rels.filter(r => isRelType(r.kind));
+  const { groups, more } = groupRelations(wiki, uid, shown, profiled);
   if (!groups.length && !more.length) return null;
   return (
     <>
@@ -239,27 +246,63 @@ export function FactionLeaders({ wiki, entry, onPick }: { wiki: Wiki; entry: Wik
 /** A way to find the wiki's entries in a chapter's text. */
 export interface WikiTerms { re: RegExp | null; byTerm: Map<string, WikiEntry> }
 
+/** The words of a name, split at spaces and hyphens, in lower case: "Goo Jong-myung" → goo, jong, myung. */
+const nameWords = (s: string) => s.toLocaleLowerCase().split(/[\s\-‐‑·・]+/u).filter(Boolean);
+
+/**
+ * An alias that is only one word of one of the entry's longer names ("Minh" of "Cố Tông
+ * Minh", "Myung" of "Goo Jong-myung"): such a word stands for many others in the text
+ * (a sect "hệ Minh", another "Minh"), so it is never marked (wiki.rs `name_piece`).
+ */
+export function namePiece(alias: string, full: (string | undefined)[]) {
+  const a = nameWords(alias);
+  if (a.length !== 1) return false;
+  return full.some(n => { const ws = n ? nameWords(n) : []; return ws.length > 1 && ws.includes(a[0]); });
+}
+
+/** Whether the user unlinked `word` from `e` (wiki.rs `unlink`), whatever its case. */
+export const wikiBlocked = (e: WikiEntry, word: string) => {
+  const w = word.trim().toLocaleLowerCase();
+  return !!w && (e.blocked ?? []).some(b => b.trim().toLocaleLowerCase() === w);
+};
+
 /**
  * The names to look for in text shown in `lang`: the raw name and aliases in a raw text,
  * the entry's name in that language in a translation. Longest first, so "Lâm Động Thiên"
  * wins over "Lâm Động"; one letter is too common to mark. A name only counts as a whole
  * word: "Từ" is not marked inside "Từng" (Chinese and other scripts without spaces have
  * no such letters around them, so their names are found anywhere).
+ *
+ * A word goes to the entry it names best: its name in that language first, then its
+ * original name, then an alias. A word two entries share at that level is left unmarked
+ * (it may be either), and so are an alias that is only one word of the entry's longer
+ * name ("Minh" of "Cố Tông Minh") and a word the user unlinked from it.
  */
 export function wikiTerms(wiki: Wiki | null, lang: string): WikiTerms {
-  const byTerm = new Map<string, WikiEntry>();
+  const best = new Map<string, { rank: number; entries: WikiEntry[] }>();
+  const add = (term: string | undefined, e: WikiEntry, rank: number) => {
+    const t = term?.trim();
+    if (!t || [...t].length < 2 || wikiBlocked(e, t)) return;
+    const had = best.get(t);
+    if (!had || rank < had.rank) best.set(t, { rank, entries: [e] });
+    else if (rank === had.rank && !had.entries.includes(e)) had.entries.push(e);
+  };
   for (const e of wiki?.entries ?? []) {
-    const terms = lang === RAW ? [e.name, ...e.aliases] : [e.names[lang], e.name, ...e.aliases];
-    for (const term of terms) if (term && [...term.trim()].length >= 2 && !byTerm.has(term.trim())) byTerm.set(term.trim(), e);
+    const full = [e.name, ...Object.values(e.names)];
+    if (lang === RAW) add(e.name, e, 0);
+    else { add(e.names[lang], e, 0); add(e.name, e, 1); }
+    for (const a of e.aliases) if (!namePiece(a, full)) add(a, e, 2);
   }
+  const byTerm = new Map<string, WikiEntry>();
+  for (const [t, b] of best) if (b.entries.length === 1) byTerm.set(t, b.entries[0]);
   if (!byTerm.size) return { re: null, byTerm };
   const alts = [...byTerm.keys()].sort((a, b) => b.length - a.length).map(s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
   const word = '[\\p{Script=Latin}\\p{Script=Cyrillic}\\p{Script=Greek}\\p{M}\\p{Nd}]';
   return { re: new RegExp(`(?<!${word})(?:${alts.join('|')})(?!${word})`, 'gu'), byTerm };
 }
 
-/** `text` with the wiki's names bold and tappable. */
-export function markWikiTerms(text: string, terms: WikiTerms, onPick: (e: WikiEntry) => void): ReactNode {
+/** `text` with the wiki's names bold and tappable; `onPick` gets the word as the text writes it. */
+export function markWikiTerms(text: string, terms: WikiTerms, onPick: (e: WikiEntry, word: string) => void): ReactNode {
   if (!terms.re) return text;
   const out: ReactNode[] = [];
   let at = 0;
@@ -267,10 +310,11 @@ export function markWikiTerms(text: string, terms: WikiTerms, onPick: (e: WikiEn
     const e = terms.byTerm.get(m[0]);
     if (!e || m.index === undefined) continue;
     if (m.index > at) out.push(text.slice(at, m.index));
+    const word = m[0];
     out.push(
       <button key={m.index} type="button" className="wiki-term" data-wiki-term={e.uid}
-        onClick={ev => { ev.stopPropagation(); onPick(e); }}>
-        {m[0]}
+        onClick={ev => { ev.stopPropagation(); onPick(e, word); }}>
+        {word}
       </button>
     );
     at = m.index + m[0].length;
@@ -284,16 +328,23 @@ export function markWikiTerms(text: string, terms: WikiTerms, onPick: (e: WikiEn
  * One wiki entry over the reader: everything the wiki knows of it, later chapters
  * included, and the entries it is linked to (tap one to go there).
  */
-export function WikiPopup({ wiki, entry, onPick, onOpenWiki, onClose, novelId, onMerged }: {
+export function WikiPopup({ wiki, entry, word, onPick, onOpenWiki, onClose, novelId, onMerged }: {
   wiki: Wiki; entry: WikiEntry; lang: string;
+  /** The word tapped in the text, which can be unlinked from this entry. */
+  word?: string;
   onPick: (e: WikiEntry) => void; onOpenWiki: () => void; onClose: () => void;
   /** With the book's library id, smart merge for this entry is offered; `onMerged` follows a merge. */
   novelId?: number; onMerged?: () => void;
 }) {
   const { t } = useI18n();
+  const app = useApp();
   const [smart, setSmart] = useState(false);
   const [retr, setRetr] = useState(false);
   const [into, setInto] = useState(false);
+  // Aliases unlinked here, gone at once while the wiki loads again.
+  const [unlinked, setUnlinked] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  const aliases = entry.aliases.filter(a => !unlinked.includes(a));
   const wt = useWikiT(WIKI_LANG);
   const label = wikiLabel(entry, WIKI_LANG);
   const sum = wikiSummary(entry, WIKI_LANG);
@@ -312,6 +363,38 @@ export function WikiPopup({ wiki, entry, onPick, onOpenWiki, onClose, novelId, o
     && !(isSkill && r.kind === 'has_skill')
     && !(isFaction && r.kind === 'leader_of' && r.toUid === entry.uid));
   // Smart merge takes the card's place (one sheet at a time), and Cancel brings it back.
+  // A wrong alias, or the word tapped in the text: unlinked from this entry for good.
+  const unlink = async (w: string, close: boolean) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await unlinkWikiWord(app.libKey, entry.uid, w);
+      setUnlinked(u => [...u, w]);
+      app.showToast(t('wiki.unlinked', { word: w }));
+      onMerged?.();
+      if (close) onClose();
+    } catch (e) {
+      console.error(e);
+      app.showToast(t('wiki.failed'));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const removeEntry = async () => {
+    if (busy || !(await ask(t('wiki.removeAsk', { name: label }), { kind: 'warning' }))) return;
+    setBusy(true);
+    try {
+      await removeWikiEntry(app.libKey, entry.uid);
+      app.showToast(t('wiki.removed'));
+      onMerged?.();
+      onClose();
+    } catch (e) {
+      console.error(e);
+      app.showToast(t('wiki.failed'));
+      setBusy(false);
+    }
+  };
+  const tapped = word?.trim();
   if (smart && novelId != null) {
     return (
       <SmartMergeSheet novelId={novelId} lang={WIKI_LANG} entry={entry} onClose={() => setSmart(false)}
@@ -338,9 +421,33 @@ export function WikiPopup({ wiki, entry, onPick, onOpenWiki, onClose, novelId, o
           <div className="muted" style={{ fontSize: 12, display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', marginTop: 4 }}>
             <span className="tag tag-neutral" style={{ fontSize: 11 }}>{t(`wiki.kind.${entry.kind}`)}</span>
             {label !== entry.name && <span>{entry.name}</span>}
-            {entry.aliases.length > 0 && <span>· {entry.aliases.join(', ')}</span>}
+            {novelId == null && aliases.length > 0 && <span>· {aliases.join(', ')}</span>}
           </div>
+          {/* Each other name with its own ×: a wrong one is unlinked and never added back. */}
+          {novelId != null && aliases.length > 0 && (
+            <div data-wiki-aliases style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 8 }}>
+              {aliases.map(a => (
+                <span key={a} className="chip chip--sm" data-wiki-alias={a} style={{ fontSize: 12, gap: 2, paddingRight: 4, display: 'inline-flex', flexDirection: 'row', alignItems: 'center', whiteSpace: 'nowrap', height: 30 }}>
+                  {a}
+                  <button type="button" className="icon-btn" disabled={busy} aria-label={t('wiki.unlinkAlias', { word: a })} title={t('wiki.unlinkAlias', { word: a })}
+                    style={{ width: 22, height: 22, minWidth: 22 }} onClick={() => unlink(a, false)}>
+                    <XIcon size={12} />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
         </div>
+        {/* The word tapped in the chapter: when it is not this one, it is unlinked from it. */}
+        {novelId != null && tapped && (
+          <div data-wiki-tapped style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '8px 12px', borderRadius: 16, background: 'var(--color-bg)', fontSize: 13 }}>
+            <span style={{ flex: '1 1 160px' }}>{t('wiki.wordLinked', { word: tapped })}</span>
+            <button type="button" className="btn btn-secondary" data-wiki-unlink-word disabled={busy} style={{ height: 34, padding: '0 12px', fontSize: 13 }}
+              onClick={() => unlink(tapped, true)}>
+              {t('wiki.unlinkWord')}
+            </button>
+          </div>
+        )}
         {/* Step 1: this name looked for in the book; a merge waits for the user's tap. */}
         {novelId != null && (
           <EntryMergeCheck novelId={novelId} entry={entry} lang={WIKI_LANG}
@@ -354,6 +461,9 @@ export function WikiPopup({ wiki, entry, onPick, onOpenWiki, onClose, novelId, o
             </button>
             <button type="button" className="btn btn-secondary" data-entry-merge-into style={{ height: 36, padding: '0 14px', fontSize: 13 }} onClick={() => setInto(true)}>
               {t('wiki.mergeIntoBtn')}
+            </button>
+            <button type="button" className="btn btn-ghost" data-entry-remove disabled={busy} style={{ height: 36, padding: '0 14px', fontSize: 13, color: 'var(--color-accent-700)' }} onClick={removeEntry}>
+              {t('wiki.removeEntry')}
             </button>
           </div>
         )}

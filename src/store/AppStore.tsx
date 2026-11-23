@@ -235,6 +235,8 @@ function useAppState() {
   const [contentLang, setContentLang] = useStored<ContentLang | null>('defaultLang', null);
   const [readerPrefs, setReaderPrefs] = useStored<ReaderPrefs>('readerPrefs', DEFAULT_READER_PREFS);
   const [localLast, setLocalLast] = useStored<LocalLast | null>('localLast', null);
+  /** The wiki shows relations of no known type ("liên quan đến", the AI's own words) too. */
+  const [wikiUnknownRels, setWikiUnknownRels] = useStored<boolean>('wikiUnknownRels', false);
 
   // The app opens on the library (books on the device). The very first launch asks to
   // sign in or use offline, and online mode without an account asks to sign in again.
@@ -288,7 +290,7 @@ function useAppState() {
     push, back, switchTab,
     setContentLang, openLangDialog: () => setLangDialogOpen(true), closeLangDialog: () => setLangDialogOpen(false), setReaderPrefs,
     showToast, markLocalRead, forgetLocal, ...account,
-    libraryRev, aiRev, reloadAi, reloadLibrary, textRev, reloadText
+    libraryRev, aiRev, reloadAi, reloadLibrary, textRev, reloadText, wikiUnknownRels, setWikiUnknownRels
   };
 }
 
