@@ -35,6 +35,8 @@ export interface WikiEntry {
   /** The name to use per language. */
   names: Record<string, string>;
   aliases: string[];
+  /** Words the user unlinked from it: never its alias again, never marked as it in the reader. */
+  blocked?: string[];
   /** The description per language; `raw` in the book's own language. */
   summaries: Record<string, string>;
   /** A level's place in its ladder, lowest first. */
@@ -117,6 +119,10 @@ export async function saveWikiEntry(user: string, novelId: number, entry: WikiEn
 }
 
 export const removeWikiEntry = (user: string, uid: string) => invoke<void>('wiki_remove', { user, uid });
+/** Unlinks `word` from an entry (a wrong alias, or a word the reader marked as it); the AI and merges never add it back. */
+export const unlinkWikiWord = (user: string, uid: string, word: string) => invoke<WikiEntry>('wiki_unlink', { user, uid, word });
+/** Lets words unlinked before be the entry's aliases again: the user wrote them back. */
+export const unblockWikiWords = (user: string, uid: string, words: string[]) => invoke<void>('wiki_unblock', { user, uid, words });
 /** Writes the wiki's names into the book's translated chapters; returns the paragraphs changed. */
 export const applyWikiToText = (user: string, novelId: number) => invoke<number>('wiki_apply_to_text', { user, novelId });
 /** Sets a smart merge suggestion (the entries it holds) aside as already right; it is not suggested again. */
@@ -333,7 +339,9 @@ export interface RetranslateProposal {
 }
 
 /** What to translate again: an entry, or words selected in a chapter (0-based). */
-export type RetranslateTarget = { uid?: string; text?: string; chapterIndex?: number };
+/** `avoid`: names the AI gave before for it ("Ask again"), so it gives another. */
+/** `passage`: the paragraph the words were selected in, read first. */
+export type RetranslateTarget = { uid?: string; text?: string; chapterIndex?: number; avoid?: string[]; passage?: string };
 
 /** Asks the AI to translate one name again, with the sentences around it in the book; nothing changes yet. */
 export async function askRetranslate(user: string, novelId: number, target: RetranslateTarget) {

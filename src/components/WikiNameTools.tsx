@@ -143,10 +143,12 @@ export function RetranslateSheet({ novelId, target, lang, onClose, onDone }: {
   const [busy, setBusy] = useState(false);
   const [kept, setKept] = useState<{ entry: WikiEntry; merge: EntryMerge } | null>(null);
   const [round, setRound] = useState(0);
+  // The names already given: "Ask again" wants another one.
+  const [tried, setTried] = useState<string[]>([]);
   useEffect(() => {
     let live = true;
     setAsking(true);
-    askRetranslate(user, novelId, target).then(r => {
+    askRetranslate(user, novelId, { ...target, avoid: tried }).then(r => {
       if (!live) return;
       setP(r);
       setName(r.name);
@@ -154,7 +156,7 @@ export function RetranslateSheet({ novelId, target, lang, onClose, onDone }: {
     }, e => { if (live) fail(e); }).finally(() => { if (live) setAsking(false); });
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user, novelId, target.uid, target.text, target.chapterIndex, round]);
+  }, [user, novelId, target.uid, target.text, target.chapterIndex, target.passage, round]);
   const keep = async () => {
     if (!p || !name.trim() || busy) return;
     setBusy(true);
@@ -221,7 +223,7 @@ export function RetranslateSheet({ novelId, target, lang, onClose, onDone }: {
         )}
         <div className="dialog-actions">
           {p && !kept && (
-            <button type="button" className="btn btn-ghost" data-retr-again style={{ height: 44, padding: '0 12px', marginRight: 'auto', gap: 6 }} disabled={asking || busy} onClick={() => setRound(n => n + 1)}>
+            <button type="button" className="btn btn-ghost" data-retr-again style={{ height: 44, padding: '0 12px', marginRight: 'auto', gap: 6 }} disabled={asking || busy} onClick={() => { if (p) setTried(x => [...new Set([...x, p.name, name.trim()].filter(Boolean))]); setRound(n => n + 1); }}>
               <LanguagesIcon size={14} />{t('wiki.retrAgain')}
             </button>
           )}

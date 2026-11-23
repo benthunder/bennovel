@@ -632,6 +632,15 @@ create table wiki_merge_skips (
   primary key (novel_id, uids)
 );
 "#,
+    r#"
+-- Words the user unlinked from a wiki entry (wiki.rs `unlink`), as a JSON array: never
+-- an alias of it again, whoever merges or extracts, and never marked as it in the
+-- reader. `wiki::drop_pieces_all` runs after this one: aliases that are only one word of
+-- the entry's longer name ("Minh" of "Cố Tông Minh") go, then `wiki::tidy_vi_all`:
+-- relations kept as English codes ("ally_of") and original names left in notes
+-- ("Seol-Hwi") are written in Vietnamese.
+alter table wiki_entries add column blocked text not null default '[]';
+"#,
 ];
 
 /// The migration (1-based) after which `content` holds blocks.
@@ -641,6 +650,9 @@ const SEGMENTS_VERSION: usize = 19;
 /// The migration (1-based) after which the wiki only keeps proper nouns: common nouns
 /// and chapter headings older versions let in are cleaned out by `wiki::tidy_all`.
 const TIDY_VERSION: usize = 24;
+/// The migration (1-based) after which aliases that are a piece of the entry's name are
+/// cleaned out by `wiki::drop_pieces_all`.
+const PIECES_VERSION: usize = 26;
 
 /// Epoch milliseconds now.
 pub fn now_ms() -> i64 {
@@ -741,6 +753,10 @@ fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
             // Run on the latest schema, which the wiki's code reads.
             if i + 1 == MIGRATIONS.len() && done < TIDY_VERSION {
                 super::wiki::tidy_all(&tx)?;
+            }
+            if i + 1 == MIGRATIONS.len() && done < PIECES_VERSION {
+                super::wiki::drop_pieces_all(&tx)?;
+                super::wiki::tidy_vi_all(&tx)?;
             }
             tx.pragma_update(None, "user_version", i as i64 + 1)?;
             tx.commit()?;
@@ -1020,13 +1036,14 @@ mod tests {
             .unwrap();
         assert_eq!(books, 1);
         // Only the last migration missing: it alone runs.
-        conn.execute_batch("drop table wiki_merge_skips").unwrap();
+        conn.execute_batch("alter table wiki_entries drop column blocked")
+            .unwrap();
         conn.pragma_update(None, "user_version", 3).unwrap();
         drop(conn);
         let conn = open(&path).unwrap();
         let n: i64 = conn
             .query_row(
-                "select count(*) from sqlite_master where name = 'wiki_merge_skips'",
+                "select count(*) from pragma_table_info('wiki_entries') where name = 'blocked'",
                 [],
                 |r| r.get(0),
             )
@@ -1046,5 +1063,7 @@ mod tests {
     fn the_last_wiki_cleanup_is_the_last_migration() {
         assert_eq!(TIDY_VERSION, 24);
         assert!(MIGRATIONS[TIDY_VERSION - 1].contains("tidy_all"));
+        assert_eq!(PIECES_VERSION, MIGRATIONS.len());
+        assert!(MIGRATIONS[PIECES_VERSION - 1].contains("drop_pieces_all"));
     }
 }

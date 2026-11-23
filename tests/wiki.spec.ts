@@ -70,10 +70,26 @@ async function nativeApp(page: Page) {
           case 'library_list': return [imported];
           case 'library_detail': return { book: imported, sections: [{ label: 'Chương 1', pages: null }, { label: 'Chương 2', pages: null }] };
           case 'llm_config_get': return { provider: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', hasKey: true };
-          case 'wiki_get': return wiki;
+          case 'wiki_get':
+            // A Korean-English book's character whose aliases hold a piece of its name ("Minh").
+            if (w.__minh && !wiki.entries.some(e => e.uid === 'x')) {
+              wiki.entries.push(entry('x', 'character', 'Goo Jong-myung', 'Cố Tông Minh', 'Nhân vật được Chung Cực Ma giao nhiệm vụ.', 1,
+                { aliases: ['Minh', 'Ju Myung', 'Đại Thánh'] }));
+            }
+            // A fresh copy each time, as the native side sends.
+            return w.__minh ? structuredClone(wiki) : wiki;
+          case 'wiki_unlink': {
+            const e = wiki.entries.find(x => x.uid === args.uid)!;
+            const word = String(args.word);
+            Object.assign(e, { aliases: e.aliases.filter(a => a.toLowerCase() !== word.toLowerCase()), blocked: [...((e as { blocked?: string[] }).blocked ?? []), word] });
+            return e;
+          }
+          case 'wiki_unblock': return null;
+          case 'wiki_remove': wiki.entries = wiki.entries.filter(e => e.uid !== args.uid); return null;
           case 'library_open': return { book: { id: 9, format: 'txt', title: 'Võ Động Càn Khôn', sections: [{ label: 'Chương 1', pages: null }, { label: 'Chương 2', pages: null }], pageImages: false }, novelId: 1, lang: 'zh', index: 0, progress: 0 };
           case 'book_section':
             if (Number(w.__sectionFails) > 0) { w.__sectionFails = Number(w.__sectionFails) - 1; throw 'book 9 is not open'; }
+            if (w.__minh) return { index: args.index, paragraphs: ['Nếu nhìn theo cách đó, Goo Jong-myung hẳn phải thuộc hệ Minh.', 'Đại Thánh cúi đầu gật gù.'] };
             return { index: args.index, paragraphs: ['林动 看着 道宗 的 人。', '动少 笑了。', '萧炎 走了过来。'] };
           case 'wiki_search': return wiki.entries.filter(e => e.kind === 'faction');
           case 'wiki_set_auto': wiki.auto = Boolean(args.auto); return null;
@@ -186,6 +202,7 @@ const calls = (page: Page) => page.evaluate(() => (window as unknown as { __call
 
 test('the book wiki lists, searches and edits entries', async ({ page }, info) => {
   await nativeApp(page);
+  await page.addInitScript(() => localStorage.setItem('bennovel.wikiUnknownRels', 'true'));
   await page.goto('/');
   await page.getByText('Võ Động Càn Khôn').filter({ visible: true }).first().click();
   await page.getByRole('button', { name: /Wiki truyện/ }).filter({ visible: true }).first().click();
@@ -285,6 +302,8 @@ test('the wiki stays Vietnamese whatever the reading language, with levels in or
 test('names in a chapter open the whole wiki with its links', async ({ page }, info) => {
   await nativeApp(page);
   await page.addInitScript(() => {
+    // Relations of no known type shown (Settings): "bạn đồng hành của" below.
+    localStorage.setItem('bennovel.wikiUnknownRels', 'true');
     localStorage.setItem('bennovel.aiView.:1', JSON.stringify({ lang: 'vi', style: 'Natural', dict: true, view: 'vi' }));
   });
   await page.goto('/');
@@ -341,6 +360,57 @@ test('names in a chapter open the whole wiki with its links', async ({ page }, i
   await expect(into).toHaveCount(0);
   await card.getByRole('button', { name: 'Wiki truyện' }).click();
   await expect(page.locator('[data-entry="林动"]').getByText('Lâm Động', { exact: true })).toBeVisible();
+});
+
+test('a piece of a name is not marked, and a word or alias is unlinked from its entry for good', async ({ page }, info) => {
+  await nativeApp(page);
+  await page.addInitScript(() => { (window as unknown as Record<string, unknown>).__minh = true; });
+  await page.goto('/');
+  await page.getByText('Võ Động Càn Khôn').filter({ visible: true }).first().click();
+  await page.getByRole('button', { name: /Bắt đầu đọc|Đọc tiếp/ }).filter({ visible: true }).first().click();
+  const first = page.locator('[data-part="0"]');
+  // The name is marked whole; the "Minh" of "hệ Minh" (a piece of its Vietnamese name) is not.
+  await expect(first.locator('[data-wiki-term="x"]')).toHaveCount(2);
+  expect(await first.locator('[data-wiki-term="x"]').allTextContents()).toEqual(['Goo Jong-myung', 'Đại Thánh']);
+  await page.screenshot({ path: `test-results/wiki-${info.project.name}-unlink-reader.png` });
+  // Tapping a word offers to unlink it from the entry.
+  await first.locator('[data-wiki-term="x"]', { hasText: 'Đại Thánh' }).click();
+  const card = page.getByRole('dialog', { name: 'Cố Tông Minh' });
+  await expect(card.locator('[data-wiki-tapped]')).toContainText('Chữ “Đại Thánh” trong truyện đang được nối với mục này.');
+  await expect(card.locator('[data-wiki-alias]')).toHaveCount(3);
+  await expect(card.locator('[data-entry-remove]')).toBeVisible();
+  await page.screenshot({ path: `test-results/wiki-${info.project.name}-unlink-card.png` });
+  await card.locator('[data-wiki-unlink-word]').click();
+  await expect(card).toHaveCount(0);
+  expect((await calls(page)).filter(c => c.cmd === 'wiki_unlink').map(c => c.args.word)).toEqual(['Đại Thánh']);
+  // Not marked any more: only the full name is.
+  await expect(first.locator('[data-wiki-term="x"]')).toHaveCount(1);
+  // A wrong alias goes with its own ×, the card staying open.
+  await first.locator('[data-wiki-term="x"]').click();
+  await card.locator('[data-wiki-alias="Ju Myung"] button').click();
+  await expect(card.locator('[data-wiki-alias]')).toHaveCount(1);
+  expect((await calls(page)).filter(c => c.cmd === 'wiki_unlink').map(c => c.args.word)).toEqual(['Đại Thánh', 'Ju Myung']);
+  await page.screenshot({ path: `test-results/wiki-${info.project.name}-unlink-alias.png` });
+  // The whole entry can go too, after asking.
+  await card.locator('[data-entry-remove]').click();
+  await expect(card).toHaveCount(0);
+  expect((await calls(page)).some(c => c.cmd === 'wiki_remove' && c.args.uid === 'x')).toBe(true);
+});
+
+test('relations of no known type are hidden until the settings show them', async ({ page }) => {
+  await nativeApp(page);
+  await page.addInitScript(() => {
+    localStorage.setItem('bennovel.aiView.:1', JSON.stringify({ lang: 'vi', style: 'Natural', dict: true, view: 'vi' }));
+  });
+  await page.goto('/');
+  await page.getByText('Võ Động Càn Khôn').filter({ visible: true }).first().click();
+  await page.getByRole('button', { name: /Bắt đầu đọc|Đọc tiếp/ }).filter({ visible: true }).first().click();
+  await page.locator('[data-part="0"] [data-wiki-term="a"]').first().click();
+  const card = page.getByRole('dialog', { name: 'Lâm Động' });
+  await expect(card.locator('[data-wiki-rel-people] [data-rel-group="family"]')).toBeVisible();
+  // "bạn đồng hành của" is no known type: hidden.
+  await expect(card.getByText('Gặp nhau trong thạch phù.')).toHaveCount(0);
+  expect(await card.locator('[data-wiki-rel-people] [data-rel-group]').evaluateAll(els => els.map(e => e.getAttribute('data-rel-group')))).toEqual(['family', 'enemy']);
 });
 
 test('a chapter that fails to load says so in words and loads again', async ({ page }) => {
