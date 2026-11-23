@@ -1394,6 +1394,101 @@ pub async fn wiki_merge_entry<R: Runtime>(
     .await
 }
 
+/// The user allowed the merge found for one entry: `from_uids` go into `into_uid`, and
+/// the original names `raws` become its aliases (many into one).
+#[tauri::command]
+pub async fn wiki_merge_entry_allow<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+    into_uid: String,
+    from_uids: Vec<String>,
+    raws: Option<Vec<super::smart_merge::RawName>>,
+) -> Result<super::smart_merge::Allowed, AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || {
+        super::smart_merge::allow(
+            &db::open(&path)?,
+            novel_id,
+            &into_uid,
+            &from_uids,
+            raws.as_deref().unwrap_or_default(),
+        )
+    })
+    .await
+}
+
+/// Asks the user's LLM to translate one name again (an entry, or words selected in a
+/// chapter), with the sentences around it in the book; nothing changes yet.
+#[tauri::command]
+pub async fn wiki_retranslate_ask<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+    target: super::retranslate::Target,
+) -> Result<super::retranslate::Proposal, AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || {
+        let conn = db::open(&path)?;
+        let model = llm::load(&conn)?
+            .map(llm::OpenAi::new)
+            .ok_or(AiError::NotSet)?;
+        super::retranslate::ask(&conn, &model, novel_id, &target)
+    })
+    .await
+}
+
+/// Keeps the name the user chose; returns the entry and what smart merge finds now.
+#[tauri::command]
+pub async fn wiki_retranslate_apply<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+    keep: super::retranslate::Keep,
+) -> Result<super::retranslate::Kept, AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || super::retranslate::apply(&db::open(&path)?, novel_id, keep)).await
+}
+
+/// Makes `uids` (lowest first) the levels of ladder `system`, ranked from 1.
+#[tauri::command]
+pub async fn wiki_levels_set<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+    system: String,
+    uids: Vec<String>,
+) -> Result<usize, AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || {
+        Ok(super::levels::set_ladder(
+            &db::open(&path)?,
+            novel_id,
+            &system,
+            &uids,
+        )?)
+    })
+    .await
+}
+
+/// Asks the user's LLM to order every level of the book into ladders, and sets them.
+#[tauri::command]
+pub async fn wiki_levels_ai<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+) -> Result<Vec<super::levels::Ladder>, AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || {
+        let conn = db::open(&path)?;
+        let model = llm::load(&conn)?
+            .map(llm::OpenAi::new)
+            .ok_or(AiError::NotSet)?;
+        super::levels::order_by_ai(&conn, &model, novel_id)
+    })
+    .await
+}
+
 /// More pairs for one entry, found by the user's LLM.
 #[tauri::command]
 pub async fn wiki_merge_entry_ai<R: Runtime>(

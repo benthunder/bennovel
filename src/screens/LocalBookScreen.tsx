@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { ChapterSheet, useSectionName } from '../components/ChapterSheet';
-import { BookOpenIcon, ChevronLeftIcon, DownloadIcon, ListIcon, SlidersIcon, SparklesIcon } from '../components/Icons';
+import { BookOpenIcon, ChevronLeftIcon, DownloadIcon, LanguagesIcon, ListIcon, SlidersIcon, SparklesIcon } from '../components/Icons';
 import { ReaderChrome, ReaderStatusBar, useImmersive } from '../components/ReaderChrome';
 import { ReaderTools, type ToolsTab, type Translation } from '../components/ReaderTools';
 import { Spinner } from '../components/ui';
 import { WikiPopup, markWikiTerms, wikiTerms } from '../components/WikiPopup';
+import { RetranslateSheet } from '../components/WikiNameTools';
 import { applyReplaceRules, getBookRules, saveBookRules } from '../data/repository';
 import { CONTENT_LANGS, type ContentLang, type ReplaceRule } from '../data/types';
 import { useI18n } from '../i18n';
@@ -412,6 +413,27 @@ export function LocalBookScreen({ book, place, path, live: liveStart }: { book: 
 
   // Watches the content's height once; the callback reads the latest render's helpers.
   const contentRef = useRef<HTMLDivElement>(null);
+  /**
+   * Words selected in a chapter (a name, a term): a button by them translates them again
+   * with the sentences around them (`RetranslateSheet`). Library books only.
+   */
+  const [picked, setPicked] = useState<{ text: string; at: number; x: number; y: number } | null>(null);
+  const [retr, setRetr] = useState<{ text: string; at: number } | null>(null);
+  useEffect(() => {
+    if (!place) return;
+    const onSel = () => {
+      const sel = window.getSelection();
+      const text = sel?.toString().replace(/\s+/g, ' ').trim() ?? '';
+      if (!sel || sel.isCollapsed || !text || [...text].length > 40 || !sel.rangeCount) { setPicked(null); return; }
+      const node = sel.anchorNode instanceof Element ? sel.anchorNode : sel.anchorNode?.parentElement;
+      const part = node?.closest('[data-part]');
+      if (!part || !contentRef.current?.contains(part)) { setPicked(null); return; }
+      const r = sel.getRangeAt(0).getBoundingClientRect();
+      setPicked({ text, at: Number(part.getAttribute('data-part')), x: r.left + r.width / 2, y: r.bottom });
+    };
+    document.addEventListener('selectionchange', onSel);
+    return () => document.removeEventListener('selectionchange', onSel);
+  }, [place?.novelId]);
   const onResize = useRef(() => {});
   onResize.current = () => { if (!landing.current) keep(); grow(); };
   useEffect(() => {
@@ -595,6 +617,21 @@ export function LocalBookScreen({ book, place, path, live: liveStart }: { book: 
             app.reloadAi();
           }}
           onOpenWiki={() => { setWikiPop(null); app.push({ s: 'bookWiki', novelId: place.novelId, title: book.title ?? t('book.untitled'), lang: wikiPop.lang }); }} />
+      )}
+
+      {picked && place && !retr && (
+        <button type="button" data-reader-retranslate className="btn btn-primary"
+          onMouseDown={e => e.preventDefault()}
+          onClick={e => { e.stopPropagation(); setRetr({ text: picked.text, at: picked.at }); setPicked(null); window.getSelection()?.removeAllRanges(); }}
+          style={{ position: 'fixed', zIndex: 45, left: Math.min(Math.max(8, picked.x - 70), window.innerWidth - 148), top: Math.min(picked.y + 10, window.innerHeight - 56), height: 38, padding: '0 14px', gap: 6, boxShadow: 'var(--glass-shadow)' }}>
+          <LanguagesIcon size={14} />{t('reader.retranslate')}
+        </button>
+      )}
+
+      {retr && place && (
+        <RetranslateSheet novelId={place.novelId} lang="vi" target={{ text: retr.text, chapterIndex: retr.at, label: `“${retr.text}”` }}
+          onClose={() => setRetr(null)}
+          onDone={() => { app.reloadText(); app.reloadAi(); }} />
       )}
 
       {toc && <ChapterSheet sections={book.sections} current={index} marks={marks ?? undefined} onPick={jump} onClose={() => setToc(false)} />}
