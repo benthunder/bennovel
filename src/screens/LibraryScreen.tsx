@@ -8,7 +8,7 @@ import { useT } from '../i18n';
 import { useApp } from '../store/AppStore';
 import { useLayout } from '../lib/useLayout';
 import {
-  canOpenLocalBooks, deleteLibraryBook, importLocalBook, importLocalFolder, canPickFolder, libraryCoverUrl, listLibrary, localCover, pickLocalBook, updateLibraryBook,
+  canOpenLocalBooks, deleteLibraryBook, importLocalBook, importLocalFolder, canPickFolder, libraryCoverUrl, listLibrary, localCover, pickLocalBook, trackImport, updateLibraryBook, useImportStatus, useImportsDone,
   type LibraryBook
 } from '../lib/localBook';
 import { runOcr, useOcrStatus } from '../lib/ocr';
@@ -44,14 +44,16 @@ function DeviceBooks({ onOpenFile }: { onOpenFile: () => void }) {
   const lay = useLayout();
   const user = app.libKey;
   const [books, setBooks] = useState<LibraryBook[] | null>(null);
-  const [importing, setImporting] = useState<{ done: number; total: number } | null>(null);
+  // Kept outside the screen: an import goes on when the screen is left.
+  const importing = useImportStatus();
+  const imported = useImportsDone();
   const [editing, setEditing] = useState<LibraryBook | null>(null);
   const ocr = useOcrStatus();
 
   // Listed again after a sync, which can add or remove books.
   const reload = useCallback(() => {
     listLibrary(user).then(setBooks).catch(e => { console.error(e); setBooks([]); });
-  }, [user, app.libraryRev]);
+  }, [user, app.libraryRev, imported]);
   useEffect(reload, [reload]);
 
   const fail = (key: 'book.openFailed' | 'library.importFailed', e: unknown) => {
@@ -60,18 +62,15 @@ function DeviceBooks({ onOpenFile }: { onOpenFile: () => void }) {
   };
 
   const runImport = async (pick: typeof importLocalBook) => {
-    setImporting({ done: 0, total: 0 });
     try {
-      const book = await pick(user, (done, total) => setImporting({ done, total }));
+      // The list is read again through `imported`, wherever the user is by then.
+      const book = await trackImport(onProgress => pick(user, onProgress));
       if (book) {
         app.showToast(t('library.imported', { title: book.title }));
-        reload();
         runOcr(user);
       }
     } catch (e) {
       fail('library.importFailed', e);
-    } finally {
-      setImporting(null);
     }
   };
 
