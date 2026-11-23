@@ -290,3 +290,65 @@ export async function mergeWikiEntry(user: string, novelId: number, fromUid: str
     throw new AiFailure(e);
   }
 }
+
+/** What smart merge finds for one entry: the original names translated as its name, and the entries that look like it (all into one kept entry). */
+export type EntryMerge = { raws: RawName[]; pairs: MergeSuggestion[] };
+
+/**
+ * What one entry's check found to merge, many into one: the entry everything goes into,
+ * the entries that go, and the original names with no entry of their own (they become
+ * its aliases). Null when there is nothing to merge.
+ */
+export function entryMergeFound(m: EntryMerge | null | undefined, uid: string) {
+  if (!m) return null;
+  const into = m.pairs[0]?.into ?? null;
+  const from = m.pairs.map(p => p.from);
+  const loose = m.raws.filter(r => !r.entryUid && r.raw.trim());
+  if (!from.length && !loose.length) return null;
+  return { intoUid: into?.uid ?? uid, into, from, loose, pairs: m.pairs };
+}
+
+/** The user allowed the merge one entry's check found: `fromUids` go into `intoUid`, and the original names `raws` become its aliases. */
+export async function allowWikiMerge(user: string, novelId: number, intoUid: string, fromUids: string[], raws: RawName[]) {
+  try {
+    return await invoke<{ entry: WikiEntry; applied: { merged: number; rules: number; renamed: number; fixed: number }; adopted: number }>(
+      'wiki_merge_entry_allow', { user, novelId, intoUid, fromUids, raws });
+  } catch (e) {
+    throw new AiFailure(e);
+  }
+}
+
+/** Where a name stands in the book: the sentences around it, original and translation. */
+export interface RetranslateContext { chapter: number; raw: string; translated: string }
+
+/** The AI's new translation of one name, for the user to keep, edit or drop. */
+export interface RetranslateProposal {
+  uid: string | null;
+  raw: string;
+  current: string;
+  name: string;
+  kind: string;
+  why: string;
+  contexts: RetranslateContext[];
+}
+
+/** What to translate again: an entry, or words selected in a chapter (0-based). */
+export type RetranslateTarget = { uid?: string; text?: string; chapterIndex?: number };
+
+/** Asks the AI to translate one name again, with the sentences around it in the book; nothing changes yet. */
+export async function askRetranslate(user: string, novelId: number, target: RetranslateTarget) {
+  try {
+    return await invoke<RetranslateProposal>('wiki_retranslate_ask', { user, novelId, target });
+  } catch (e) {
+    throw new AiFailure(e);
+  }
+}
+
+/** Keeps the name chosen: the entry takes it, the old spellings are replaced in the translations, and smart merge looks again (`merge`). */
+export async function applyRetranslate(user: string, novelId: number, keep: { uid: string | null; raw: string; name: string; kind: string; old: string[] }) {
+  try {
+    return await invoke<{ entry: WikiEntry; changed: number; merge: EntryMerge }>('wiki_retranslate_apply', { user, novelId, keep });
+  } catch (e) {
+    throw new AiFailure(e);
+  }
+}

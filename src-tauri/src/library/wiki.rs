@@ -22,7 +22,7 @@ use super::llm::{AiError, Chat};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub const KINDS: &[&str] = &[
     "character",
@@ -1943,9 +1943,12 @@ fn alike(a: &Name, b: &Name) -> bool {
 }
 
 /// Merges the book's entries whose names land together in the vector table: the same
-/// kind, closer than `SAME`, or closer than `NEAR` and `alike`. The entry met first
-/// keeps its name; two entries of the user's are never merged. Needs the rows given
-/// their vectors (`index_names`); returns the merges made.
+/// kind, closer than `SAME`, or closer than `NEAR` and `alike` with originals that are
+/// close too (a near translation of two different originals is two people). Many into
+/// one: the linked entries make one set, and all go into a single kept entry (the
+/// user's, else the one met first), never pairwise one after another. Two entries of
+/// the user's are never merged, nor a pair the user set aside in smart merge. Needs the
+/// rows given their vectors (`index_names`); returns the merges made.
 pub fn merge_near(conn: &Connection, novel_id: i64, lang: &str) -> rusqlite::Result<usize> {
     let mut stmt = conn.prepare(
         "select a.raw, a.translated, a.kind, a.entry_uid, b.raw, b.translated, b.kind, b.entry_uid,
@@ -1975,9 +1978,29 @@ pub fn merge_near(conn: &Connection, novel_id: i64, lang: &str) -> rusqlite::Res
             Ok((name(r, 0)?, name(r, 4)?, r.get(8)?))
         })?
         .collect::<rusqlite::Result<_>>()?;
-    let mut merges = 0;
+    // Pairs the user set aside as two (smart merge) are never merged here either.
+    let skips = super::smart_merge::skipped(conn, novel_id)?;
+    // The linked entries, put together many to one (one kept entry per set).
+    let mut parent: HashMap<String, String> = HashMap::new();
+    fn root(p: &mut HashMap<String, String>, u: &str) -> String {
+        let mut r = u.to_string();
+        while let Some(n) = p.get(&r).filter(|n| **n != r) {
+            r = n.clone();
+        }
+        p.insert(u.to_string(), r.clone());
+        r
+    }
+    let mut live: HashMap<String, Entry> = HashMap::new();
     for (a, b, d) in pairs {
         if d >= SAME && !alike(&a, &b) {
+            continue;
+        }
+        if a.entry_uid == b.entry_uid
+            || skips.contains(&super::smart_merge::skip_key([
+                a.entry_uid.as_str(),
+                b.entry_uid.as_str(),
+            ]))
+        {
             continue;
         }
         let (Some(ea), Some(eb)) = (by_uid(conn, &a.entry_uid)?, by_uid(conn, &b.entry_uid)?)
@@ -1990,15 +2013,42 @@ pub fn merge_near(conn: &Connection, novel_id: i64, lang: &str) -> rusqlite::Res
         if ea.source == "user" && eb.source == "user" {
             continue;
         }
+        // Only close (not the same): a near translation of two different originals is two.
+        if d >= SAME && !super::smart_merge::raws_close_entries(&ea, &eb) {
+            continue;
+        }
+        let (ra, rb) = (root(&mut parent, &ea.uid), root(&mut parent, &eb.uid));
+        if ra != rb {
+            let (hi, lo) = if ra > rb { (ra, rb) } else { (rb, ra) };
+            parent.insert(hi, lo);
+        }
+        live.insert(ea.uid.clone(), ea);
+        live.insert(eb.uid.clone(), eb);
+    }
+    let mut sets: BTreeMap<String, Vec<Entry>> = BTreeMap::new();
+    let uids: Vec<String> = live.keys().cloned().collect();
+    for u in uids {
+        let r = root(&mut parent, &u);
+        sets.entry(r).or_default().push(live[&u].clone());
+    }
+    let mut merges = 0;
+    for (_, mut set) in sets {
         // The user's entry stays, else the one met first.
-        let a_first = match (ea.source.as_str(), eb.source.as_str()) {
-            ("user", _) => true,
-            (_, "user") => false,
-            _ => ea.first_chapter.unwrap_or(i64::MAX) <= eb.first_chapter.unwrap_or(i64::MAX),
-        };
-        let (from, into) = if a_first { (&eb, &ea) } else { (&ea, &eb) };
-        if merge(conn, novel_id, &from.uid, &into.uid, false).is_ok() {
-            merges += 1;
+        set.sort_by_key(|e| {
+            (
+                e.source != "user",
+                e.first_chapter.unwrap_or(i64::MAX),
+                e.uid.clone(),
+            )
+        });
+        let into = set[0].clone();
+        for from in &set[1..] {
+            if from.source == "user" && into.source == "user" {
+                continue;
+            }
+            if merge(conn, novel_id, &from.uid, &into.uid, false).is_ok() {
+                merges += 1;
+            }
         }
     }
     Ok(merges)

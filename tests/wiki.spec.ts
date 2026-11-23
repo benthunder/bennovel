@@ -74,7 +74,7 @@ async function nativeApp(page: Page) {
           case 'library_open': return { book: { id: 9, format: 'txt', title: 'Võ Động Càn Khôn', sections: [{ label: 'Chương 1', pages: null }, { label: 'Chương 2', pages: null }], pageImages: false }, novelId: 1, lang: 'zh', index: 0, progress: 0 };
           case 'book_section':
             if (Number(w.__sectionFails) > 0) { w.__sectionFails = Number(w.__sectionFails) - 1; throw 'book 9 is not open'; }
-            return { index: args.index, paragraphs: ['林动 看着 道宗 的 人。', '动少 笑了。'] };
+            return { index: args.index, paragraphs: ['林动 看着 道宗 的 人。', '动少 笑了。', '萧炎 走了过来。'] };
           case 'wiki_search': return wiki.entries.filter(e => e.kind === 'faction');
           case 'wiki_set_auto': wiki.auto = Boolean(args.auto); return null;
           case 'wiki_missing': return Number(w.__missing ?? 0);
@@ -131,6 +131,35 @@ async function nativeApp(page: Page) {
           case 'wiki_merge_entry_ai': {
             const by = (u: string) => wiki.entries.find(e => e.uid === u)!;
             return [{ members: [by('i')], into: by('a'), name: 'Lâm Động', raw: 'Lin Dong', rules: [{ find: 'Lâm Lang Thiên', replace: 'Lâm Động' }, { find: 'Lâm Đống', replace: 'Lâm Động' }], note: 'Cùng một người.' }];
+          }
+          case 'wiki_merge_entry_allow': {
+            const by = (u: string) => wiki.entries.find(e => e.uid === u)!;
+            return { entry: by(String(args.intoUid)), applied: { merged: (args.fromUids as string[]).length, rules: 3, renamed: 0, fixed: 0 }, adopted: (args.raws as unknown[]).length };
+          }
+          case 'wiki_retranslate_ask': {
+            const target = args.target as { uid?: string; text?: string };
+            if (target.uid) {
+              return {
+                uid: target.uid, raw: '林动', current: 'Lâm Động', name: 'Lâm Động', kind: 'character', why: 'Hán-Việt của 林动, giữ như cũ.',
+                contexts: [
+                  { chapter: 1, raw: '林动 看着 道宗 的 人。 动少 笑了。', translated: 'Lâm Động nhìn người của Đạo Tông. Động thiếu cười.' },
+                  { chapter: 3, raw: '林动 握紧了 石符。', translated: 'Lâm Đống nắm chặt thạch phù.' }
+                ]
+              };
+            }
+            return {
+              uid: null, raw: '萧炎', current: String(target.text), name: 'Tiêu Viêm', kind: 'character', why: 'Tên người, đọc theo Hán-Việt.',
+              contexts: [{ chapter: 1, raw: '动少 笑了。 萧炎 走了过来。', translated: '' }]
+            };
+          }
+          case 'wiki_retranslate_apply': {
+            const keep = args.keep as { uid: string | null; raw: string; name: string; kind: string };
+            const by = (u: string) => wiki.entries.find(e => e.uid === u)!;
+            if (keep.uid) {
+              const e = { ...by(keep.uid), names: { vi: keep.name }, source: 'user' };
+              return { entry: e, changed: 4, merge: { raws: [], pairs: [{ from: by('i'), into: e, reason: 'same_name', rules: [], note: '' }] } };
+            }
+            return { entry: entry('n', keep.kind, keep.raw, keep.name, '', null, { source: 'user' }), changed: 1, merge: { raws: [], pairs: [] } };
           }
           case 'wiki_merge_apply': return { merged: (args.picks as unknown[]).length + ((args.groups as { fromUids: string[] }[]) ?? []).reduce((n, g) => n + g.fromUids.length, 0), rules: 2, renamed: 0 };
           case 'wiki_remove_many': {
@@ -533,4 +562,84 @@ test('a smart merge suggestion that is already right is skipped for good', async
   await sheet.locator('[data-merge-skip]').click();
   await expect(sheet.locator('[data-merge-pair]')).toHaveCount(0);
   expect((await calls(page)).filter(c => c.cmd === 'wiki_merge_skip').at(-1)?.args).toMatchObject({ uids: ['s2', 's1'] });
+});
+
+test('opening an entry looks for its name in the book and merges only when allowed, many into one', async ({ page }, info) => {
+  await nativeApp(page);
+  await page.goto('/');
+  await page.getByText('Võ Động Càn Khôn').filter({ visible: true }).first().click();
+  await page.getByRole('button', { name: /Wiki truyện/ }).filter({ visible: true }).first().click();
+  await page.getByText('Lâm Động', { exact: true }).click();
+  const sheet = page.getByRole('dialog', { name: 'Mục wiki' });
+  const check = sheet.locator('[data-merge-check="found"]');
+  await expect(check).toContainText('Tìm thấy trong nguồn: 2 tên giống mục này');
+  await expect(check.locator('[data-merge-check-from]')).toContainText('Lâm Lang Thiên');
+  await expect(check.locator('[data-merge-check-raw]')).toContainText('Lin Dong');
+  await expect(check.locator('[data-merge-check-into]')).toContainText('Lâm Động');
+  // Nothing is merged until the user allows it.
+  expect((await calls(page)).some(c => c.cmd === 'wiki_merge_entry_allow')).toBe(false);
+  await page.screenshot({ path: `test-results/wiki-${info.project.name}-check-found.png` });
+  await check.getByRole('button', { name: 'Cho phép gộp' }).click();
+  await expect(page.getByText('Đã gộp 2 tên vào Lâm Động')).toBeVisible();
+  expect((await calls(page)).find(c => c.cmd === 'wiki_merge_entry_allow')?.args).toMatchObject({
+    novelId: 1, intoUid: 'a', fromUids: ['i'], raws: [{ raw: 'Lin Dong', translated: 'Lâm Động' }]
+  });
+});
+
+test('an entry is translated again with the sentences around it, then checked again for merges', async ({ page }, info) => {
+  await nativeApp(page);
+  await page.goto('/');
+  await page.getByText('Võ Động Càn Khôn').filter({ visible: true }).first().click();
+  await page.getByRole('button', { name: /Wiki truyện/ }).filter({ visible: true }).first().click();
+  await page.getByText('Lâm Động', { exact: true }).click();
+  await page.getByRole('dialog', { name: 'Mục wiki' }).locator('[data-entry-retranslate]').click();
+  const sheet = page.locator('[data-retranslate-sheet]');
+  await expect(sheet.locator('[data-retr-context]')).toHaveCount(2);
+  await expect(sheet.locator('[data-retr-context]').nth(1)).toContainText('Lâm Đống nắm chặt thạch phù.');
+  await expect(sheet.locator('[data-retr-name]')).toHaveValue('Lâm Động');
+  expect((await calls(page)).find(c => c.cmd === 'wiki_retranslate_ask')?.args).toMatchObject({ novelId: 1, target: { uid: 'a' } });
+  await sheet.locator('[data-retr-name]').fill('Lâm Đống');
+  await page.screenshot({ path: `test-results/wiki-${info.project.name}-retranslate.png` });
+  await sheet.getByRole('button', { name: 'Dùng tên này' }).click();
+  expect((await calls(page)).find(c => c.cmd === 'wiki_retranslate_apply')?.args).toMatchObject({
+    keep: { uid: 'a', raw: '林动', name: 'Lâm Đống', old: ['Lâm Động'] }
+  });
+  // Back to step 1: the new name is another entry's, offered to merge.
+  await expect(sheet.locator('[data-retr-done]')).toContainText('Lâm Đống');
+  await expect(sheet.locator('[data-merge-check="found"]')).toContainText('Lâm Lang Thiên');
+  await page.screenshot({ path: `test-results/wiki-${info.project.name}-retranslate-merge.png` });
+  await sheet.getByRole('button', { name: 'Cho phép gộp' }).click();
+  expect((await calls(page)).find(c => c.cmd === 'wiki_merge_entry_allow')?.args).toMatchObject({ intoUid: 'a', fromUids: ['i'] });
+});
+
+test('words selected in a chapter are translated again and become a wiki entry', async ({ page }, info) => {
+  await nativeApp(page);
+  await page.goto('/');
+  await page.getByText('Võ Động Càn Khôn').filter({ visible: true }).first().click();
+  await page.getByRole('button', { name: /Bắt đầu đọc|Đọc tiếp/ }).filter({ visible: true }).first().click();
+  const first = page.locator('[data-part="0"]');
+  await expect(first.getByText('萧炎 走了过来。')).toBeVisible();
+  await first.getByText('萧炎 走了过来。').evaluate(p => {
+    const node = p.firstChild!;
+    const r = document.createRange();
+    r.setStart(node, 0);
+    r.setEnd(node, 2);
+    const sel = window.getSelection()!;
+    sel.removeAllRanges();
+    sel.addRange(r);
+  });
+  const button = page.locator('[data-reader-retranslate]');
+  await expect(button).toBeVisible();
+  await page.screenshot({ path: `test-results/wiki-${info.project.name}-reader-select.png` });
+  await button.click();
+  const sheet = page.locator('[data-retranslate-sheet]');
+  await expect(sheet.locator('[data-retr-name]')).toHaveValue('Tiêu Viêm');
+  expect((await calls(page)).find(c => c.cmd === 'wiki_retranslate_ask')?.args).toMatchObject({ target: { text: '萧炎', chapterIndex: 0 } });
+  await expect(sheet).toContainText('Chưa có trong wiki');
+  await page.screenshot({ path: `test-results/wiki-${info.project.name}-reader-retranslate.png` });
+  await sheet.getByRole('button', { name: 'Dùng tên này' }).click();
+  expect((await calls(page)).find(c => c.cmd === 'wiki_retranslate_apply')?.args).toMatchObject({
+    keep: { uid: null, raw: '萧炎', name: 'Tiêu Viêm', kind: 'character', old: ['萧炎'] }
+  });
+  await expect(sheet.locator('[data-merge-check="none"]')).toBeVisible();
 });

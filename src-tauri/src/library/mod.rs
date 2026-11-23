@@ -15,6 +15,7 @@ pub mod merge_queue;
 pub mod names;
 pub mod ocr;
 pub mod queue;
+pub mod retranslate;
 pub mod rules;
 pub mod segments;
 pub mod smart_merge;

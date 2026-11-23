@@ -277,27 +277,38 @@ export function SmartMergeSheet({ novelId, lang, entry, onClose, onMerged }: {
                 </div>
               );
             })}
-            {pairs.map(s => (
-              <div key={pid(s)} data-merge-pair style={card}>
-                <Checkbox checked={!!picked?.has(pid(s))} onChange={() => toggle(pid(s))} size={20}>
-                  <span style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 }}>
-                    <span style={{ fontSize: 14, overflowWrap: 'anywhere' }}>
-                      {label(s.from)} <span className="muted">→</span> <b>{label(s.into)}</b>
-                    </span>
-                    <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                      <span className="tag tag-neutral" style={{ fontSize: 11 }}>{t(`wiki.kind.${s.into.kind}`)}</span>
-                      <span className={`tag ${s.reason === 'near_name' ? 'tag-neutral' : 'tag-accent-2'}`} style={{ fontSize: 11 }}>{t(`wiki.reason.${s.reason}`)}</span>
-                    </span>
-                    {s.rules.length > 0 && (
-                      <span className="muted" style={{ fontSize: 12, overflowWrap: 'anywhere' }}>
-                        {t('wiki.smartMergeRules')}: {s.rules.map(r => `${r.find} → ${r.replace}`).join(', ')}
-                      </span>
-                    )}
+            {/* Many into one: the entries that go into the same kept entry are shown together under it. */}
+            {[...new Set(pairs.map(s => s.into.uid))].map(into => {
+              const set = pairs.filter(s => s.into.uid === into);
+              return (
+                <div key={into} data-merge-set style={{ ...card, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <span style={{ display: 'flex', gap: 6, alignItems: 'baseline', flexWrap: 'wrap', fontSize: 13 }}>
+                    <span className="muted">{t('wiki.smartMergeInto')}</span><b data-merge-into style={{ overflowWrap: 'anywhere' }}>{label(set[0].into)}</b>
+                    <span className="tag tag-neutral" style={{ fontSize: 11 }}>{t(`wiki.kind.${set[0].into.kind}`)}</span>
                   </span>
-                </Checkbox>
-                <div style={{ paddingLeft: 30, marginTop: 4 }}>{skipButton([s.from.uid, s.into.uid], pid(s))}</div>
-              </div>
-            ))}
+                  {set.map(s => (
+                    <div key={pid(s)} data-merge-pair>
+                      <Checkbox checked={!!picked?.has(pid(s))} onChange={() => toggle(pid(s))} size={20}>
+                        <span style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 }}>
+                          <span style={{ fontSize: 14, overflowWrap: 'anywhere' }}>
+                            {label(s.from)} <span className="muted">→</span> <b>{label(s.into)}</b>
+                          </span>
+                          <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                            <span className={`tag ${s.reason === 'near_name' ? 'tag-neutral' : 'tag-accent-2'}`} style={{ fontSize: 11 }}>{t(`wiki.reason.${s.reason}`)}</span>
+                          </span>
+                          {s.rules.length > 0 && (
+                            <span className="muted" style={{ fontSize: 12, overflowWrap: 'anywhere' }}>
+                              {t('wiki.smartMergeRules')}: {s.rules.map(r => `${r.find} → ${r.replace}`).join(', ')}
+                            </span>
+                          )}
+                        </span>
+                      </Checkbox>
+                      <div style={{ paddingLeft: 30, marginTop: 4 }}>{skipButton([s.from.uid, s.into.uid], pid(s))}</div>
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
           </div>
         )}
         <div className="dialog-actions">

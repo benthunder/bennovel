@@ -7,7 +7,8 @@ import {
 } from '../lib/wiki';
 import { Modal } from './Modal';
 import { SmartMergeSheet } from './SmartMergeSheet';
-import { SparklesIcon } from './Icons';
+import { EntryMergeCheck, RetranslateSheet } from './WikiNameTools';
+import { LanguagesIcon, SparklesIcon } from './Icons';
 
 /**
  * The words of the app in the wiki's language: relation types and such follow the
@@ -291,6 +292,7 @@ export function WikiPopup({ wiki, entry, onPick, onOpenWiki, onClose, novelId, o
 }) {
   const { t } = useI18n();
   const [smart, setSmart] = useState(false);
+  const [retr, setRetr] = useState(false);
   const wt = useWikiT(WIKI_LANG);
   const label = wikiLabel(entry, WIKI_LANG);
   const sum = wikiSummary(entry, WIKI_LANG);
@@ -315,6 +317,12 @@ export function WikiPopup({ wiki, entry, onPick, onOpenWiki, onClose, novelId, o
         onMerged={() => { onMerged?.(); onClose(); }} />
     );
   }
+  if (retr && novelId != null) {
+    return (
+      <RetranslateSheet novelId={novelId} lang={WIKI_LANG} target={{ uid: entry.uid, label }}
+        onClose={() => { setRetr(false); onClose(); }} onDone={() => onMerged?.()} />
+    );
+  }
   return (
     <Modal onClose={onClose}>
       <div className="dialog dialog--sheet" role="dialog" aria-modal="true" aria-label={label} onClick={e => e.stopPropagation()}>
@@ -326,6 +334,11 @@ export function WikiPopup({ wiki, entry, onPick, onOpenWiki, onClose, novelId, o
             {entry.aliases.length > 0 && <span>· {entry.aliases.join(', ')}</span>}
           </div>
         </div>
+        {/* Step 1: this name looked for in the book; a merge waits for the user's tap. */}
+        {novelId != null && (
+          <EntryMergeCheck novelId={novelId} entry={entry} lang={WIKI_LANG} onDetails={() => setSmart(true)}
+            onMerged={() => { onMerged?.(); onClose(); }} />
+        )}
         {!isChar && (level || entry.meta?.level) && (
           <div style={{ fontSize: 14 }}>
             <b>{t('wiki.currentLevel')}:</b> {[level ? wikiLabel(level, WIKI_LANG) : entry.meta?.level, metaStage(entry.meta, n => t('wiki.stageN', { n }))].filter(Boolean).join(', ')}
@@ -369,6 +382,11 @@ export function WikiPopup({ wiki, entry, onPick, onOpenWiki, onClose, novelId, o
           {novelId != null && (
             <button type="button" className="btn btn-ghost" data-entry-smart-merge style={{ height: 44, padding: '0 12px', gap: 6, marginRight: 'auto' }} onClick={() => setSmart(true)}>
               <SparklesIcon size={14} />{t('wiki.smartMerge')}
+            </button>
+          )}
+          {novelId != null && (
+            <button type="button" className="btn btn-ghost" data-entry-retranslate style={{ height: 44, padding: '0 12px', gap: 6 }} onClick={() => setRetr(true)}>
+              <LanguagesIcon size={14} />{t('wiki.retranslate')}
             </button>
           )}
           <button type="button" className="btn btn-secondary" style={{ height: 44, padding: '0 18px' }} onClick={onOpenWiki}>{t('wiki.open')}</button>

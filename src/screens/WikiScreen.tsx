@@ -2,8 +2,9 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode }
 import { ask } from '@tauri-apps/plugin-dialog';
 import { Modal } from '../components/Modal';
 import { SmartMergeSheet } from '../components/SmartMergeSheet';
+import { EntryMergeCheck, RetranslateSheet } from '../components/WikiNameTools';
 import { GroupedRelations, equivalentsOf, levelOf, relWords, useWikiT } from '../components/WikiPopup';
-import { CheckIcon, ChevronLeftIcon, ChevronRightIcon, PencilIcon, SparklesIcon, XIcon } from '../components/Icons';
+import { CheckIcon, ChevronLeftIcon, ChevronRightIcon, LanguagesIcon, PencilIcon, SparklesIcon, XIcon } from '../components/Icons';
 import { Checkbox, SearchField, Spinner } from '../components/ui';
 import { useI18n } from '../i18n';
 import { AI_LANGS, AiFailure, aiErrorDetail } from '../lib/ai';
@@ -464,6 +465,9 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
   const [relNote, setRelNote] = useState('');
   const [mergeInto, setMergeInto] = useState('');
   const [smart, setSmart] = useState(false);
+  const [retr, setRetr] = useState(false);
+  // A name kept while translating again: the wiki loads again when the sheet closes, not under it.
+  const retrDirty = useRef(false);
   const [rels, setRels] = useState(() => wiki.relations.filter(r => entry && (r.fromUid === entry.uid || r.toUid === entry.uid)));
 
   const byUid = useMemo(() => new Map(wiki.entries.map(e => [e.uid, e])), [wiki]);
@@ -557,6 +561,9 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
     smart && saved ? (
       <SmartMergeSheet novelId={novelId} lang={lang} entry={saved} onClose={() => setSmart(false)}
         onMerged={() => { onChanged(); onClose(); }} />
+    ) : retr && saved ? (
+      <RetranslateSheet novelId={novelId} lang={lang} target={{ uid: saved.uid, label: wikiLabel(saved, lang) }}
+        onClose={() => { setRetr(false); if (retrDirty.current) onChanged(); onClose(); }} onDone={() => { retrDirty.current = true; }} />
     ) : <Modal onClose={busy ? undefined : onClose}>
       <form className="dialog dialog--sheet" role="dialog" aria-modal="true" aria-label={t(saved ? 'wiki.editTitle' : 'wiki.newTitle')}
         onClick={e => e.stopPropagation()} onSubmit={submit}>
@@ -568,6 +575,17 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
         )}
         {level && (
           <div style={{ fontSize: 13 }}><b>{t('wiki.currentLevel')}:</b> {wikiLabel(level, lang)}</div>
+        )}
+        {saved && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {/* Step 1: this name looked for in the book; a merge waits for the user's tap. */}
+            <EntryMergeCheck novelId={novelId} entry={saved} lang={lang} onDetails={() => setSmart(true)}
+              onMerged={() => { onChanged(); onClose(); }} />
+            <button type="button" className="btn btn-secondary" data-entry-retranslate style={{ height: 34, padding: '0 12px', gap: 6, fontSize: 13, alignSelf: 'flex-start' }}
+              disabled={busy} onClick={() => setRetr(true)}>
+              <LanguagesIcon size={13} />{t('wiki.retranslate')}
+            </button>
+          </div>
         )}
         <div>
           <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>{t('wiki.kind')}</div>
