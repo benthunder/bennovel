@@ -702,6 +702,13 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
         let _ = std::fs::create_dir_all(dir);
     }
     let mut conn = Connection::open(path)?;
+    // Many connections write this file at once (the translation threads, wiki and
+    // merge queues, imports, the commands): a writer waits for the lock instead of
+    // failing with "database is locked" after rusqlite's 5 seconds, and every
+    // transaction takes the write lock when it begins, since a deferred one that
+    // reads first can't wait when it later writes (SQLITE_BUSY at once in WAL).
+    conn.busy_timeout(BUSY_TIMEOUT)?;
+    conn.set_transaction_behavior(rusqlite::TransactionBehavior::Immediate);
     {
         // Turning a new file to WAL and migrating it, one connection at a time.
         let _one = MIGRATING.lock().unwrap_or_else(|e| e.into_inner());
@@ -711,6 +718,9 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     }
     Ok(conn)
 }
+
+/// How long a connection waits for another one's write lock.
+pub const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// One migration at a time in this process: the app opens the library file from many
 /// tasks at once (the queues, the commands), and two of them migrating together left

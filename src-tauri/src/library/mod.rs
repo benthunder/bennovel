@@ -129,9 +129,15 @@ fn slug(title: &str) -> String {
     }
 }
 
-/// Copies a book into the library, one section at a time, in a single transaction
-/// (a failed import leaves nothing behind). `on_progress(done, total)` is called
-/// after each chapter. Returns the new novel id.
+/// Copies a book into the library. `on_progress(done, total)` is called after each
+/// chapter. Returns the new novel id.
+///
+/// Reading a book (a PDF above all) is slow, and the translation queues write to the
+/// same file meanwhile, so the write lock is never held while the book is read:
+/// chapters are read a batch at a time, outside any transaction, and each batch is
+/// written in a short one. The book stays out of the library (`list` needs its title
+/// row, written last) until every chapter is in; a failed import deletes what it
+/// wrote.
 pub fn import(
     conn: &mut Connection,
     format: BookFormat,
@@ -168,38 +174,30 @@ pub fn import(
     let cover = source.cover();
     let description = source.description().unwrap_or_default();
 
-    let tx = conn.transaction()?;
-    let author_id = author_id(&tx, &author)?;
-    tx.execute(
-        "insert into novels (slug, author_id, original_lang, chapter_count, source_format, source_name, book_key)
-         values (?1, ?2, ?3, ?4, ?5, ?6, lower(hex(randomblob(16))))",
-        params![slug(&title), author_id, lang, total as i64, format_name, file_name],
-    )?;
-    let novel_id = tx.last_insert_rowid();
-    if let Some(img) = cover {
+    let novel_id = {
+        let tx = write_tx(conn)?;
+        let author_id = author_id(&tx, &author)?;
         tx.execute(
-            "insert into chapter_images (novel_id, key, mime, data) values (?1, ?2, ?3, ?4)",
-            params![novel_id, COVER_KEY, img.mime, img.bytes],
+            "insert into novels (slug, author_id, original_lang, chapter_count, source_format, source_name, book_key)
+             values (?1, ?2, ?3, ?4, ?5, ?6, lower(hex(randomblob(16))))",
+            params![slug(&title), author_id, lang, total as i64, format_name, file_name],
         )?;
-    }
-    tx.execute(
-        "insert into novel_translations (novel_id, lang, title, description) values (?1, ?2, ?3, ?4)",
-        params![novel_id, lang, title, description],
-    )?;
-    {
-        let mut chapter = tx.prepare(
-            "insert into chapters (novel_id, number, display_number, page_from, page_to, published_at)
-             values (?1, ?2, ?3, ?4, ?5, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
-        )?;
-        let mut text = tx.prepare(
-            "insert into chapter_translations (chapter_id, lang, source, state, title, content, word_count)
-             values (?1, ?2, 'original', 'published', ?3, ?4, ?5)",
-        )?;
-        let mut picture = tx.prepare(
-            "insert or ignore into chapter_images (novel_id, key, mime, data) values (?1, ?2, ?3, ?4)",
-        )?;
+        let novel_id = tx.last_insert_rowid();
+        if let Some(img) = &cover {
+            tx.execute(
+                "insert into chapter_images (novel_id, key, mime, data) values (?1, ?2, ?3, ?4)",
+                params![novel_id, COVER_KEY, img.mime, img.bytes],
+            )?;
+        }
+        tx.commit()?;
+        novel_id
+    };
+
+    let result = (|| -> Result<(), BookError> {
         let mut stored = std::collections::HashSet::new();
         let mut first = first.into_iter();
+        let mut batch: Vec<ImportChapter> = Vec::new();
+        let mut batch_bytes = 0usize;
         for (i, meta) in sections.iter().enumerate() {
             let section = match first.next() {
                 Some(s) => s,
@@ -207,10 +205,12 @@ pub fn import(
             };
             // Pictures are copied in as they are met, one at a time; a picture the
             // book can't produce is skipped (the reader hides a missing one).
+            let mut pictures = Vec::new();
             for key in section.paragraphs.iter().filter_map(|p| image::key_of(p)) {
                 if stored.insert(key.to_string()) {
                     if let Ok(img) = source.image(key) {
-                        picture.execute(params![novel_id, key, img.mime, img.bytes])?;
+                        batch_bytes += img.bytes.len();
+                        pictures.push((key.to_string(), img));
                     }
                 }
             }
@@ -223,29 +223,114 @@ pub fn import(
             // Titles and numbers are stored as the book gives them (its table of
             // contents, or a folder's file names); nothing is guessed from the text.
             let title = meta.label.clone().or_else(|| source.section_title(i));
-            let pages = meta.pages;
+            batch_bytes += section.paragraphs.iter().map(|p| p.len()).sum::<usize>();
+            batch.push(ImportChapter {
+                index: i,
+                number: meta.number,
+                pages: meta.pages,
+                title: title.unwrap_or_default(),
+                words,
+                paragraphs: section.paragraphs,
+                pictures,
+            });
+            if batch.len() >= IMPORT_BATCH || batch_bytes >= IMPORT_BATCH_BYTES {
+                write_chapters(conn, novel_id, lang, &mut batch)?;
+                batch_bytes = 0;
+            }
+            // The last chapter is reported once the book is in the library.
+            if i + 1 < total {
+                on_progress(i + 1, total);
+            }
+        }
+        write_chapters(conn, novel_id, lang, &mut batch)?;
+        // Last: this row puts the book in the library.
+        let tx = write_tx(conn)?;
+        tx.execute(
+            "insert into novel_translations (novel_id, lang, title, description) values (?1, ?2, ?3, ?4)",
+            params![novel_id, lang, title, description],
+        )?;
+        tx.commit()?;
+        if total > 0 {
+            on_progress(total, total);
+        }
+        Ok(())
+    })();
+    if let Err(e) = result {
+        if let Ok(tx) = write_tx(conn) {
+            let _ = tx.execute("delete from novels where id = ?1", [novel_id]);
+            let _ = tx.commit();
+        }
+        return Err(e);
+    }
+    Ok(novel_id)
+}
+
+/// Chapters read before each write of an import; see `import`.
+const IMPORT_BATCH: usize = 20;
+const IMPORT_BATCH_BYTES: usize = 8 * 1024 * 1024;
+
+struct ImportChapter {
+    index: usize,
+    number: Option<f64>,
+    pages: Option<[u32; 2]>,
+    title: String,
+    words: i64,
+    paragraphs: Vec<String>,
+    pictures: Vec<(String, Image)>,
+}
+
+/// A write transaction that takes the lock at once (`BEGIN IMMEDIATE`), waiting out
+/// another writer, instead of failing with "database is locked" when it writes
+/// after a read.
+fn write_tx(conn: &mut Connection) -> rusqlite::Result<rusqlite::Transaction<'_>> {
+    conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+}
+
+fn write_chapters(
+    conn: &mut Connection,
+    novel_id: i64,
+    lang: &str,
+    batch: &mut Vec<ImportChapter>,
+) -> Result<(), BookError> {
+    if batch.is_empty() {
+        return Ok(());
+    }
+    let tx = write_tx(conn)?;
+    {
+        let mut chapter = tx.prepare(
+            "insert into chapters (novel_id, number, display_number, page_from, page_to, published_at)
+             values (?1, ?2, ?3, ?4, ?5, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+        )?;
+        let mut text = tx.prepare(
+            "insert into chapter_translations (chapter_id, lang, source, state, title, content, word_count)
+             values (?1, ?2, 'original', 'published', ?3, ?4, ?5)",
+        )?;
+        let mut picture = tx.prepare(
+            "insert or ignore into chapter_images (novel_id, key, mime, data) values (?1, ?2, ?3, ?4)",
+        )?;
+        for c in batch.iter() {
+            for (key, img) in &c.pictures {
+                picture.execute(params![novel_id, key, img.mime, img.bytes])?;
+            }
             chapter.execute(params![
                 novel_id,
-                i as i64 + 1,
-                meta.number,
-                pages.map(|p| p[0]),
-                pages.map(|p| p[1])
+                c.index as i64 + 1,
+                c.number,
+                c.pages.map(|p| p[0]),
+                c.pages.map(|p| p[1])
             ])?;
             let chapter_id = tx.last_insert_rowid();
             text.execute(params![
-                chapter_id,
-                lang,
-                title.unwrap_or_default(),
+                chapter_id, lang, c.title,
                 // The text itself goes in `segments`, one row per block.
-                "",
-                words
+                "", c.words
             ])?;
-            segments::write(&tx, chapter_id, lang, None, &section.paragraphs)?;
-            on_progress(i + 1, total);
+            segments::write(&tx, chapter_id, lang, None, &c.paragraphs)?;
         }
     }
     tx.commit()?;
-    Ok(novel_id)
+    batch.clear();
+    Ok(())
 }
 
 fn file_stem(name: &str) -> String {
@@ -671,6 +756,113 @@ mod tests {
             let _ = std::fs::remove_file(format!("{}{ext}", path.display()));
         }
         path
+    }
+
+    /// A book whose reading writes to the library from another connection that won't
+    /// wait (a translation thread saving a chapter meanwhile), and can fail.
+    struct Busy {
+        book: Fake,
+        other: Connection,
+        fail_at: Option<usize>,
+    }
+
+    impl BookSource for Busy {
+        fn title(&self) -> Option<String> {
+            Some("Sách bận".into())
+        }
+        fn author(&self) -> Option<String> {
+            Some("Tác giả".into())
+        }
+        fn sections(&self) -> Vec<SectionMeta> {
+            self.book.sections()
+        }
+        fn load(&mut self, index: usize) -> Result<Section, BookError> {
+            if self.fail_at == Some(index) {
+                return Err(BookError::Parse("hỏng".into()));
+            }
+            self.other.execute(
+                "insert into authors (slug, name) values (?1, ?1)",
+                [format!("khac-{index}")],
+            )?;
+            self.book.load(index)
+        }
+        fn image(&mut self, key: &str) -> Result<Image, BookError> {
+            self.book.image(key)
+        }
+    }
+
+    fn busy_book(path: &Path, sections: usize, fail_at: Option<usize>) -> Busy {
+        let other = db::open(path).unwrap();
+        other.busy_timeout(std::time::Duration::ZERO).unwrap();
+        Busy {
+            book: Fake(
+                (0..sections)
+                    .map(|_| (Some("Chương"), vec!["Một đoạn văn."]))
+                    .collect(),
+            ),
+            other,
+            fail_at,
+        }
+    }
+
+    #[test]
+    fn import_leaves_the_library_writable_while_it_reads() {
+        let path = temp_db("import-busy");
+        let mut conn = db::open(&path).unwrap();
+        let mut book = busy_book(&path, IMPORT_BATCH * 2 + 5, None);
+        let id = import(&mut conn, BookFormat::Pdf, &mut book, "a.pdf", |_, _| {}).unwrap();
+        let chapters: i64 = conn
+            .query_row(
+                "select count(*) from chapters where novel_id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(chapters, (IMPORT_BATCH * 2 + 5) as i64);
+        assert_eq!(list(&conn).unwrap()[0].title, "Sách bận");
+    }
+
+    #[test]
+    fn a_failed_import_leaves_nothing() {
+        let path = temp_db("import-fail");
+        let mut conn = db::open(&path).unwrap();
+        let mut book = busy_book(&path, IMPORT_BATCH + 5, Some(IMPORT_BATCH + 2));
+        let mut seen = Vec::new();
+        assert!(
+            import(&mut conn, BookFormat::Pdf, &mut book, "a.pdf", |d, _| seen
+                .push(d))
+            .is_err()
+        );
+        assert!(list(&conn).unwrap().is_empty());
+        let left: i64 = conn
+            .query_row(
+                "select (select count(*) from novels) + (select count(*) from chapters)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(left, 0);
+    }
+
+    #[test]
+    fn a_writer_waits_for_another_ones_lock() {
+        let path = temp_db("busy-wait");
+        let conn = db::open(&path).unwrap();
+        let holder = db::open(&path).unwrap();
+        holder.execute_batch("begin immediate").unwrap();
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            holder.execute_batch("commit").unwrap();
+        });
+        // Reads first, then writes: a deferred transaction would fail at once here.
+        let tx = conn.unchecked_transaction().unwrap();
+        let _: i64 = tx
+            .query_row("select count(*) from authors", [], |r| r.get(0))
+            .unwrap();
+        tx.execute("insert into authors (slug, name) values ('x', 'X')", [])
+            .unwrap();
+        tx.commit().unwrap();
+        t.join().unwrap();
     }
 
     #[test]

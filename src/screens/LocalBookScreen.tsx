@@ -15,7 +15,7 @@ import {
   type AiChoice, type AiLang, type AiMark, type AiView, type LiveWatch
 } from '../lib/ai';
 import {
-  bookImageUrl, closeLocalBook, getLocalSection, imageKey, importBookPath, openLibraryBook, saveLibraryProgress,
+  bookImageUrl, closeLocalBook, getLocalSection, imageKey, importBookPath, openLibraryBook, saveLibraryProgress, trackImport, useImportStatus,
   type LibraryPlace, type LocalBook, type LocalSectionMeta
 } from '../lib/localBook';
 import { runOcr } from '../lib/ocr';
@@ -495,13 +495,13 @@ export function LocalBookScreen({ book, place, path, live: liveStart }: { book: 
     if (!scrollFrame.current) scrollFrame.current = requestAnimationFrame(() => onScrollFrame.current());
   };
   useEffect(() => () => cancelAnimationFrame(scrollFrame.current), []);
-  const [importing, setImporting] = useState<{ done: number; total: number } | null>(null);
+  const importing = useImportStatus();
   const importHere = async () => {
     if (!path || importing) return;
-    setImporting({ done: 0, total: 0 });
     try {
       const user = app.libKey;
-      const saved = await importBookPath(user, path, (done, total) => setImporting({ done, total }));
+      const saved = await trackImport(onProgress => importBookPath(user, path, onProgress));
+      if (!saved) return;
       runOcr(user);
       // Chapters are the file's sections, so the place carries over as is.
       const m = measure();
@@ -513,7 +513,6 @@ export function LocalBookScreen({ book, place, path, live: liveStart }: { book: 
     } catch (e) {
       console.error(e);
       app.showToast(`${t('library.importFailed')} ${String(e)}`);
-      setImporting(null);
     }
   };
 
