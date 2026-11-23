@@ -25,7 +25,8 @@
 //!   screen and does not fail the translation. A chapter translated from the reader
 //!   learns in the background, so the reader gets the text as soon as it is saved.
 //!
-//! A chapter goes to the LLM in parts of about `CHUNK_CHARS`, `PARALLEL` at a time.
+//! A chapter goes to the LLM in parts of about `CHUNK_CHARS`, `parallel` at a time
+//! (the user's "translation threads" setting, `PARALLEL_DEFAULT` when not set).
 //! Each part's reply is kept in `ai_parts` as it comes back, so a chapter that is
 //! paused, or that fails on one part, carries on from the parts it has the next time
 //! instead of sending them all again; the save node clears them.
@@ -64,8 +65,15 @@ const CHUNK_CHARS: usize = 3500;
 /// Words of the first chapter the language is told from.
 /// Supersteps allowed: the six nodes, run once each.
 const MAX_STEPS: usize = 8;
-/// Parts of a chapter sent to the LLM at the same time.
-const PARALLEL: usize = 3;
+/// Parts of a chapter sent to the LLM at the same time, when the user has not set it.
+pub const PARALLEL_DEFAULT: usize = 3;
+/// The range the user can set it in (Profile → advanced settings): at least one
+/// request, and not so many that the provider's rate limit turns them down.
+pub const PARALLEL_MIN: usize = 1;
+pub const PARALLEL_MAX: usize = 10;
+/// Where the setting is kept in the library file (`sync_state`, so it goes into
+/// backups with the rest of the library).
+const PARALLEL_KEY: &str = "translate_parallel";
 /// Where a reply's translation ends and the wiki facts of that part begin.
 const WIKI_MARK: &str = "<<<WIKI>>>";
 
@@ -161,6 +169,9 @@ struct Flow {
     /// The wiki facts each request found in its part, one JSON object per part: kept
     /// with the chapter, and read into the wiki when the book's wiki learns.
     found: Vec<String>,
+    /// Parts sent to the LLM at the same time (`parallel`).
+    #[serde(default = "parallel_default")]
+    parallel: usize,
 }
 
 impl State for Flow {
@@ -217,6 +228,7 @@ pub fn run_with(
         out_title: String::new(),
         out: Vec::new(),
         found: Vec::new(),
+        parallel: parallel(conn)?,
     };
     let failed: Arc<Mutex<Option<AiError>>> = Arc::default();
     let model = llm.model().to_string();
@@ -363,6 +375,7 @@ fn graph(
                         progress.as_deref(),
                         cache.as_ref(),
                         stop.as_deref(),
+                        f.parallel,
                     )?;
                     f.out = out;
                     f.found = found;
@@ -417,6 +430,7 @@ fn graph(
                         progress.as_deref(),
                         cache.as_ref(),
                         stop.as_deref(),
+                        f.parallel,
                     )?;
                     (f.out, f.found) = (out, found);
                     // Same language: the chapter keeps its title.
@@ -928,7 +942,7 @@ fn glossary(
 /// A chapter back from the LLM: its paragraphs, the title's reply, the wiki facts.
 type Parts = (Vec<String>, Option<String>, Vec<String>);
 
-/// Sends the text paragraphs in parts of about `CHUNK_CHARS`, `PARALLEL` at a time,
+/// Sends the text paragraphs in parts of about `CHUNK_CHARS`, `PARALLEL_DEFAULT` at a time,
 /// each with the system prompt `system` makes for it,
 /// and puts the replies back in order; pictures stay where they are. `title` (a
 /// system prompt and the title) is asked alongside the parts. Whatever a part's reply
@@ -953,12 +967,22 @@ fn run_chunks(
     stop: Option<&AtomicBool>,
 ) -> Result<Parts, AiError> {
     run_chunks_with(
-        llm, system, "", None, paragraphs, title, progress, cache, stop,
+        llm,
+        system,
+        "",
+        None,
+        paragraphs,
+        title,
+        progress,
+        cache,
+        stop,
+        PARALLEL_DEFAULT,
     )
 }
 
 /// `run_chunks` where each part is first asked through `tools` (when given and the
-/// model takes them), and otherwise as text with `extract` added to its prompt.
+/// model takes them), and otherwise as text with `extract` added to its prompt, and
+/// `parallel` parts (at least one) go to the LLM at the same time.
 #[allow(clippy::too_many_arguments)]
 fn run_chunks_with(
     llm: &dyn Chat,
@@ -970,6 +994,7 @@ fn run_chunks_with(
     progress: Option<&(dyn Fn(usize, usize) + Send + Sync)>,
     cache: Option<&PartCache>,
     stop: Option<&AtomicBool>,
+    parallel: usize,
 ) -> Result<Parts, AiError> {
     // Whole blocks are gathered up to about `CHUNK_CHARS`: a part is the blocks
     // `start..start + len` of the chapter, and a picture ends the part before it.
@@ -1035,7 +1060,7 @@ fn run_chunks_with(
         p(kept, total);
     }
     std::thread::scope(|s| {
-        for _ in 0..PARALLEL.min(total) {
+        for _ in 0..parallel.max(1).min(total) {
             s.spawn(|| loop {
                 if failed.lock().unwrap().is_some() {
                     return;
@@ -1849,6 +1874,26 @@ pub fn marks(conn: &Connection, novel_id: i64) -> rusqlite::Result<Vec<Mark>> {
     rows.collect()
 }
 
+/// How many parts of a chapter go to the LLM at the same time, as the user set it.
+pub fn parallel(conn: &Connection) -> rusqlite::Result<usize> {
+    Ok(super::db::get_state(conn, PARALLEL_KEY)?
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .map(|n| n.clamp(PARALLEL_MIN, PARALLEL_MAX))
+        .unwrap_or(PARALLEL_DEFAULT))
+}
+
+/// Saves how many parts go to the LLM at the same time, brought into
+/// `PARALLEL_MIN..=PARALLEL_MAX`; returns what was saved.
+pub fn set_parallel(conn: &Connection, n: usize) -> rusqlite::Result<usize> {
+    let n = n.clamp(PARALLEL_MIN, PARALLEL_MAX);
+    super::db::set_state(conn, PARALLEL_KEY, &n.to_string())?;
+    Ok(n)
+}
+
+fn parallel_default() -> usize {
+    PARALLEL_DEFAULT
+}
+
 /// Takes the LLM settings and the AI queue out of a copy about to be synced.
 pub fn strip(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
@@ -1932,6 +1977,69 @@ pub(crate) mod tests {
         }
         fn model(&self) -> &str {
             "fake-1"
+        }
+    }
+
+    #[test]
+    fn the_translation_threads_setting_is_kept_in_its_range() {
+        let (conn, _) = book("parallel");
+        assert_eq!(parallel(&conn).unwrap(), PARALLEL_DEFAULT);
+        assert_eq!(set_parallel(&conn, 6).unwrap(), 6);
+        assert_eq!(parallel(&conn).unwrap(), 6);
+        assert_eq!(set_parallel(&conn, 0).unwrap(), PARALLEL_MIN);
+        assert_eq!(set_parallel(&conn, 99).unwrap(), PARALLEL_MAX);
+        assert_eq!(parallel(&conn).unwrap(), PARALLEL_MAX);
+        super::super::db::set_state(&conn, PARALLEL_KEY, "abc").unwrap();
+        assert_eq!(parallel(&conn).unwrap(), PARALLEL_DEFAULT);
+    }
+
+    /// `Fake`, counting the requests in flight at the same time.
+    struct Busy {
+        inner: Fake,
+        now: std::sync::atomic::AtomicUsize,
+        most: std::sync::atomic::AtomicUsize,
+    }
+
+    impl Chat for Busy {
+        fn chat(&self, system: &str, user: &str) -> Result<String, AiError> {
+            let n = self.now.fetch_add(1, Ordering::SeqCst) + 1;
+            self.most.fetch_max(n, Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            let r = self.inner.chat(system, user);
+            self.now.fetch_sub(1, Ordering::SeqCst);
+            r
+        }
+        fn model(&self) -> &str {
+            "fake-1"
+        }
+    }
+
+    #[test]
+    fn as_many_parts_as_the_setting_go_to_the_llm_at_once() {
+        let paragraphs: Vec<String> = (0..8)
+            .map(|i| format!("Part {i}. {}", "word ".repeat(CHUNK_CHARS / 5)))
+            .collect();
+        for want in [1, 2, 5] {
+            let llm = Busy {
+                inner: Fake::new("vi"),
+                now: Default::default(),
+                most: Default::default(),
+            };
+            let (out, _, _) = run_chunks_with(
+                &llm,
+                &|_: &str| "sys".to_string(),
+                "",
+                None,
+                &paragraphs,
+                None,
+                None,
+                None,
+                None,
+                want,
+            )
+            .unwrap();
+            assert_eq!(out.len(), paragraphs.len());
+            assert_eq!(llm.most.load(Ordering::SeqCst), want, "{want}");
         }
     }
 
@@ -2704,6 +2812,7 @@ pub(crate) mod tests {
             None,
             None,
             None,
+            PARALLEL_DEFAULT,
         )
         .unwrap();
         assert_eq!(
@@ -2752,6 +2861,7 @@ pub(crate) mod tests {
             None,
             None,
             None,
+            PARALLEL_DEFAULT,
         )
         .unwrap();
         assert_eq!(out, vec!["Tề tiên sinh mỉm cười."]);
@@ -2787,6 +2897,7 @@ pub(crate) mod tests {
             None,
             None,
             None,
+            PARALLEL_DEFAULT,
         )
         .unwrap();
         assert_eq!(out, vec!["[txt] Một.", "[txt] Hai."]);
@@ -2807,6 +2918,7 @@ pub(crate) mod tests {
             None,
             None,
             None,
+            PARALLEL_DEFAULT,
         )
         .unwrap();
         assert_eq!(out, vec!["Một!", "Hai!"]);
@@ -2825,6 +2937,7 @@ pub(crate) mod tests {
             None,
             None,
             None,
+            PARALLEL_DEFAULT,
         )
         .unwrap();
         assert_eq!(out, vec!["[txt] Một.", "[txt] Hai."]);
