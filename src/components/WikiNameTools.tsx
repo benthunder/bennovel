@@ -1,11 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Modal } from './Modal';
 import { Spinner } from './ui';
 import { LanguagesIcon, SparklesIcon } from './Icons';
 import { useI18n } from '../i18n';
 import { AiFailure, aiErrorDetail } from '../lib/ai';
 import {
-  allowWikiMerge, applyRetranslate, askRetranslate, entryMergeFound, entryWikiMerges, skipWikiMerge, wikiLabel,
+  allowWikiMerge, applyRetranslate, mergeWikiEntry, askRetranslate, entryMergeFound, entryWikiMerges, skipWikiMerge, wikiLabel,
   type EntryMerge, type RetranslateProposal, type RetranslateTarget, type WikiEntry
 } from '../lib/wiki';
 import { useApp } from '../store/AppStore';
@@ -29,11 +29,9 @@ function useFail() {
  * entry of their own become its aliases. `initial` is a check already made (after a new
  * translation of the name).
  */
-export function EntryMergeCheck({ novelId, entry, lang, initial, onMerged, onDetails }: {
+export function EntryMergeCheck({ novelId, entry, lang, initial, onMerged }: {
   novelId: number; entry: WikiEntry; lang: string; initial?: EntryMerge;
   onMerged: (kept: WikiEntry) => void;
-  /** Opens smart merge for the entry, to pick one by one. */
-  onDetails?: () => void;
 }) {
   const { t } = useI18n();
   const app = useApp();
@@ -56,14 +54,13 @@ export function EntryMergeCheck({ novelId, entry, lang, initial, onMerged, onDet
   const f = entryMergeFound(found, entry.uid);
   if (state === 'loading') {
     return (
-      <div data-merge-check="loading" className="muted" style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
-        <Spinner size={12} />{t('wiki.checkLooking')}
-      </div>
+      <span data-merge-check="loading" hidden />
     );
   }
   if (state === 'failed' || gone) return null;
   if (!f) {
-    return <div data-merge-check="none" className="muted" style={{ fontSize: 12 }}>{t('wiki.checkNone')}</div>;
+    // Nothing to say: the card stays as it was.
+    return <span data-merge-check="none" hidden />;
   }
   const into = f.into ?? entry;
   const allow = async () => {
@@ -100,37 +97,24 @@ export function EntryMergeCheck({ novelId, entry, lang, initial, onMerged, onDet
   };
   return (
     <section data-merge-check="found" role="status"
-      style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '10px 12px', borderRadius: 16, background: 'color-mix(in srgb, var(--color-accent) 12%, transparent)' }}>
-      <div style={{ fontSize: 13, fontWeight: 700 }}>
-        {t('wiki.checkFound', { n: f.from.length + f.loose.length })}
-      </div>
-      <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13 }}>
-        {f.from.map(e => (
-          <li key={e.uid} data-merge-check-from style={{ overflowWrap: 'anywhere' }}>
-            {name(e)} <span className="tag tag-neutral" style={{ fontSize: 10 }}>{t('wiki.checkEntry')}</span>
-          </li>
-        ))}
-        {f.loose.map(r => (
-          <li key={`${r.raw}>${r.translated}`} data-merge-check-raw style={{ overflowWrap: 'anywhere' }}>
-            <b>{r.raw}</b> <span className="muted">→ {r.translated}</span>{' '}
-            <span className="tag tag-neutral" style={{ fontSize: 10 }}>{t('wiki.rawLoose')}</span>
-            {r.chapters.length > 0 && <span className="muted" style={{ fontSize: 11 }}> · {t('wiki.rawChapters', { list: r.chapters.join(', ') })}</span>}
-          </li>
-        ))}
-      </ul>
-      <div style={{ fontSize: 13 }}>
-        {t('wiki.checkInto')} <b data-merge-check-into>{name(into)}</b>
-      </div>
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-        <button type="button" className="btn btn-primary" data-merge-allow style={{ height: 36, padding: '0 14px' }} disabled={busy} onClick={allow}>
+      style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '10px 12px', borderRadius: 16, background: 'color-mix(in srgb, var(--color-accent) 12%, transparent)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 14, flex: '1 1 160px', overflowWrap: 'anywhere' }}>
+          {t('wiki.checkAsk')} <b data-merge-check-into>{wikiLabel(into, lang)}</b>?
+        </span>
+        <button type="button" className="btn btn-primary" data-merge-allow style={{ height: 34, padding: '0 14px' }} disabled={busy} onClick={allow}>
           {busy ? <Spinner size={13} /> : t('wiki.checkAllow')}
         </button>
         {f.pairs.length > 0 && (
-          <button type="button" className="btn btn-secondary" data-merge-not-one style={{ height: 36, padding: '0 12px' }} disabled={busy} onClick={notOne}>{t('wiki.checkNotOne')}</button>
+          <button type="button" className="btn btn-ghost" data-merge-not-one style={{ height: 34, padding: '0 8px', fontSize: 13 }} disabled={busy} onClick={notOne}>{t('wiki.checkNotOne')}</button>
         )}
-        {onDetails && (
-          <button type="button" className="btn btn-ghost" style={{ height: 36, padding: '0 10px' }} disabled={busy} onClick={onDetails}>{t('wiki.checkDetails')}</button>
-        )}
+      </div>
+      {/* What goes into it, in one line: other entries and original names the chapters wrote. */}
+      <div className="muted" style={{ fontSize: 12, overflowWrap: 'anywhere' }}>
+        {[
+          ...f.from.filter(e => e.uid !== into.uid).map(e => <span key={e.uid} data-merge-check-from>{name(e)}</span>),
+          ...f.loose.map(r => <span key={`${r.raw}>${r.translated}`} data-merge-check-raw>{r.raw} → {r.translated}</span>)
+        ].flatMap((x, i) => (i ? [<span key={`s${i}`}>, </span>, x] : [x]))}
       </div>
     </section>
   );
@@ -247,6 +231,67 @@ export function RetranslateSheet({ novelId, target, lang, onClose, onDone }: {
               {busy ? <Spinner size={14} /> : t('wiki.retrKeep')}
             </button>
           )}
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/**
+ * "Merge into…": the user picks the entry this one really is (a nickname, a name
+ * written another way) and it goes into it: its names become that entry's other names,
+ * and the translations follow. Entries of the same kind come first; the search goes by
+ * every name.
+ */
+export function MergeIntoSheet({ novelId, entry, entries, lang, onClose, onMerged }: {
+  novelId: number; entry: WikiEntry; entries: WikiEntry[]; lang: string;
+  onClose: () => void; onMerged: (kept: WikiEntry) => void;
+}) {
+  const { t } = useI18n();
+  const app = useApp();
+  const fail = useFail();
+  const [q, setQ] = useState('');
+  const [busy, setBusy] = useState(false);
+  const list = useMemo(() => {
+    const k = q.trim().toLocaleLowerCase();
+    return entries
+      .filter(e => e.uid !== entry.uid)
+      .filter(e => !k || [wikiLabel(e, lang), e.name, ...e.aliases].some(n => n.toLocaleLowerCase().includes(k)))
+      .sort((a, b) => Number(b.kind === entry.kind) - Number(a.kind === entry.kind))
+      .slice(0, 40);
+  }, [q, entries, entry, lang]);
+  const pick = async (into: WikiEntry) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const kept = await mergeWikiEntry(app.libKey, novelId, entry.uid, into.uid);
+      app.showToast(t('wiki.merged', { into: wikiLabel(into, lang) }));
+      onMerged(kept);
+    } catch (e) {
+      fail(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal onClose={busy ? undefined : onClose}>
+      <div className="dialog dialog--sheet" role="dialog" aria-modal="true" aria-label={t('wiki.mergeIntoTitle')} data-merge-into-sheet onClick={e => e.stopPropagation()}>
+        <div className="dialog-title" style={{ fontSize: 22 }}>{t('wiki.mergeIntoTitle')}</div>
+        <div className="muted" style={{ fontSize: 12, marginTop: -8 }}>{t('wiki.mergeIntoSub', { name: wikiLabel(entry, lang) })}</div>
+        <input className="input" style={{ height: 42 }} autoFocus value={q} placeholder={t('wiki.mergeIntoSearch')} aria-label={t('wiki.mergeIntoSearch')} onChange={e => setQ(e.target.value)} />
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: '45vh', overflowY: 'auto' }}>
+          {list.map(e => (
+            <button key={e.uid} type="button" data-merge-into-option={e.uid} disabled={busy} onClick={() => pick(e)}
+              style={{ display: 'flex', alignItems: 'baseline', gap: 8, padding: '10px 12px', borderRadius: 14, border: 'none', background: 'var(--frost)', color: 'inherit', font: 'inherit', fontSize: 14, textAlign: 'left', cursor: 'pointer' }}>
+              <b style={{ overflowWrap: 'anywhere' }}>{wikiLabel(e, lang)}</b>
+              <span className="muted" style={{ fontSize: 12, flex: 1, overflowWrap: 'anywhere' }}>{e.name}</span>
+              {e.kind !== entry.kind && <span className="tag tag-neutral" style={{ fontSize: 10 }}>{t(`wiki.kind.${e.kind as 'term'}`)}</span>}
+            </button>
+          ))}
+          {list.length === 0 && <span className="muted" style={{ fontSize: 13 }}>{t('wiki.mergeIntoNone')}</span>}
+        </div>
+        <div className="dialog-actions">
+          <button type="button" className="btn btn-secondary" style={{ height: 44, padding: '0 18px' }} disabled={busy} onClick={onClose}>{t('common.cancel')}</button>
         </div>
       </div>
     </Modal>

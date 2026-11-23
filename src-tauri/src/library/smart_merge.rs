@@ -166,9 +166,12 @@ fn edges(all: &[Entry], skips: &std::collections::HashSet<String>) -> Vec<Edge> 
     for i in 0..all.len() {
         for j in i + 1..all.len() {
             let (a, b) = (&all[i], &all[j]);
-            if a.kind != b.kind || (a.source == "user" && b.source == "user") {
+            if a.kind != b.kind {
                 continue;
             }
+            // Two of the user's own entries are offered together only when they are
+            // written the same (the user named both "Lâm Động": one entry, many originals).
+            let both_user = a.source == "user" && b.source == "user";
             if a.kind == "level"
                 && !a.meta.system.is_empty()
                 && !b.meta.system.is_empty()
@@ -193,6 +196,9 @@ fn edges(all: &[Entry], skips: &std::collections::HashSet<String>) -> Vec<Edge> 
             } else {
                 continue;
             };
+            if both_user && reason == Reason::NearName {
+                continue;
+            }
             if skips.contains(&skip_key([a.uid.as_str(), b.uid.as_str()])) {
                 continue;
             }
@@ -251,9 +257,6 @@ fn to_one(
         members.sort_by_key(|&i| (all[i].first_chapter.unwrap_or(i64::MAX), i));
         for m in members {
             let from = &all[m];
-            if from.source == "user" && into.source == "user" {
-                continue;
-            }
             if skips.contains(&skip_key([from.uid.as_str(), into.uid.as_str()])) {
                 continue;
             }
@@ -272,6 +275,10 @@ fn to_one(
                     .unwrap_or(Reason::NearName)
                     .max(Reason::SameRaw)
             });
+            // Two of the user's own entries only when written the same.
+            if from.source == "user" && into.source == "user" && reason == Reason::NearName {
+                continue;
+            }
             out.push(Suggestion {
                 rules: rules_for(from, into, all),
                 from: from.clone(),
@@ -534,7 +541,7 @@ pub fn for_entry(conn: &Connection, novel_id: i64, uid: &str) -> rusqlite::Resul
         let other = &all[o];
         if o == mine
             || other.kind != me.kind
-            || (other.source == "user" && me.source == "user")
+            || (other.source == "user" && me.source == "user" && !r.exact)
             || skips.contains(&skip_key([uid, other.uid.as_str()]))
             || links
                 .iter()
@@ -1002,6 +1009,58 @@ mod tests {
         let done = allow(&conn, novel, &kept, &from, &[]).unwrap();
         assert_eq!(done.applied.merged, 2);
         assert_eq!(wiki::entries(&conn, novel).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_name_the_user_gives_another_entry_joins_the_set_already_there() {
+        // a-a and a-b are one entry "Lâm Động" (merged by the user, so theirs).
+        let (conn, novel) = book("smart-merge-user-same");
+        let a = add(&conn, novel, "character", "a-a", "Lâm Động");
+        let ab = add(&conn, novel, "character", "a-b", "Lâm Động");
+        allow(&conn, novel, &a, &[ab], &[]).unwrap();
+        // The user then names another entry "Lâm Động" too.
+        let b = add(&conn, novel, "character", "b-b", "Lâm Đống");
+        let e = wiki::entries(&conn, novel)
+            .unwrap()
+            .into_iter()
+            .find(|e| e.uid == b)
+            .unwrap();
+        let mut names = e.names.clone();
+        names.insert("vi".into(), "Lâm Động".into());
+        save_entry(
+            &conn,
+            novel,
+            wiki::EntryInput {
+                uid: Some(b.clone()),
+                kind: e.kind,
+                name: e.name,
+                names,
+                aliases: e.aliases,
+                summaries: e.summaries,
+                rank: e.rank,
+                meta: e.meta,
+            },
+        )
+        .unwrap();
+        // Both are the user's now; still offered as one: b-b into the entry already there.
+        let m = for_entry(&conn, novel, &b).unwrap();
+        assert_eq!(m.pairs.len(), 1, "{:?}", m.pairs);
+        assert_eq!(
+            (m.pairs[0].from.uid.as_str(), m.pairs[0].into.uid.as_str()),
+            (b.as_str(), a.as_str())
+        );
+        allow(&conn, novel, &a, &[b], &[]).unwrap();
+        let all = wiki::entries(&conn, novel).unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].aliases, vec!["a-b".to_string(), "b-b".to_string()]);
+        // Two of the user's with only near names are still not offered.
+        let c = add(&conn, novel, "character", "c-c", "Lâm Đông");
+        conn.execute(
+            "update wiki_entries set source = 'user' where uid = ?1",
+            [&c],
+        )
+        .unwrap();
+        assert!(for_entry(&conn, novel, &c).unwrap().pairs.is_empty());
     }
 
     #[test]

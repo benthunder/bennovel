@@ -237,7 +237,9 @@ test('the book wiki lists, searches and edits entries', async ({ page }, info) =
     summaries: { vi: 'Thiếu niên Lâm gia ở Thanh Dương trấn, tu luyện nhờ thạch phù bí ẩn.' },
     meta: { personality: 'Kiên nhẫn, lì đòn, trọng tình nghĩa.', age: '15 tuổi', abilities: 'Khắc phù, luyện thể.' }
   });
-  await expect(page.getByText('Đã lưu vào wiki.')).toBeVisible();
+  // Saved, and back to step 1: another entry looks like it, so the sheet stays open with the merge offered.
+  await expect(page.getByText('Đã lưu. Có mục khác cùng tên này')).toBeVisible();
+  await expect(sheet.locator('[data-merge-check="found"]')).toBeVisible();
 });
 
 test('the wiki stays Vietnamese whatever the reading language, with levels in order and places as a map', async ({ page }, info) => {
@@ -326,17 +328,15 @@ test('names in a chapter open the whole wiki with its links', async ({ page }, i
   await page.getByRole('dialog', { name: 'Tiểu Điêu' }).getByRole('button', { name: /Lâm Động/ }).click();
   await page.waitForTimeout(500);
   await page.screenshot({ path: `test-results/wiki-${info.project.name}-reader-card.png` });
-  // Smart merge for the entry open while reading: the original names translated as its name.
-  await card.getByRole('button', { name: 'Gộp thông minh' }).click();
-  const merge = page.locator('[data-wiki-smart-merge-sheet]');
-  await expect(merge.locator('[data-merge-raw]')).toHaveCount(3);
-  await expect(merge.locator('[data-merge-raw]').nth(1)).toContainText('Lin Dong');
-  await expect(merge.locator('[data-merge-raw]').nth(1)).toContainText('chương 3, 7');
-  await expect(merge.locator('[data-merge-raw]').nth(1)).toContainText('chưa có trong wiki');
-  expect((await calls(page)).find(c => c.cmd === 'wiki_merge_entry')?.args).toMatchObject({ novelId: 1, uid: 'a' });
-  await page.screenshot({ path: `test-results/wiki-${info.project.name}-entry-merge.png` });
-  await merge.getByRole('button', { name: 'Hủy' }).click();
-  await expect(merge).toHaveCount(0);
+  // The two things to do with the name: merge it into the entry it really is (or translate it again).
+  await expect(card.locator('[data-entry-smart-merge]')).toHaveCount(0);
+  await card.locator('[data-entry-merge-into]').click();
+  const into = page.locator('[data-merge-into-sheet]');
+  await into.getByLabel('Tìm mục…').fill('Lang');
+  await expect(into.locator('[data-merge-into-option]')).toHaveCount(1);
+  await page.screenshot({ path: `test-results/wiki-${info.project.name}-merge-into.png` });
+  await into.getByRole('button', { name: 'Hủy' }).click();
+  await expect(into).toHaveCount(0);
   await card.getByRole('button', { name: 'Wiki truyện' }).click();
   await expect(page.locator('[data-entry="林动"]').getByText('Lâm Động', { exact: true })).toBeVisible();
 });
@@ -467,24 +467,12 @@ test('smart merge lists pairs to review and merges only the ticked ones', async 
   });
   await expect(sheet).toHaveCount(0);
 
-  // One entry's own smart merge, from its sheet: it takes the sheet's place, Cancel brings it back.
+  // An entry merges into the one it really is from its sheet.
   await page.getByText('Lâm Động', { exact: true }).click();
-  await page.locator('[data-entry-smart-merge]').click();
-  await expect(sheet.locator('[data-merge-raw]')).toHaveCount(3);
-  await expect(page.locator('form.dialog')).toHaveCount(0);
-  await expect(sheet.locator('[data-merge-pair]')).toHaveCount(1);
-  await sheet.getByRole('button', { name: 'Hỏi AI tìm thêm' }).click();
-  // The AI's group holds the device's pair, so the pair is shown there only.
-  await expect(sheet.locator('[data-merge-group]')).toHaveCount(1);
-  await expect(sheet.locator('[data-merge-pair]')).toHaveCount(0);
-  await expect(sheet.locator('[data-final-name]')).toHaveValue('Lâm Động');
-  // A wrong original name comes back put right, and can be changed too.
-  await expect(sheet.locator('[data-final-raw]')).toHaveValue('Lin Dong');
-  await expect(sheet.getByText('(đang ghi: 林动)')).toBeVisible();
-  await expect(sheet.getByText('AI sửa tên gốc')).toBeVisible();
-  await page.screenshot({ path: `test-results/wiki-${info.project.name}-entry-merge-ai.png` });
-  await sheet.getByRole('button', { name: 'Hủy' }).click();
-  await expect(page.locator('form.dialog')).toBeVisible();
+  await page.locator('[data-entry-merge-into]').click();
+  await page.locator('[data-merge-into-option="i"]').click();
+  await expect(page.locator('[data-merge-into-sheet]')).toHaveCount(0);
+  expect((await calls(page)).find(c => c.cmd === 'wiki_merge')?.args).toMatchObject({ novelId: 1, fromUid: 'a', intoUid: 'i' });
 });
 
 test('many wiki entries and replace rules are picked and deleted at once', async ({ page }, info) => {
@@ -572,7 +560,7 @@ test('opening an entry looks for its name in the book and merges only when allow
   await page.getByText('Lâm Động', { exact: true }).click();
   const sheet = page.getByRole('dialog', { name: 'Mục wiki' });
   const check = sheet.locator('[data-merge-check="found"]');
-  await expect(check).toContainText('Tìm thấy trong nguồn: 2 tên giống mục này');
+  await expect(check).toContainText('Gộp vào Lâm Động?');
   await expect(check.locator('[data-merge-check-from]')).toContainText('Lâm Lang Thiên');
   await expect(check.locator('[data-merge-check-raw]')).toContainText('Lin Dong');
   await expect(check.locator('[data-merge-check-into]')).toContainText('Lâm Động');
@@ -641,5 +629,5 @@ test('words selected in a chapter are translated again and become a wiki entry',
   expect((await calls(page)).find(c => c.cmd === 'wiki_retranslate_apply')?.args).toMatchObject({
     keep: { uid: null, raw: '萧炎', name: 'Tiêu Viêm', kind: 'character', old: ['萧炎'] }
   });
-  await expect(sheet.locator('[data-merge-check="none"]')).toBeVisible();
+  await expect(sheet.locator('[data-merge-check="none"]')).toHaveCount(1);
 });

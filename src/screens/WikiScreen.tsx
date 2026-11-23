@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode }
 import { ask } from '@tauri-apps/plugin-dialog';
 import { Modal } from '../components/Modal';
 import { SmartMergeSheet } from '../components/SmartMergeSheet';
-import { EntryMergeCheck, RetranslateSheet } from '../components/WikiNameTools';
+import { EntryMergeCheck, MergeIntoSheet, RetranslateSheet } from '../components/WikiNameTools';
 import { GroupedRelations, equivalentsOf, levelOf, relWords, useWikiT } from '../components/WikiPopup';
 import { CheckIcon, ChevronLeftIcon, ChevronRightIcon, LanguagesIcon, PencilIcon, SparklesIcon, XIcon } from '../components/Icons';
 import { Checkbox, SearchField, Spinner } from '../components/ui';
@@ -12,7 +12,7 @@ import { useAsync } from '../lib/useAsync';
 import { useLayout } from '../lib/useLayout';
 import { useThrottledValue } from '../lib/useThrottledValue';
 import {
-  PROFILE_FIELDS, RAW, REL_TYPES, SKILL_FIELDS, WIKI_KINDS, WIKI_LANG, addWikiRelation, applyWikiToText, getWiki, getWikiMissing, mergeWikiEntry, removeWikiEntries, removeWikiEntry, removeWikiRelation, saveWikiEntry,
+  PROFILE_FIELDS, RAW, REL_TYPES, entryMergeFound, entryWikiMerges, SKILL_FIELDS, WIKI_KINDS, WIKI_LANG, addWikiRelation, applyWikiToText, getWiki, getWikiMissing, removeWikiEntries, removeWikiEntry, removeWikiRelation, saveWikiEntry,
   searchWiki, setWikiAuto,  translateWiki, wikiChapter, wikiLabel, wikiSummary,
   type ProfileField, type SkillField, type Wiki, type WikiEntry, type WikiKind, metaStage } from '../lib/wiki';
 import { useApp } from '../store/AppStore';
@@ -463,9 +463,11 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
   const [relType, setRelType] = useState<string>(REL_TYPES[0]);
   const [relWordsIn, setRelWordsIn] = useState('');
   const [relNote, setRelNote] = useState('');
-  const [mergeInto, setMergeInto] = useState('');
   const [smart, setSmart] = useState(false);
   const [retr, setRetr] = useState(false);
+  const [into, setInto] = useState(false);
+  // Goes up after a save, so the check looks at the book again.
+  const [checkRev, setCheckRev] = useState(0);
   // A name kept while translating again: the wiki loads again when the sheet closes, not under it.
   const retrDirty = useRef(false);
   const [rels, setRels] = useState(() => wiki.relations.filter(r => entry && (r.fromUid === entry.uid || r.toUid === entry.uid)));
@@ -500,6 +502,13 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
       });
       setSaved(e);
       onChanged();
+      // Back to step 1 with the new name: another entry written the same is offered to join it.
+      const found = entryMergeFound(await entryWikiMerges(user, novelId, e.uid).catch(() => null), e.uid);
+      if (found) {
+        setCheckRev(n => n + 1);
+        app.showToast(t('wiki.savedCheck'));
+        return;
+      }
       app.showToast(t('wiki.saved'));
       if (saved) onClose();
     } catch (e) {
@@ -541,26 +550,15 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
     onChanged();
   };
 
-  // This entry is another one written differently ("bé áo xanh" and her name): it goes into that one.
-  const merge = async () => {
-    const into = byUid.get(mergeInto);
-    if (!saved || !into || !(await ask(t('wiki.mergeAsk', { from: wikiLabel(saved, lang), into: wikiLabel(into, lang) }), { kind: 'warning' }))) return;
-    try {
-      await mergeWikiEntry(user, novelId, saved.uid, into.uid);
-      onChanged();
-      app.showToast(t('wiki.merged', { into: wikiLabel(into, lang) }));
-      onClose();
-    } catch (e) {
-      failed(e);
-    }
-  };
-
   const level = saved && saved.kind === 'character' ? levelOf(wiki, saved.uid) : null;
 
   return (
     smart && saved ? (
       <SmartMergeSheet novelId={novelId} lang={lang} entry={saved} onClose={() => setSmart(false)}
         onMerged={() => { onChanged(); onClose(); }} />
+    ) : into && saved ? (
+      <MergeIntoSheet novelId={novelId} entry={saved} entries={wiki.entries} lang={lang}
+        onClose={() => setInto(false)} onMerged={() => { onChanged(); onClose(); }} />
     ) : retr && saved ? (
       <RetranslateSheet novelId={novelId} lang={lang} target={{ uid: saved.uid, label: wikiLabel(saved, lang) }}
         onClose={() => { setRetr(false); if (retrDirty.current) onChanged(); onClose(); }} onDone={() => { retrDirty.current = true; }} />
@@ -579,12 +577,21 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
         {saved && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {/* Step 1: this name looked for in the book; a merge waits for the user's tap. */}
-            <EntryMergeCheck novelId={novelId} entry={saved} lang={lang} onDetails={() => setSmart(true)}
+            <EntryMergeCheck key={checkRev} novelId={novelId} entry={saved} lang={lang}
               onMerged={() => { onChanged(); onClose(); }} />
-            <button type="button" className="btn btn-secondary" data-entry-retranslate style={{ height: 34, padding: '0 12px', gap: 6, fontSize: 13, alignSelf: 'flex-start' }}
-              disabled={busy} onClick={() => setRetr(true)}>
-              <LanguagesIcon size={13} />{t('wiki.retranslate')}
-            </button>
+            {/* The two things to do with a name: translate it again, or merge it into the entry it really is. */}
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              <button type="button" className="btn btn-secondary" data-entry-retranslate style={{ height: 36, padding: '0 14px', gap: 6, fontSize: 13 }}
+                disabled={busy} onClick={() => setRetr(true)}>
+                <LanguagesIcon size={13} />{t('wiki.retranslate')}
+              </button>
+              {others.length > 0 && (
+                <button type="button" className="btn btn-secondary" data-entry-merge-into style={{ height: 36, padding: '0 14px', fontSize: 13 }}
+                  disabled={busy} onClick={() => setInto(true)}>
+                  {t('wiki.mergeIntoBtn')}
+                </button>
+              )}
+            </div>
           </div>
         )}
         <div>
@@ -707,26 +714,6 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
             </>
           )}
         </div>
-
-        {saved && others.length > 0 && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <div style={{ fontSize: 12, fontWeight: 700, flex: 1 }}>{t('wiki.mergeTitle')}</div>
-              <button type="button" className="btn btn-secondary" data-entry-smart-merge style={{ height: 34, padding: '0 12px', gap: 6, fontSize: 13 }} disabled={busy} onClick={() => setSmart(true)}>
-                <SparklesIcon size={13} />{t('wiki.smartMerge')}
-              </button>
-            </div>
-            <div className="muted" style={{ fontSize: 12 }}>{t('wiki.mergeSub')}</div>
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-              <select className="input" style={{ height: 38, flex: '1 1 180px' }} aria-label={t('wiki.mergeInto')} value={mergeInto} onChange={e => setMergeInto(e.target.value)}>
-                <option value="">{t('wiki.mergeInto')}…</option>
-                {others.filter(e => e.kind === saved.kind).concat(others.filter(e => e.kind !== saved.kind))
-                  .map(e => <option key={e.uid} value={e.uid}>{wikiLabel(e, lang)}{e.kind !== saved.kind ? ` · ${t(`wiki.kind.${e.kind}`)}` : ''}</option>)}
-              </select>
-              <button type="button" className="btn btn-secondary" style={{ height: 38, padding: '0 14px' }} disabled={!mergeInto || busy} onClick={merge}>{t('wiki.merge')}</button>
-            </div>
-          </div>
-        )}
 
         {error && <div role="alert" style={{ fontSize: 13, color: 'var(--color-accent-700)' }}>{error}</div>}
         <div className="dialog-actions">
