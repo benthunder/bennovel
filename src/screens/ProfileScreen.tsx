@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { CloudIcon, GlobeIcon, LanguagesIcon, LogOutIcon, SlidersIcon, SparklesIcon } from '../components/Icons';
+import { BookIcon, CloudIcon, GlobeIcon, LanguagesIcon, LogOutIcon, SlidersIcon, SparklesIcon } from '../components/Icons';
 import { Modal } from '../components/Modal';
 import { NovelCover, type Cover } from '../components/NovelCover';
 import { UiLangDialog, uiLangLabel } from '../components/UiLangDialog';
@@ -86,6 +86,16 @@ export function ProfileScreen() {
               <SlidersIcon style={{ color: 'var(--color-accent-2-700)' }} />
               <span style={{ flex: 1, fontSize: 14, fontWeight: 600 }}>{t('adv.title')}</span>
               <span className="muted" style={{ fontSize: 13 }}>{parallel ? t('adv.threadsShort', { n: parallel.value }) : ''} ›</span>
+            </button>
+          )}
+          {canOpenLocalBooks() && (
+            <button className="menu-row" role="switch" aria-checked={app.wikiUnknownRels} data-setting-wiki-unknown-rels onClick={() => app.setWikiUnknownRels(v => !v)}>
+              <BookIcon style={{ color: 'var(--color-accent-2-700)' }} />
+              <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <span style={{ fontSize: 14, fontWeight: 600 }}>{t('wiki.unknownRels')}</span>
+                <span className="muted" style={{ fontSize: 12 }}>{t('wiki.unknownRelsHint')}</span>
+              </span>
+              <span className={`switch${app.wikiUnknownRels ? ' switch--on' : ''}`} aria-hidden="true"><span className="switch__knob" /></span>
             </button>
           )}
           <button className="menu-row" role="switch" aria-checked={app.online} onClick={() => (app.online ? setOfflineAsk(true) : app.goOnline())}>

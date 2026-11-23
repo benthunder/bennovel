@@ -202,6 +202,7 @@ const calls = (page: Page) => page.evaluate(() => (window as unknown as { __call
 
 test('the book wiki lists, searches and edits entries', async ({ page }, info) => {
   await nativeApp(page);
+  await page.addInitScript(() => localStorage.setItem('bennovel.wikiUnknownRels', 'true'));
   await page.goto('/');
   await page.getByText('Võ Động Càn Khôn').filter({ visible: true }).first().click();
   await page.getByRole('button', { name: /Wiki truyện/ }).filter({ visible: true }).first().click();
@@ -301,6 +302,8 @@ test('the wiki stays Vietnamese whatever the reading language, with levels in or
 test('names in a chapter open the whole wiki with its links', async ({ page }, info) => {
   await nativeApp(page);
   await page.addInitScript(() => {
+    // Relations of no known type shown (Settings): "bạn đồng hành của" below.
+    localStorage.setItem('bennovel.wikiUnknownRels', 'true');
     localStorage.setItem('bennovel.aiView.:1', JSON.stringify({ lang: 'vi', style: 'Natural', dict: true, view: 'vi' }));
   });
   await page.goto('/');
@@ -392,6 +395,22 @@ test('a piece of a name is not marked, and a word or alias is unlinked from its 
   await card.locator('[data-entry-remove]').click();
   await expect(card).toHaveCount(0);
   expect((await calls(page)).some(c => c.cmd === 'wiki_remove' && c.args.uid === 'x')).toBe(true);
+});
+
+test('relations of no known type are hidden until the settings show them', async ({ page }) => {
+  await nativeApp(page);
+  await page.addInitScript(() => {
+    localStorage.setItem('bennovel.aiView.:1', JSON.stringify({ lang: 'vi', style: 'Natural', dict: true, view: 'vi' }));
+  });
+  await page.goto('/');
+  await page.getByText('Võ Động Càn Khôn').filter({ visible: true }).first().click();
+  await page.getByRole('button', { name: /Bắt đầu đọc|Đọc tiếp/ }).filter({ visible: true }).first().click();
+  await page.locator('[data-part="0"] [data-wiki-term="a"]').first().click();
+  const card = page.getByRole('dialog', { name: 'Lâm Động' });
+  await expect(card.locator('[data-wiki-rel-people] [data-rel-group="family"]')).toBeVisible();
+  // "bạn đồng hành của" is no known type: hidden.
+  await expect(card.getByText('Gặp nhau trong thạch phù.')).toHaveCount(0);
+  expect(await card.locator('[data-wiki-rel-people] [data-rel-group]').evaluateAll(els => els.map(e => e.getAttribute('data-rel-group')))).toEqual(['family', 'enemy']);
 });
 
 test('a chapter that fails to load says so in words and loads again', async ({ page }) => {

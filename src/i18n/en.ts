@@ -315,6 +315,8 @@ export const en = {
   'wiki.mergeIntoSub': 'Pick the entry that “{name}” really is (a nickname, another spelling). Its names become that entry’s other names.',
   'wiki.mergeIntoSearch': 'Find an entry…',
   'wiki.mergeIntoBtn': 'Merge into…',
+  'wiki.unknownRels': 'Show unknown relations in the wiki',
+  'wiki.unknownRelsHint': 'Relations of no known type (mentor, family, friend, enemy…) are hidden.',
   'wiki.relRelated': 'related to',
   'wiki.unlinkWord': 'Unlink this word',
   'wiki.wordLinked': 'The word “{word}” in the text is linked to this entry.',

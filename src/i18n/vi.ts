@@ -317,6 +317,8 @@ export const vi: Record<MessageKey, string> = {
   'wiki.mergeIntoSub': 'Chọn mục mà “{name}” thật ra là (biệt danh, cách viết khác). Tên của nó thành tên khác của mục đó.',
   'wiki.mergeIntoSearch': 'Tìm mục…',
   'wiki.mergeIntoBtn': 'Gộp vào…',
+  'wiki.unknownRels': 'Hiện quan hệ không xác định trong wiki',
+  'wiki.unknownRelsHint': 'Quan hệ không thuộc loại đã biết (sư môn, gia đình, bạn, thù…) đang được ẩn.',
   'wiki.relRelated': 'liên quan đến',
   'wiki.unlinkWord': 'Loại bỏ chữ này',
   'wiki.wordLinked': 'Chữ “{word}” trong truyện đang được nối với mục này.',

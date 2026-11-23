@@ -48,6 +48,9 @@ pub struct Target {
     pub chapter_index: Option<usize>,
     /// Names the AI gave before for it ("Ask again"): another one is wanted.
     pub avoid: Vec<String>,
+    /// The paragraph the words were selected in, as the reader showed it: its passage
+    /// goes first.
+    pub passage: String,
 }
 
 /// The AI's proposal, for the user to keep, edit or drop.
@@ -365,6 +368,51 @@ fn gather(
             (text.clone(), found)
         }
     };
+    // The paragraph the user selected the words in comes first, whatever else has them.
+    let passage = target.passage.trim();
+    if let (false, Some(i)) = (passage.is_empty(), target.chapter_index) {
+        let words = if text.is_empty() {
+            current.clone()
+        } else {
+            text.clone()
+        };
+        let mut near = contexts(
+            conn,
+            novel_id,
+            std::slice::from_ref(&words),
+            false,
+            first,
+            40,
+        )?;
+        near.extend(contexts(
+            conn,
+            novel_id,
+            std::slice::from_ref(&words),
+            true,
+            first,
+            40,
+        )?);
+        let overlap = |c: &Context| {
+            c.translated
+                .split_inclusive(['.', '!', '?', '…'])
+                .chain(c.raw.split_inclusive(['.', '!', '?', '…']))
+                .map(str::trim)
+                .filter(|s| s.chars().count() > 3 && passage.contains(s))
+                .map(|s| s.chars().count())
+                .sum::<usize>()
+        };
+        let best = near
+            .into_iter()
+            .filter(|c| c.chapter == i as i64 + 1)
+            .map(|c| (overlap(&c), c))
+            .filter(|(n, _)| *n > 0)
+            .max_by_key(|(n, _)| *n)
+            .map(|(_, c)| c);
+        if let Some(best) = best {
+            found.retain(|c| c != &best);
+            found.insert(0, best);
+        }
+    }
     found.truncate(CONTEXTS);
     Ok((entry, current, found))
 }
@@ -376,6 +424,7 @@ fn request(
     found: &[Context],
     avoid: &[String],
     examples: &[String],
+    picked: bool,
 ) -> String {
     let mut lines = vec![format!("Name as translated now (give another): {current}")];
     if !avoid.is_empty() {
@@ -409,9 +458,14 @@ fn request(
     }
     for (i, c) in found.iter().enumerate() {
         lines.push(format!(
-            "[{}] Chapter {}\nOriginal: {}\nVietnamese now: {}",
+            "[{}] Chapter {}{}\nOriginal: {}\nVietnamese now: {}",
             i + 1,
             c.chapter,
+            if picked && i == 0 {
+                " (the passage the user selected the words in: read this one first)"
+            } else {
+                ""
+            },
             c.raw,
             c.translated
         ));
@@ -435,7 +489,17 @@ pub fn ask(
         .map(|e| e.kind.as_str())
         .unwrap_or("character");
     let examples = style_examples(&all, kind, entry.as_ref().map(|e| e.uid.as_str()), 12);
-    let req = request(entry.as_ref(), &current, &found, &target.avoid, &examples);
+    let picked = !target.passage.trim().is_empty()
+        && found.first().map(|c| Some(c.chapter - 1))
+            == Some(target.chapter_index.map(|i| i as i64));
+    let req = request(
+        entry.as_ref(),
+        &current,
+        &found,
+        &target.avoid,
+        &examples,
+        picked,
+    );
     let parse = |reply: &str| -> Answer {
         let (s, e) = (reply.find('{'), reply.rfind('}'));
         match (s, e) {
@@ -746,6 +810,40 @@ mod tests {
         // The translation's style for other names goes along.
         assert!(sent[0].contains("Hye Un → Huệ Vân"));
         assert!(sent[1].contains("Give a different Vietnamese rendering"));
+    }
+
+    #[test]
+    fn the_paragraph_the_words_were_selected_in_goes_first() {
+        let (conn, novel) = book("retranslate-passage");
+        text(&conn);
+        conn.execute_batch(
+            r#"insert into segments (chapter_id, lang, style, position, type, content) values
+                 (10, 'en', '', 9, 'text', '["Later, Seol-Hwi smiled at the sect leader."]'),
+                 (10, 'vi', 'natural', 9, 'text', '["Về sau, Tuyết Hui mỉm cười với tông chủ."]');"#,
+        )
+        .unwrap();
+        let judge = Judge {
+            reply: r#"{"raw":"Seol-Hwi","name":"Tuyết Huy","kind":"character","why":""}"#.into(),
+            sent: Default::default(),
+        };
+        let p = ask(
+            &conn,
+            &judge,
+            novel,
+            &Target {
+                text: "Tuyết Hui".into(),
+                chapter_index: Some(0),
+                passage: "Về sau, Tuyết Hui mỉm cười với tông chủ.".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            p.contexts[0].raw,
+            "Later, Seol-Hwi smiled at the sect leader."
+        );
+        assert_eq!(p.contexts.len(), 2);
+        assert!(judge.sent.lock().unwrap()[0].contains("the passage the user selected"));
     }
 
     #[test]

@@ -417,8 +417,8 @@ export function LocalBookScreen({ book, place, path, live: liveStart }: { book: 
    * Words selected in a chapter (a name, a term): a button by them translates them again
    * with the sentences around them (`RetranslateSheet`). Library books only.
    */
-  const [picked, setPicked] = useState<{ text: string; at: number; x: number; y: number } | null>(null);
-  const [retr, setRetr] = useState<{ text: string; at: number } | null>(null);
+  const [picked, setPicked] = useState<{ text: string; at: number; passage: string; x: number; y: number } | null>(null);
+  const [retr, setRetr] = useState<{ text: string; at: number; passage: string } | null>(null);
   useEffect(() => {
     if (!place) return;
     const onSel = () => {
@@ -429,7 +429,9 @@ export function LocalBookScreen({ book, place, path, live: liveStart }: { book: 
       const part = node?.closest('[data-part]');
       if (!part || !contentRef.current?.contains(part)) { setPicked(null); return; }
       const r = sel.getRangeAt(0).getBoundingClientRect();
-      setPicked({ text, at: Number(part.getAttribute('data-part')), x: r.left + r.width / 2, y: r.bottom });
+      // The paragraph the words were selected in: the AI reads that one first.
+      const passage = node?.closest('p')?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+      setPicked({ text, at: Number(part.getAttribute('data-part')), passage, x: r.left + r.width / 2, y: r.bottom });
     };
     document.addEventListener('selectionchange', onSel);
     return () => document.removeEventListener('selectionchange', onSel);
@@ -623,14 +625,14 @@ export function LocalBookScreen({ book, place, path, live: liveStart }: { book: 
       {picked && place && !retr && (
         <button type="button" data-reader-retranslate className="btn btn-primary"
           onMouseDown={e => e.preventDefault()}
-          onClick={e => { e.stopPropagation(); setRetr({ text: picked.text, at: picked.at }); setPicked(null); window.getSelection()?.removeAllRanges(); }}
+          onClick={e => { e.stopPropagation(); setRetr({ text: picked.text, at: picked.at, passage: picked.passage }); setPicked(null); window.getSelection()?.removeAllRanges(); }}
           style={{ position: 'fixed', zIndex: 45, left: Math.min(Math.max(8, picked.x - 70), window.innerWidth - 148), top: Math.min(picked.y + 10, window.innerHeight - 56), height: 38, padding: '0 14px', gap: 6, boxShadow: 'var(--glass-shadow)' }}>
           <LanguagesIcon size={14} />{t('reader.retranslate')}
         </button>
       )}
 
       {retr && place && (
-        <RetranslateSheet novelId={place.novelId} lang="vi" target={{ text: retr.text, chapterIndex: retr.at, label: `“${retr.text}”` }}
+        <RetranslateSheet novelId={place.novelId} lang="vi" target={{ text: retr.text, chapterIndex: retr.at, passage: retr.passage, label: `“${retr.text}”` }}
           onClose={() => setRetr(null)}
           onDone={() => { app.reloadText(); app.reloadAi(); }} />
       )}

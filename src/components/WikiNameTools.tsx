@@ -156,7 +156,7 @@ export function RetranslateSheet({ novelId, target, lang, onClose, onDone }: {
     }, e => { if (live) fail(e); }).finally(() => { if (live) setAsking(false); });
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user, novelId, target.uid, target.text, target.chapterIndex, round]);
+  }, [user, novelId, target.uid, target.text, target.chapterIndex, target.passage, round]);
   const keep = async () => {
     if (!p || !name.trim() || busy) return;
     setBusy(true);

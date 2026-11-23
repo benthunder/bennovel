@@ -83,7 +83,10 @@ export function GroupedRelations({ wiki, uid, rels, profiled, row, titled = true
   titled?: boolean;
 }) {
   const { t } = useI18n();
-  const { groups, more } = groupRelations(wiki, uid, rels, profiled);
+  const app = useApp();
+  // A relation of no known type is hidden unless the settings say to show them.
+  const shown = app.wikiUnknownRels ? rels : rels.filter(r => isRelType(r.kind));
+  const { groups, more } = groupRelations(wiki, uid, shown, profiled);
   if (!groups.length && !more.length) return null;
   return (
     <>
