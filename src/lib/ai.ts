@@ -72,6 +72,12 @@ export const getReadingLang = (user: string, novelId: number) => readingLangOf(l
 
 export const getLlmSettings = (user: string) => invoke<LlmSettings | null>('llm_config_get', { user });
 
+/** How many requests of a chapter go to the LLM at the same time, with its range. */
+export interface AiParallel { value: number; default: number; min: number; max: number }
+export const getAiParallel = (user: string) => invoke<AiParallel>('ai_parallel_get', { user });
+/** Saves it (brought into its range by the app); the next chapter translated uses it. */
+export const setAiParallel = (user: string, value: number) => invoke<AiParallel>('ai_parallel_set', { user, value });
+
 /** Saves the LLM once it answered a test request; null forgets it. */
 export async function setLlmConfig(user: string, config: LlmConfig | null) {
   try {

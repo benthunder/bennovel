@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react';
-import { CloudIcon, GlobeIcon, LanguagesIcon, LogOutIcon, SparklesIcon } from '../components/Icons';
+import { CloudIcon, GlobeIcon, LanguagesIcon, LogOutIcon, SlidersIcon, SparklesIcon } from '../components/Icons';
 import { Modal } from '../components/Modal';
 import { NovelCover, type Cover } from '../components/NovelCover';
 import { UiLangDialog, uiLangLabel } from '../components/UiLangDialog';
 import { Spinner } from '../components/ui';
 import { CONTENT_LANG_INFO } from '../data/types';
 import { relativeTime, useI18n } from '../i18n';
-import { AiFailure, LLM_PROVIDERS, aiErrorDetail, getLlmSettings, setLlmConfig, type LlmConfig, type LlmSettings } from '../lib/ai';
+import { AiFailure, LLM_PROVIDERS, aiErrorDetail, getAiParallel, getLlmSettings, setAiParallel, setLlmConfig, type AiParallel, type LlmConfig, type LlmSettings } from '../lib/ai';
 import { useAsync } from '../lib/useAsync';
 import { createBackup, restoreBackup } from '../lib/backup';
 import { save } from '../lib/storage';
@@ -22,6 +22,10 @@ export function ProfileScreen() {
   const [llmRev, setLlmRev] = useState(0);
   const llmQ = useAsync(() => (canOpenLocalBooks() ? getLlmSettings(app.libKey) : Promise.resolve(null)), [app.libKey, llmRev]);
   const llm = llmQ.status === 'ready' ? llmQ.data : null;
+  const [advOpen, setAdvOpen] = useState(false);
+  const [advRev, setAdvRev] = useState(0);
+  const parQ = useAsync(() => (canOpenLocalBooks() ? getAiParallel(app.libKey) : Promise.resolve(null)), [app.libKey, advRev]);
+  const parallel = parQ.status === 'ready' ? parQ.data : null;
   const [uiLangOpen, setUiLangOpen] = useState(false);
   const [offlineAsk, setOfflineAsk] = useState(false);
   const langLabel = CONTENT_LANG_INFO.find(l => l.code === app.contentLang)?.native ?? t('lang.askEach');
@@ -77,6 +81,13 @@ export function ProfileScreen() {
               <span className="muted" style={{ fontSize: 13, maxWidth: '45%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{llm ? llm.model : t('ai.notSet')} ›</span>
             </button>
           )}
+          {canOpenLocalBooks() && (
+            <button className="menu-row" onClick={() => setAdvOpen(true)}>
+              <SlidersIcon style={{ color: 'var(--color-accent-2-700)' }} />
+              <span style={{ flex: 1, fontSize: 14, fontWeight: 600 }}>{t('adv.title')}</span>
+              <span className="muted" style={{ fontSize: 13 }}>{parallel ? t('adv.threadsShort', { n: parallel.value }) : ''} ›</span>
+            </button>
+          )}
           <button className="menu-row" role="switch" aria-checked={app.online} onClick={() => (app.online ? setOfflineAsk(true) : app.goOnline())}>
             <CloudIcon style={{ color: 'var(--color-accent-2-700)' }} />
             <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
@@ -108,6 +119,7 @@ export function ProfileScreen() {
           </div>
         </Modal>
       )}
+      {advOpen && parallel && <AdvancedDialog saved={parallel} onClose={() => setAdvOpen(false)} onSaved={() => setAdvRev(n => n + 1)} />}
       {llmOpen && <LlmDialog saved={llm} onClose={() => setLlmOpen(false)} onSaved={() => setLlmRev(n => n + 1)} />}
     </div>
   );
@@ -185,6 +197,71 @@ function BackupCard() {
         {button('restore', t('backup.restore'))}
       </div>
     </div>
+  );
+}
+
+/**
+ * Advanced settings for AI translation: how many requests of a chapter go to the LLM
+ * at the same time. More is faster, but a provider with a low rate limit may turn
+ * some down. Kept in the library file on this device.
+ */
+function AdvancedDialog({ saved, onClose, onSaved }: { saved: AiParallel; onClose: () => void; onSaved: () => void }) {
+  const { t } = useI18n();
+  const app = useApp();
+  const [value, setValue] = useState(saved.value);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const set = (n: number) => setValue(Math.max(saved.min, Math.min(saved.max, Math.round(n) || saved.min)));
+
+  const apply = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await setAiParallel(app.libKey, value);
+      app.showToast(t('adv.saved'));
+      onSaved();
+      onClose();
+    } catch {
+      setError(t('adv.saveFailed'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const step = (d: number, label: string, sign: string) => (
+    <button type="button" className="btn btn-secondary" style={{ width: 44, height: 44, padding: 0, fontSize: 22, fontWeight: 700 }}
+      aria-label={label} disabled={busy || value + d < saved.min || value + d > saved.max} onClick={() => set(value + d)}>{sign}</button>
+  );
+
+  return (
+    <Modal onClose={busy ? undefined : onClose}>
+      <form className="dialog dialog--sheet" role="dialog" aria-modal="true" aria-label={t('adv.title')} onClick={e => e.stopPropagation()}
+        onSubmit={e => { e.preventDefault(); void apply(); }}>
+        <div className="dialog-title" style={{ fontSize: 22 }}>{t('adv.title')}</div>
+        <div className="field">
+          <label htmlFor="adv-threads">{t('adv.threads')}</label>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            {step(-1, t('adv.less'), '−')}
+            <input id="adv-threads" className="input" type="number" inputMode="numeric" min={saved.min} max={saved.max} step={1}
+              style={{ height: 44, width: 72, textAlign: 'center', fontSize: 18, fontWeight: 700 }}
+              value={value} onChange={e => set(+e.target.value)} />
+            {step(1, t('adv.more'), '+')}
+            <span className="muted" style={{ fontSize: 12, marginLeft: 'auto' }}>{t('adv.range', { min: saved.min, max: saved.max })}</span>
+          </div>
+          <input type="range" min={saved.min} max={saved.max} step={1} value={value} aria-label={t('adv.threads')}
+            style={{ marginTop: 10 }} onChange={e => set(+e.target.value)} />
+        </div>
+        <div className="muted" style={{ fontSize: 12, marginTop: -6 }}>{t('adv.threadsHint', { n: saved.default })}</div>
+        {error && <div role="alert" style={{ fontSize: 13, color: 'var(--color-accent-700)' }}>{error}</div>}
+        <div className="dialog-actions">
+          {value !== saved.default && (
+            <button type="button" className="btn btn-ghost" style={{ marginRight: 'auto' }} disabled={busy} onClick={() => set(saved.default)}>{t('adv.reset')}</button>
+          )}
+          <button type="button" className="btn btn-secondary" style={{ height: 44, padding: '0 18px' }} disabled={busy} onClick={onClose}>{t('common.cancel')}</button>
+          <button type="submit" className="btn btn-primary" style={{ height: 44, padding: '0 22px' }} disabled={busy}>{t('common.save')}</button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 
