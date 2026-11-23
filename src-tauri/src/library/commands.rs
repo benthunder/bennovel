@@ -1450,6 +1450,45 @@ pub async fn wiki_retranslate_apply<R: Runtime>(
     ai_blocking(move || super::retranslate::apply(&db::open(&path)?, novel_id, keep)).await
 }
 
+/// Makes `uids` (lowest first) the levels of ladder `system`, ranked from 1.
+#[tauri::command]
+pub async fn wiki_levels_set<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+    system: String,
+    uids: Vec<String>,
+) -> Result<usize, AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || {
+        Ok(super::levels::set_ladder(
+            &db::open(&path)?,
+            novel_id,
+            &system,
+            &uids,
+        )?)
+    })
+    .await
+}
+
+/// Asks the user's LLM to order every level of the book into ladders, and sets them.
+#[tauri::command]
+pub async fn wiki_levels_ai<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    novel_id: i64,
+) -> Result<Vec<super::levels::Ladder>, AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || {
+        let conn = db::open(&path)?;
+        let model = llm::load(&conn)?
+            .map(llm::OpenAi::new)
+            .ok_or(AiError::NotSet)?;
+        super::levels::order_by_ai(&conn, &model, novel_id)
+    })
+    .await
+}
+
 /// More pairs for one entry, found by the user's LLM.
 #[tauri::command]
 pub async fn wiki_merge_entry_ai<R: Runtime>(

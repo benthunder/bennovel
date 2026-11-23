@@ -163,6 +163,8 @@ pub fn run() {
             library::commands::wiki_merge_entry_allow,
             library::commands::wiki_retranslate_ask,
             library::commands::wiki_retranslate_apply,
+            library::commands::wiki_levels_set,
+            library::commands::wiki_levels_ai,
             library::commands::wiki_merge_apply,
             library::commands::ai_prefs_get,
             library::commands::ai_prefs_set,

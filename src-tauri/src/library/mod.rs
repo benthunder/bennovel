@@ -10,6 +10,7 @@ pub mod commands;
 pub mod db;
 pub mod folder;
 pub mod genre_terms;
+pub mod levels;
 pub mod llm;
 pub mod merge_queue;
 pub mod names;

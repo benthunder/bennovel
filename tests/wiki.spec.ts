@@ -161,6 +161,8 @@ async function nativeApp(page: Page) {
             }
             return { entry: entry('n', keep.kind, keep.raw, keep.name, '', null, { source: 'user' }), changed: 1, merge: { raws: [], pairs: [] } };
           }
+          case 'wiki_levels_set': return (args.uids as string[]).length;
+          case 'wiki_levels_ai': return [{ system: 'Võ đạo', uids: ['g', 'k', 'f'] }];
           case 'wiki_merge_apply': return { merged: (args.picks as unknown[]).length + ((args.groups as { fromUids: string[] }[]) ?? []).reduce((n, g) => n + g.fromUids.length, 0), rules: 2, renamed: 0 };
           case 'wiki_remove_many': {
             const uids = args.uids as string[];
@@ -630,4 +632,25 @@ test('words selected in a chapter are translated again and become a wiki entry',
     keep: { uid: null, raw: '萧炎', name: 'Tiêu Viêm', kind: 'character', old: ['萧炎'] }
   });
   await expect(sheet.locator('[data-merge-check="none"]')).toHaveCount(1);
+});
+
+test('levels are ordered lowest first per ladder, by hand or by the AI', async ({ page }, info) => {
+  await nativeApp(page);
+  await page.goto('/');
+  await page.getByText('Võ Động Càn Khôn').filter({ visible: true }).first().click();
+  await page.getByRole('button', { name: /Wiki truyện/ }).filter({ visible: true }).first().click();
+  await page.getByRole('tab', { name: 'Cảnh giới' }).click();
+  const other = page.locator('[data-ladder=""]');
+  await expect(other.locator('[data-ladder-level]')).toHaveCount(2);
+  // By hand: Địa Nguyên cảnh up, then save; the ladder is renumbered.
+  await other.locator('[data-ladder-edit]').click();
+  await other.locator('[data-ladder-level="f"] [data-ladder-up]').click();
+  await page.screenshot({ path: `test-results/wiki-${info.project.name}-ladder-edit.png` });
+  await other.locator('[data-ladder-save]').click();
+  await expect(page.getByText('Đã lưu thứ tự.')).toBeVisible();
+  expect((await calls(page)).find(c => c.cmd === 'wiki_levels_set')?.args).toMatchObject({ novelId: 1, system: '', uids: ['f', 'g'] });
+  // By the AI: every level in its ladder.
+  await page.locator('[data-ladder-ai]').click();
+  await expect(page.getByText('AI đã xếp cảnh giới vào 1 hệ')).toBeVisible();
+  expect((await calls(page)).some(c => c.cmd === 'wiki_levels_ai')).toBe(true);
 });

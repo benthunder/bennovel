@@ -352,3 +352,21 @@ export async function applyRetranslate(user: string, novelId: number, keep: { ui
     throw new AiFailure(e);
   }
 }
+
+/** Makes `uids` (lowest first) the levels of ladder `system`, ranked from 1; they are the user's from then on. */
+export async function setWikiLadder(user: string, novelId: number, system: string, uids: string[]) {
+  try {
+    return await invoke<number>('wiki_levels_set', { user, novelId, system, uids });
+  } catch (e) {
+    throw new AiFailure(e);
+  }
+}
+
+/** The AI puts every level of the book in its ladder, lowest first, and they are set so. */
+export async function orderWikiLevelsAi(user: string, novelId: number) {
+  try {
+    return await invoke<{ system: string; uids: string[] }[]>('wiki_levels_ai', { user, novelId });
+  } catch (e) {
+    throw new AiFailure(e);
+  }
+}
