@@ -119,7 +119,11 @@ fn window(list: &[String], at: usize) -> String {
 
 /// The translation of a chapter's paragraph at `position` in the wiki's language (any
 /// style), as sentences.
-fn translated_at(conn: &Connection, chapter_id: i64, position: i64) -> rusqlite::Result<Vec<String>> {
+fn translated_at(
+    conn: &Connection,
+    chapter_id: i64,
+    position: i64,
+) -> rusqlite::Result<Vec<String>> {
     let found: Option<String> = conn
         .query_row(
             "select content from segments where chapter_id = ?1 and position = ?2 and lang = ?3
@@ -233,9 +237,8 @@ pub fn entry_for(all: &[Entry], text: &str) -> Option<Entry> {
     all.iter()
         .find(|e| key(shown(e)) == k)
         .or_else(|| {
-            all.iter().find(|e| {
-                key(&e.name) == k || e.aliases.iter().any(|a| key(a) == k)
-            })
+            all.iter()
+                .find(|e| key(&e.name) == k || e.aliases.iter().any(|a| key(a) == k))
         })
         .cloned()
 }
@@ -286,7 +289,14 @@ fn gather(
                 .collect();
             let mut found = contexts(conn, novel_id, &raws, true, first, CONTEXTS)?;
             if found.is_empty() {
-                found = contexts(conn, novel_id, &[shown(e).to_string()], false, first, CONTEXTS)?;
+                found = contexts(
+                    conn,
+                    novel_id,
+                    &[shown(e).to_string()],
+                    false,
+                    first,
+                    CONTEXTS,
+                )?;
             }
             (shown(e).to_string(), found)
         }
@@ -295,9 +305,23 @@ fn gather(
                 return Err(AiError::Other("retranslate-empty".into()));
             }
             // The words may be the translation's or the original's.
-            let mut found = contexts(conn, novel_id, &[text.clone()], false, first, CONTEXTS)?;
+            let mut found = contexts(
+                conn,
+                novel_id,
+                std::slice::from_ref(&text),
+                false,
+                first,
+                CONTEXTS,
+            )?;
             if found.is_empty() {
-                found = contexts(conn, novel_id, &[text.clone()], true, first, CONTEXTS)?;
+                found = contexts(
+                    conn,
+                    novel_id,
+                    std::slice::from_ref(&text),
+                    true,
+                    first,
+                    CONTEXTS,
+                )?;
             }
             (text.clone(), found)
         }
@@ -315,7 +339,11 @@ fn request(entry: Option<&Entry>, current: &str, found: &[Context]) -> String {
             lines.push(format!("Other names: {}", e.aliases.join(", ")));
         }
         lines.push(format!("Kind: {}", e.kind));
-        if let Some(s) = e.summaries.get(WIKI_LANG).or_else(|| e.summaries.values().next()) {
+        if let Some(s) = e
+            .summaries
+            .get(WIKI_LANG)
+            .or_else(|| e.summaries.values().next())
+        {
             lines.push(format!("Wiki: {}", cut(s, 300)));
         }
     }
@@ -389,7 +417,10 @@ pub fn apply(conn: &Connection, novel_id: i64, keep: Keep) -> Result<Kept, AiErr
         Some(uid) => all.iter().find(|e| e.uid == uid).cloned(),
         None => all
             .iter()
-            .find(|e| !raw.is_empty() && (e.name.trim() == raw || e.aliases.iter().any(|a| a.trim() == raw)))
+            .find(|e| {
+                !raw.is_empty()
+                    && (e.name.trim() == raw || e.aliases.iter().any(|a| a.trim() == raw))
+            })
             .cloned(),
     };
     let (entry, mut changed) = match existing {
@@ -399,7 +430,8 @@ pub fn apply(conn: &Connection, novel_id: i64, keep: Keep) -> Result<Kept, AiErr
             let mut aliases = e.aliases.clone();
             // The original the AI found, when the entry did not have it.
             let taken = all.iter().any(|o| {
-                o.uid != e.uid && (o.name.trim() == raw || o.aliases.iter().any(|a| a.trim() == raw))
+                o.uid != e.uid
+                    && (o.name.trim() == raw || o.aliases.iter().any(|a| a.trim() == raw))
             });
             if !raw.is_empty() && raw != e.name.trim() && !aliases.contains(&raw) && !taken {
                 aliases.push(raw.clone());
@@ -433,7 +465,11 @@ pub fn apply(conn: &Connection, novel_id: i64, keep: Keep) -> Result<Kept, AiErr
                 EntryInput {
                     uid: None,
                     kind,
-                    name: if raw.is_empty() { name.clone() } else { raw.clone() },
+                    name: if raw.is_empty() {
+                        name.clone()
+                    } else {
+                        raw.clone()
+                    },
                     names,
                     aliases: vec![],
                     summaries: BTreeMap::new(),
@@ -510,8 +546,11 @@ mod tests {
             },
         )
         .unwrap();
-        conn.execute("update wiki_entries set source = 'ai' where uid = ?1", [&e.uid])
-            .unwrap();
+        conn.execute(
+            "update wiki_entries set source = 'ai' where uid = ?1",
+            [&e.uid],
+        )
+        .unwrap();
         e.uid
     }
 
@@ -546,7 +585,10 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!((p.current.as_str(), p.name.as_str()), ("Tuyết Hui", "Tuyết Huy"));
+        assert_eq!(
+            (p.current.as_str(), p.name.as_str()),
+            ("Tuyết Hui", "Tuyết Huy")
+        );
         assert_eq!(p.contexts.len(), 1);
         assert_eq!(
             p.contexts[0].raw,
@@ -621,6 +663,9 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(vi, r#"["Đêm lạnh.","Tuyết Huy rút kiếm.","Không ai động đậy."]"#);
+        assert_eq!(
+            vi,
+            r#"["Đêm lạnh.","Tuyết Huy rút kiếm.","Không ai động đậy."]"#
+        );
     }
 }

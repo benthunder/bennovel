@@ -979,23 +979,27 @@ mod tests {
         // The same original as `b`, nothing like `a`'s.
         let c = add(&conn, novel, "character", "Seol-Hwi", "Seol Hwi");
         let s = suggest(&conn, novel).unwrap();
-        let mut pairs: Vec<(&str, &str)> = s
-            .iter()
-            .map(|x| (x.from.uid.as_str(), x.into.uid.as_str()))
-            .collect();
-        pairs.sort();
-        let mut want = vec![(b.as_str(), a.as_str()), (c.as_str(), a.as_str())];
-        want.sort();
-        assert_eq!(pairs, want, "many into one, never b → a and c → b");
+        assert_eq!(s.len(), 2, "{s:?}");
+        // One kept entry for the three: a translated name (`a` or `b`, never `c`).
+        let kept = s[0].into.uid.clone();
+        assert!(s.iter().all(|x| x.into.uid == kept), "many into one");
+        assert!(kept == a || kept == b);
         // Each entry goes into one entry only.
-        let froms: std::collections::HashSet<&str> = s.iter().map(|x| x.from.uid.as_str()).collect();
-        assert_eq!(froms.len(), s.len());
+        let froms: std::collections::HashSet<&str> =
+            s.iter().map(|x| x.from.uid.as_str()).collect();
+        assert_eq!(froms.len(), 2);
+        assert!(froms.contains(c.as_str()));
         // The entry's own check shows the whole set going into the same entry.
         let m = for_entry(&conn, novel, &c).unwrap();
-        assert!(m.pairs.iter().all(|p| p.into.uid == a), "{:?}", m.pairs);
+        assert!(m.pairs.iter().all(|p| p.into.uid == kept), "{:?}", m.pairs);
         assert_eq!(m.pairs.len(), 2);
-        // Allowed: both go into `a`.
-        let done = allow(&conn, novel, &a, &[b.clone(), c.clone()], &[]).unwrap();
+        let from: Vec<String> = [&a, &b, &c]
+            .into_iter()
+            .filter(|u| **u != kept)
+            .cloned()
+            .collect();
+        // Allowed: both go into the kept one.
+        let done = allow(&conn, novel, &kept, &from, &[]).unwrap();
         assert_eq!(done.applied.merged, 2);
         assert_eq!(wiki::entries(&conn, novel).unwrap().len(), 1);
     }

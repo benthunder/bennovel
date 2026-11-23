@@ -2013,8 +2013,11 @@ pub fn merge_near(conn: &Connection, novel_id: i64, lang: &str) -> rusqlite::Res
         if ea.source == "user" && eb.source == "user" {
             continue;
         }
-        // Only close (not the same): a near translation of two different originals is two.
-        if d >= SAME && !super::smart_merge::raws_close_entries(&ea, &eb) {
+        // Only close (not the same), and alike by the translation alone: a near
+        // translation of two different originals is two people.
+        let (ra, rb) = (a.raw.to_lowercase(), b.raw.to_lowercase());
+        let raw_holds = ra.contains(&rb) || rb.contains(&ra);
+        if d >= SAME && !raw_holds && !super::smart_merge::raws_close_entries(&ea, &eb) {
             continue;
         }
         let (ra, rb) = (root(&mut parent, &ea.uid), root(&mut parent, &eb.uid));
