@@ -339,7 +339,8 @@ export interface RetranslateProposal {
 }
 
 /** What to translate again: an entry, or words selected in a chapter (0-based). */
-export type RetranslateTarget = { uid?: string; text?: string; chapterIndex?: number };
+/** `avoid`: names the AI gave before for it ("Ask again"), so it gives another. */
+export type RetranslateTarget = { uid?: string; text?: string; chapterIndex?: number; avoid?: string[] };
 
 /** Asks the AI to translate one name again, with the sentences around it in the book; nothing changes yet. */
 export async function askRetranslate(user: string, novelId: number, target: RetranslateTarget) {

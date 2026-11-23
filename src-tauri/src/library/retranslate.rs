@@ -46,6 +46,8 @@ pub struct Target {
     pub text: String,
     /// The chapter they were selected in (0-based reading order).
     pub chapter_index: Option<usize>,
+    /// Names the AI gave before for it ("Ask again"): another one is wanted.
+    pub avoid: Vec<String>,
 }
 
 /// The AI's proposal, for the user to keep, edit or drop.
@@ -245,19 +247,56 @@ pub fn entry_for(all: &[Entry], text: &str) -> Option<Entry> {
 
 fn prompt(book: &str) -> String {
     format!(
-        "You translate {book} web novels into Vietnamese. The user wants ONE name or term \
-translated again, so it reads right and is the same everywhere. You get the name as the \
-translation writes it now, what the wiki knows, and passages: the original sentences \
-around it and their current Vietnamese translation.\n\
+        "You translate {book} web novels into Vietnamese. The reader pressed \"Translate \
+again\" on ONE name or term: they find its current Vietnamese wrong, or want another \
+rendering. You get the name as the translation writes it now, what the wiki knows, how \
+this translation already renders other names (follow that style), and passages: the \
+original sentences around it and their current Vietnamese translation. The current name \
+and the wiki are only for reference, never something to keep.\n\
 - Find the name in the original passages and give it exactly as the original writes it \
 (\"raw\"). If the user gave Vietnamese words, find the original they translate.\n\
-- Give the best Vietnamese for it (\"name\"): Hán-Việt for Chinese names, the usual \
-Vietnamese rendering for Korean/Japanese names, a natural translation for a title, \
-technique, item or place that has meaning. Keep a name that is already right.\n\
+- Give a Vietnamese rendering for it (\"name\") that is DIFFERENT from the current name \
+and from every name listed as rejected.\n\
+- A name of a person, sect or place from a Korean, Chinese or Japanese story is given in \
+its Sino-Vietnamese (Hán-Việt) reading, also when the book is an English translation \
+that romanizes it: Seol-Hwi → Tuyết Huy, Ah Ryeong → A Linh, Hye Un → Huệ Vân, Lin Dong \
+→ Lâm Động. Never answer with the Latin romanization (\"Chung Song\", \"Ah Ryeong\") or \
+the original words unchanged.\n\
+- A title, technique, item or place that has meaning gets a natural Hán-Việt or \
+Vietnamese translation.\n\
 - \"kind\": one of character, place, faction, item, skill, level, term.\n\
-- \"why\": one short sentence in Vietnamese.\n\
+- \"why\": one short sentence in Vietnamese (which characters or meaning you read).\n\
 Reply with JSON only: {{\"raw\": \"...\", \"name\": \"...\", \"kind\": \"...\", \"why\": \"...\"}}"
     )
+}
+
+/// How the book's translation renders other names (original → Vietnamese), for the AI
+/// to follow: entries of the same kind first, only those it renders differently.
+fn style_examples(all: &[Entry], kind: &str, skip: Option<&str>, n: usize) -> Vec<String> {
+    let mut pairs: Vec<(&Entry, &str)> = all
+        .iter()
+        .filter(|e| Some(e.uid.as_str()) != skip)
+        .filter_map(|e| {
+            let vi = e.names.get(WIKI_LANG)?.trim();
+            (!vi.is_empty() && vi != e.name.trim()).then_some((e, vi))
+        })
+        .collect();
+    pairs.sort_by_key(|(e, _)| e.kind != kind);
+    pairs
+        .into_iter()
+        .take(n)
+        .map(|(e, vi)| format!("{} → {vi}", e.name.trim()))
+        .collect()
+}
+
+/// Whether `name` is one the AI must not give again: the current one, a rejected one,
+/// or the original written unchanged.
+fn not_new(name: &str, current: &str, raw: &str, avoid: &[String]) -> bool {
+    let k = key(name);
+    k.is_empty()
+        || k == key(current)
+        || (!raw.trim().is_empty() && k == key(raw))
+        || avoid.iter().any(|a| key(a) == k)
 }
 
 /// What to send for `target`: the entry (if any), the name as translated now, the
@@ -331,8 +370,20 @@ fn gather(
 }
 
 /// The request for `target`, as sent (for tests and the log).
-fn request(entry: Option<&Entry>, current: &str, found: &[Context]) -> String {
-    let mut lines = vec![format!("Name as translated now: {current}")];
+fn request(
+    entry: Option<&Entry>,
+    current: &str,
+    found: &[Context],
+    avoid: &[String],
+    examples: &[String],
+) -> String {
+    let mut lines = vec![format!("Name as translated now (give another): {current}")];
+    if !avoid.is_empty() {
+        lines.push(format!(
+            "Rejected already (give another): {}",
+            avoid.join(", ")
+        ));
+    }
     if let Some(e) = entry {
         lines.push(format!("Original in the wiki: {}", e.name));
         if !e.aliases.is_empty() {
@@ -346,6 +397,12 @@ fn request(entry: Option<&Entry>, current: &str, found: &[Context]) -> String {
         {
             lines.push(format!("Wiki: {}", cut(s, 300)));
         }
+    }
+    if !examples.is_empty() {
+        lines.push(format!(
+            "How this translation renders other names: {}",
+            examples.join("; ")
+        ));
     }
     if found.is_empty() {
         lines.push("No passage found.".into());
@@ -372,14 +429,37 @@ pub fn ask(
     let (entry, current, found) = gather(conn, novel_id, target)?;
     let book = wiki::book_lang(conn, novel_id).unwrap_or_default();
     let book = super::translate::lang_name(&book).to_string();
-    let reply = llm.chat(&prompt(&book), &request(entry.as_ref(), &current, &found))?;
-    let a: Answer = {
+    let all = wiki::entries(conn, novel_id)?;
+    let kind = entry
+        .as_ref()
+        .map(|e| e.kind.as_str())
+        .unwrap_or("character");
+    let examples = style_examples(&all, kind, entry.as_ref().map(|e| e.uid.as_str()), 12);
+    let req = request(entry.as_ref(), &current, &found, &target.avoid, &examples);
+    let parse = |reply: &str| -> Answer {
         let (s, e) = (reply.find('{'), reply.rfind('}'));
         match (s, e) {
             (Some(s), Some(e)) if s < e => serde_json::from_str(&reply[s..=e]).unwrap_or_default(),
             _ => Answer::default(),
         }
     };
+    let mut a = parse(&llm.chat(&prompt(&book), &req)?);
+    let raw_known = entry
+        .as_ref()
+        .map(|e| e.name.clone())
+        .unwrap_or_else(|| a.raw.clone());
+    // The same name back (or the original unchanged): asked once more, firmly.
+    if not_new(&a.name, &current, &raw_known, &target.avoid) {
+        let again = format!(
+            "{req}\n\nYour answer \"{}\" is the current, a rejected or the untranslated name. \
+Give a different Vietnamese rendering (Hán-Việt for a Korean, Chinese or Japanese name).",
+            a.name.trim()
+        );
+        let b = parse(&llm.chat(&prompt(&book), &again)?);
+        if !b.name.trim().is_empty() {
+            a = b;
+        }
+    }
     let name = a.name.trim().to_string();
     if name.is_empty() {
         return Err(AiError::Other("retranslate-no-answer".into()));
@@ -617,6 +697,55 @@ mod tests {
         let pair = &kept.merge.pairs[0];
         assert!([a.as_str(), b.as_str()].contains(&pair.from.uid.as_str()));
         assert!([a.as_str(), b.as_str()].contains(&pair.into.uid.as_str()));
+    }
+
+    /// Answers in turn, the last one again after that.
+    struct Turns {
+        replies: Vec<&'static str>,
+        sent: Mutex<Vec<String>>,
+    }
+    impl Chat for Turns {
+        fn chat(&self, _system: &str, user: &str) -> Result<String, AiError> {
+            let mut sent = self.sent.lock().unwrap();
+            sent.push(user.into());
+            Ok(self.replies[(sent.len() - 1).min(self.replies.len() - 1)].into())
+        }
+        fn model(&self) -> &str {
+            "turns"
+        }
+    }
+
+    #[test]
+    fn asking_again_never_gives_back_the_current_or_a_rejected_name() {
+        let (conn, novel) = book("retranslate-other");
+        text(&conn);
+        let a = add(&conn, novel, "Ah Ryeong", "Ah Ryeong");
+        add(&conn, novel, "Hye Un", "Huệ Vân");
+        let judge = Turns {
+            replies: vec![
+                r#"{"raw":"Ah Ryeong","name":"Ah Ryeong","kind":"character","why":"Giữ nguyên."}"#,
+                r#"{"raw":"Ah Ryeong","name":"A Linh","kind":"character","why":"Hán-Việt."}"#,
+            ],
+            sent: Default::default(),
+        };
+        let p = ask(
+            &conn,
+            &judge,
+            novel,
+            &Target {
+                uid: Some(a.clone()),
+                avoid: vec!["A Lăng".into()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(p.name, "A Linh");
+        let sent = judge.sent.lock().unwrap();
+        assert_eq!(sent.len(), 2);
+        assert!(sent[0].contains("Rejected already (give another): A Lăng"));
+        // The translation's style for other names goes along.
+        assert!(sent[0].contains("Hye Un → Huệ Vân"));
+        assert!(sent[1].contains("Give a different Vietnamese rendering"));
     }
 
     #[test]
