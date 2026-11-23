@@ -1,5 +1,6 @@
 import { convertFileSrc, invoke, isTauri } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
+import { useSyncExternalStore } from 'react';
 
 /** Opening local files needs the native app; the web build hides the option. */
 export const canOpenLocalBooks = () => isTauri();
@@ -118,6 +119,43 @@ export const listLibrary = (user: string) =>
   lastSave.catch(() => undefined).then(() => invoke<LibraryBook[]>('library_list', { user }));
 
 export type ImportProgress = (done: number, total: number) => void;
+
+/**
+ * The import in progress, kept outside the screens: the Rust command goes on when the
+ * library screen is left, so coming back shows its progress (and keeps the buttons
+ * off) instead of a screen that looks idle.
+ */
+export type ImportStatus = { done: number; total: number } | null;
+let importStatus: ImportStatus = null;
+/** Counts finished imports, so a library screen opened meanwhile lists the new book. */
+let importsDone = 0;
+const importListeners = new Set<() => void>();
+const setImportStatus = (s: ImportStatus) => {
+  importStatus = s;
+  importListeners.forEach(l => l());
+};
+const subscribeImports = (cb: () => void) => { importListeners.add(cb); return () => { importListeners.delete(cb); }; };
+
+export function useImportStatus() {
+  return useSyncExternalStore(subscribeImports, () => importStatus);
+}
+
+export function useImportsDone() {
+  return useSyncExternalStore(subscribeImports, () => importsDone);
+}
+
+/** Runs one import at a time, tracked in `useImportStatus`. Null when one is already running. */
+export async function trackImport<T>(run: (onProgress: ImportProgress) => Promise<T>): Promise<T | null> {
+  if (importStatus) return null;
+  setImportStatus({ done: 0, total: 0 });
+  try {
+    const result = await run((done, total) => setImportStatus({ done, total }));
+    if (result) importsDone++;
+    return result;
+  } finally {
+    setImportStatus(null);
+  }
+}
 
 /** Runs an import command, passing each stored chapter to `onProgress`. */
 async function withProgress<T>(onProgress: ImportProgress | undefined, run: () => Promise<T>): Promise<T> {
