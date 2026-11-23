@@ -173,6 +173,8 @@ pub fn run() {
             library::commands::wiki_search,
             library::commands::wiki_save,
             library::commands::wiki_remove,
+            library::commands::wiki_unlink,
+            library::commands::wiki_unblock,
             library::commands::wiki_remove_many,
             library::commands::wiki_apply_to_text,
             library::commands::wiki_merge_skip,

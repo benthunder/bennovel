@@ -139,7 +139,7 @@ export function LocalBookScreen({ book, place, path, live: liveStart }: { book: 
   if (marksQ.status === 'failed' && !marks) setMarks(new Map());
   const [original, setOriginal] = useState<ReadonlySet<number>>(new Set());
   /** The wiki entry tapped in a chapter, with that chapter's view of the wiki. */
-  const [wikiPop, setWikiPop] = useState<{ wiki: Wiki; entry: WikiEntry; lang: string; at: number } | null>(null);
+  const [wikiPop, setWikiPop] = useState<{ wiki: Wiki; entry: WikiEntry; lang: string; at: number; word?: string } | null>(null);
   const showOriginal = (i: number, on: boolean) => setOriginal(o => {
     const next = new Set(o);
     if (on) next.add(i); else next.delete(i);
@@ -576,7 +576,7 @@ export function LocalBookScreen({ book, place, path, live: liveStart }: { book: 
               original={original.has(i)} onShowOriginal={on => showOriginal(i, on)}
               live={liveOf(i)}
               wiki={place ? { user: place.user, novelId: place.novelId, rev: app.aiRev } : null}
-              onWiki={(wiki, entry, l) => setWikiPop({ wiki, entry, lang: l, at: i })}
+              onWiki={(wiki, entry, l, word) => setWikiPop({ wiki, entry, lang: l, at: i, word })}
               onTranslate={place && (versionOf(i) || !rawIsView) ? () => {
                 const v = versionOf(i);
                 const c = v && !original.has(i) ? { lang: v.lang, style: styleOf(v.style), dict: ai?.dict ?? true } : lastChoice();
@@ -610,7 +610,8 @@ export function LocalBookScreen({ book, place, path, live: liveStart }: { book: 
 
       {wikiPop && place && (
         <WikiPopup key={wikiPop.entry.uid} wiki={wikiPop.wiki} entry={wikiPop.entry} lang={wikiPop.lang}
-          onPick={e => setWikiPop(w => w && { ...w, entry: e })} onClose={() => setWikiPop(null)}
+          word={wikiPop.word}
+          onPick={e => setWikiPop(w => w && { ...w, entry: e, word: undefined })} onClose={() => setWikiPop(null)}
           novelId={place.novelId} onMerged={() => {
             // The merge wrote the kept name into the translated chapters: each part loads its text again.
             app.reloadText();
@@ -690,7 +691,8 @@ function BookPart({ bookId, index, meta, name, fix, st, color, onReady, onLayout
   onTranslate?: () => void;
   /** A library book's wiki: its names in this chapter are marked, as known by this chapter. */
   wiki: { user: string; novelId: number; rev: number } | null;
-  onWiki: (wiki: Wiki, entry: WikiEntry, lang: string) => void;
+  /** `word`: the word tapped in the text, as it is written there. */
+  onWiki: (wiki: Wiki, entry: WikiEntry, lang: string, word: string) => void;
   /** This chapter is read live while it is translated (`watch`): the raw text, each paragraph replaced as its part comes back. */
   live: { user: string; novelId: number; watch: LiveWatch } | null;
 }) {
@@ -750,7 +752,7 @@ function BookPart({ bookId, index, meta, name, fix, st, color, onReady, onLayout
     ) : (
       <p key={i} data-live={rawLeft ? (rawLeft.has(i) ? 'raw' : 'done') : undefined}
         style={{ margin: `0 0 ${st.gap}px`, fontSize: st.fontSize, lineHeight: st.lineH, textAlign: st.align, textWrap: 'pretty', opacity: rawLeft?.has(i) ? .45 : undefined, transition: 'opacity .3s ease' }}>
-        {wikiAt ? markWikiTerms(fix(para), terms, e => onWikiRef.current(wikiAt, e, cardLang)) : fix(para)}
+        {wikiAt ? markWikiTerms(fix(para), terms, (e, word) => onWikiRef.current(wikiAt, e, cardLang, word)) : fix(para)}
       </p>
     );
   }), [data, rawLeft, heading, name, bookId, st.gap, st.fontSize, st.lineH, st.align, wikiAt, terms, cardLang, fix]);

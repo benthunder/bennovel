@@ -3,7 +3,7 @@ import { ask } from '@tauri-apps/plugin-dialog';
 import { Modal } from '../components/Modal';
 import { SmartMergeSheet } from '../components/SmartMergeSheet';
 import { EntryMergeCheck, MergeIntoSheet, RetranslateSheet } from '../components/WikiNameTools';
-import { GroupedRelations, equivalentsOf, levelOf, relWords, useWikiT } from '../components/WikiPopup';
+import { GroupedRelations, equivalentsOf, levelOf, relWords, useWikiT, wikiBlocked } from '../components/WikiPopup';
 import { CheckIcon, ChevronLeftIcon, ChevronRightIcon, LanguagesIcon, PencilIcon, SparklesIcon, XIcon } from '../components/Icons';
 import { Checkbox, SearchField, Spinner } from '../components/ui';
 import { useI18n } from '../i18n';
@@ -12,7 +12,7 @@ import { useAsync } from '../lib/useAsync';
 import { useLayout } from '../lib/useLayout';
 import { useThrottledValue } from '../lib/useThrottledValue';
 import {
-  PROFILE_FIELDS, RAW, REL_TYPES, entryMergeFound, entryWikiMerges, orderWikiLevelsAi, setWikiLadder, SKILL_FIELDS, WIKI_KINDS, WIKI_LANG, addWikiRelation, applyWikiToText, getWiki, getWikiMissing, removeWikiEntries, removeWikiEntry, removeWikiRelation, saveWikiEntry,
+  PROFILE_FIELDS, RAW, REL_TYPES, entryMergeFound, entryWikiMerges, orderWikiLevelsAi, setWikiLadder, SKILL_FIELDS, WIKI_KINDS, WIKI_LANG, addWikiRelation, applyWikiToText, getWiki, getWikiMissing, removeWikiEntries, removeWikiEntry, removeWikiRelation, saveWikiEntry, unblockWikiWords, unlinkWikiWord,
   searchWiki, setWikiAuto,  translateWiki, wikiChapter, wikiLabel, wikiSummary,
   type ProfileField, type SkillField, type Wiki, type WikiEntry, type WikiKind, metaStage } from '../lib/wiki';
 import { useApp } from '../store/AppStore';
@@ -577,15 +577,22 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
     setError(null);
     try {
       const n = Number.parseInt(rank, 10);
-      const e = await saveWikiEntry(user, novelId, {
+      const list = aliases.split(/[,，、]/).map(a => a.trim()).filter(Boolean);
+      const same = (a: string, b: string) => a.toLocaleLowerCase() === b.toLocaleLowerCase();
+      // Written back by hand: a name unlinked before may be an alias again.
+      const back = saved ? list.filter(a => wikiBlocked(saved, a)) : [];
+      if (saved && back.length) await unblockWikiWords(user, saved.uid, back);
+      let e = await saveWikiEntry(user, novelId, {
         uid: saved?.uid, kind, name, names, summaries, rank: kind === 'level' && Number.isFinite(n) ? n : null,
         meta: {
           ...saved?.meta, system: system.trim(), level: curLevel.trim(), stageName: stageName.trim(),
           ...Object.fromEntries(PROFILE_FIELDS.map(f => [f, profile[f].trim()])),
           ...Object.fromEntries(SKILL_FIELDS.map(f => [f, skill[f].trim()]))
         },
-        aliases: aliases.split(/[,，、]/).map(a => a.trim()).filter(Boolean)
+        aliases: list
       });
+      // Taken out of the list: unlinked for good, so the AI and merges never add them back.
+      for (const a of (saved?.aliases ?? []).filter(a => !list.some(x => same(x, a)))) e = await unlinkWikiWord(user, e.uid, a);
       setSaved(e);
       onChanged();
       // Back to step 1 with the new name: another entry written the same is offered to join it.
@@ -597,6 +604,22 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
       }
       app.showToast(t('wiki.saved'));
       if (saved) onClose();
+    } catch (e) {
+      failed(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const unlinkAlias = async (a: string) => {
+    if (!saved || busy) return;
+    setBusy(true);
+    try {
+      const e = await unlinkWikiWord(user, saved.uid, a);
+      setSaved(e);
+      setAliases(list => list.split(/[,，、]/).map(x => x.trim()).filter(x => x && x.toLocaleLowerCase() !== a.toLocaleLowerCase()).join(', '));
+      onChanged();
+      app.showToast(t('wiki.unlinked', { word: a }));
     } catch (e) {
       failed(e);
     } finally {
@@ -709,6 +732,20 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
         <div className="field">
           <label htmlFor="wiki-aliases">{t('wiki.aliases')}</label>
           <input id="wiki-aliases" className="input" style={{ height: 42 }} value={aliases} onChange={e => setAliases(e.target.value)} />
+          {/* Each saved other name with its own ×: a wrong one is unlinked at once and never added back. */}
+          {saved && saved.aliases.length > 0 && (
+            <div data-wiki-aliases style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 6 }}>
+              {saved.aliases.map(a => (
+                <span key={a} className="chip chip--sm" data-wiki-alias={a} style={{ fontSize: 12, gap: 2, paddingRight: 4, display: 'inline-flex', flexDirection: 'row', alignItems: 'center', whiteSpace: 'nowrap', height: 30 }}>
+                  {a}
+                  <button type="button" className="icon-btn" disabled={busy} aria-label={t('wiki.unlinkAlias', { word: a })} title={t('wiki.unlinkAlias', { word: a })}
+                    style={{ width: 22, height: 22, minWidth: 22 }} onClick={() => unlinkAlias(a)}>
+                    <XIcon size={12} />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="field">

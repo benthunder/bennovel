@@ -87,6 +87,9 @@ pub struct Entry {
     /// The name to use per language.
     pub names: BTreeMap<String, String>,
     pub aliases: Vec<String>,
+    /// Words the user unlinked from it (`unlink`): never its alias again, and never
+    /// marked as it in the reader.
+    pub blocked: Vec<String>,
     /// The description per language; `RAW` in the book's own language.
     pub summaries: BTreeMap<String, String>,
     /// A level's place in its ladder, lowest first.
@@ -241,9 +244,9 @@ pub struct Wiki {
 const ENTRY_COLS: &str =
     "e.uid, e.kind, e.name, e.names, e.aliases, e.summaries, e.first_chapter, e.source, e.updated_at, e.rank,
      (select c.display_number from chapters c where c.novel_id = e.novel_id and c.number = e.first_chapter),
-     e.meta";
+     e.meta, e.blocked";
 /// Columns after `ENTRY_COLS` start here.
-const AFTER: usize = 12;
+const AFTER: usize = 13;
 
 fn entry_row(r: &Row) -> rusqlite::Result<Entry> {
     let names: String = r.get(3)?;
@@ -262,6 +265,7 @@ fn entry_row(r: &Row) -> rusqlite::Result<Entry> {
         rank: r.get(9)?,
         first_chapter_shown: r.get(10)?,
         meta: serde_json::from_str(&r.get::<_, String>(11)?).unwrap_or_default(),
+        blocked: serde_json::from_str(&r.get::<_, String>(12)?).unwrap_or_default(),
     })
 }
 
@@ -374,6 +378,9 @@ const REL_WORDS: &[(&str, &[&str])] = &[
         &[
             "friend",
             "ally",
+            "allied",
+            "allies",
+            "alliance",
             "bạn",
             "bạn bè",
             "bằng hữu",
@@ -486,7 +493,10 @@ pub fn rel_type(kind: &str) -> Option<&'static str> {
     if let Some(t) = REL_TYPES.iter().find(|t| **t == code) {
         return Some(t);
     }
+    let k = k.replace('_', " ");
     let words = k
+        .trim_end_matches(" with")
+        .trim_end_matches(" to")
         .trim_end_matches(" of")
         .trim_end_matches(" của")
         .trim_start_matches("is ")
@@ -496,6 +506,83 @@ pub fn rel_type(kind: &str) -> Option<&'static str> {
         .iter()
         .find(|(_, w)| w.contains(&words))
         .map(|(t, _)| *t)
+}
+
+/// The words a free relation is kept with when the AI wrote it as an English code in a
+/// Vietnamese wiki ("other", "seeks_to_negotiate"): the note says the rest.
+pub const REL_VI_OTHER: &str = "liên quan đến";
+
+/// A relation the AI wrote in English ("ally_of", "other", "seeks to negotiate") where
+/// the wiki is Vietnamese: only letters of the plain Latin alphabet, which Vietnamese
+/// words (with their marks) almost never are.
+fn english_rel(kind: &str) -> bool {
+    let k = kind.trim();
+    k.chars().any(|c| c.is_ascii_alphabetic())
+        && k.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | ' ' | '-' | '/'))
+}
+
+/// A relation's kind as kept in a wiki written in `lang`: a type when it is one, else
+/// the words given, but never an English code in a Vietnamese wiki.
+fn rel_kind_in(kind: &str, lang: &str) -> String {
+    match rel_type(kind) {
+        Some(t) => t.to_string(),
+        None if lang == WIKI_LANG && english_rel(kind) => REL_VI_OTHER.to_string(),
+        None => kind.trim().to_string(),
+    }
+}
+
+/// `text` with the entries' original names written as the wiki's Vietnamese ones ("Seol-Hwi"
+/// → "Tuyết Huy"): a note or description the AI wrote with names left untranslated.
+/// Pieces of names and one-letter names are left alone.
+pub(crate) fn names_in_vi(all: &[Entry], text: &str) -> String {
+    let mut rules: Vec<(&str, &str)> = Vec::new();
+    for e in all {
+        let Some(vi) = e
+            .names
+            .get(WIKI_LANG)
+            .map(|v| v.trim())
+            .filter(|v| !v.is_empty())
+        else {
+            continue;
+        };
+        let full = [e.name.as_str(), vi];
+        for raw in std::iter::once(&e.name).chain(e.aliases.iter()) {
+            let raw = raw.trim();
+            // Only names in another script than Vietnamese's own words ("Seol-Hwi", "Ah
+            // Ryeong", "林动"), never a Vietnamese nickname.
+            let foreign = english_rel(raw)
+                || !raw
+                    .chars()
+                    .any(|c| c.is_ascii_alphabetic() || is_vi_letter(c));
+            // One short Latin word ("Tang", "Lan") may be a Vietnamese word too.
+            let short_word =
+                english_rel(raw) && name_words(raw).len() == 1 && raw.chars().count() < 4;
+            if short_word
+                || raw.chars().count() < 2
+                || raw == vi
+                || !foreign
+                || name_piece(raw, full)
+                || vi.contains(raw)
+            {
+                continue;
+            }
+            rules.push((raw, vi));
+        }
+    }
+    rules.sort_by_key(|(f, _)| std::cmp::Reverse(f.chars().count()));
+    let mut out = text.to_string();
+    for (f, to) in rules {
+        if let Some(t) = super::smart_merge::replace_words(&out, f, to) {
+            out = t;
+        }
+    }
+    out
+}
+
+/// A letter of Vietnamese beyond plain ASCII (ă, ơ, đ, ế…).
+fn is_vi_letter(c: char) -> bool {
+    ('\u{00C0}'..='\u{024F}').contains(&c) || ('\u{1E00}'..='\u{1EFF}').contains(&c)
 }
 
 /// How a relation reads in prompts to the model (English words for the types).
@@ -730,6 +817,50 @@ fn clean_list(items: impl IntoIterator<Item = String>, name: &str) -> Vec<String
     out
 }
 
+/// The words of a name, split at spaces and hyphens, in lower case: "Goo Jong-myung" →
+/// goo, jong, myung.
+fn name_words(s: &str) -> Vec<String> {
+    s.split(|c: char| c.is_whitespace() || matches!(c, '-' | '‐' | '‑' | '·' | '・'))
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+/// An alias that is only one word of one of the entry's longer names ("Minh" of "Cố
+/// Tông Minh", "Myung" of "Goo Jong-myung"): such a word stands for many others in the
+/// text (a sect "hệ Minh", another "Minh"), so it is never kept as an alias.
+pub(crate) fn name_piece<'a>(alias: &str, full: impl IntoIterator<Item = &'a str>) -> bool {
+    let a = name_words(alias);
+    let [w] = a.as_slice() else { return false };
+    full.into_iter().any(|n| {
+        let ws = name_words(n);
+        ws.len() > 1 && ws.iter().any(|x| x == w)
+    })
+}
+
+/// Whether the user unlinked `word` from an entry (`blocked`), whatever its case.
+pub(crate) fn is_blocked(blocked: &[String], word: &str) -> bool {
+    let w = word.trim().to_lowercase();
+    !w.is_empty() && blocked.iter().any(|b| b.trim().to_lowercase() == w)
+}
+
+/// `aliases` as kept: without the name itself, repeats, words the user unlinked and
+/// pieces of the entry's longer names.
+fn kept_aliases(
+    aliases: &[String],
+    name: &str,
+    names: &BTreeMap<String, String>,
+    blocked: &[String],
+) -> Vec<String> {
+    let full: Vec<&str> = std::iter::once(name)
+        .chain(names.values().map(String::as_str))
+        .collect();
+    clean_list(aliases.iter().cloned(), name)
+        .into_iter()
+        .filter(|a| !is_blocked(blocked, a) && !name_piece(a, full.iter().copied()))
+        .collect()
+}
+
 fn clean_names(names: BTreeMap<String, String>) -> BTreeMap<String, String> {
     names
         .into_iter()
@@ -751,6 +882,16 @@ struct Fields<'a> {
 }
 
 fn write_entry(conn: &Connection, id: i64, f: &Fields) -> rusqlite::Result<()> {
+    let blocked: Vec<String> = conn
+        .query_row(
+            "select blocked from wiki_entries where id = ?1",
+            [id],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?
+        .and_then(|b| serde_json::from_str(&b).ok())
+        .unwrap_or_default();
+    let aliases = kept_aliases(f.aliases, f.name, f.names, &blocked);
     conn.execute(
         "update wiki_entries set kind = ?2, name = ?3, names = ?4, aliases = ?5, summaries = ?6,
            rank = ?7, source = ?8, deleted = 0, updated_at = ?9, meta = ?10 where id = ?1",
@@ -759,7 +900,7 @@ fn write_entry(conn: &Connection, id: i64, f: &Fields) -> rusqlite::Result<()> {
             f.kind,
             f.name,
             to_json(f.names, "{}"),
-            to_json(&f.aliases, "[]"),
+            to_json(&aliases, "[]"),
             to_json(f.summaries, "{}"),
             f.rank,
             f.source,
@@ -777,6 +918,7 @@ fn insert_entry(
     first_chapter: Option<i64>,
 ) -> rusqlite::Result<String> {
     let uid = new_uid(conn)?;
+    let aliases = kept_aliases(f.aliases, f.name, f.names, &[]);
     conn.execute(
         "insert into wiki_entries (uid, novel_id, kind, name, names, aliases, summaries, rank,
            first_chapter, source, updated_at, meta)
@@ -787,7 +929,7 @@ fn insert_entry(
             f.kind,
             f.name,
             to_json(f.names, "{}"),
-            to_json(&f.aliases, "[]"),
+            to_json(&aliases, "[]"),
             to_json(f.summaries, "{}"),
             f.rank,
             first_chapter,
@@ -896,6 +1038,160 @@ pub fn remove_many(conn: &Connection, uids: &[String]) -> rusqlite::Result<usize
     Ok(n)
 }
 
+/// Unlinks `word` from an entry, as the user asked (a wrong alias, or a word the reader
+/// marked as it): the alias goes, and the word is kept in `blocked`, so no merge or
+/// extraction adds it back and the reader no longer marks it as this entry. Returns the
+/// entry as it is now.
+pub fn unlink(conn: &Connection, uid: &str, word: &str) -> Result<Entry, AiError> {
+    let word = word.trim();
+    if word.is_empty() {
+        return Err(AiError::Other("wiki-word-empty".into()));
+    }
+    let Some(e) = by_uid(conn, uid)? else {
+        return Err(AiError::Other("wiki-entry-missing".into()));
+    };
+    let key = word.to_lowercase();
+    let aliases: Vec<String> = e
+        .aliases
+        .iter()
+        .filter(|a| a.trim().to_lowercase() != key)
+        .cloned()
+        .collect();
+    let mut blocked = e.blocked.clone();
+    if !is_blocked(&blocked, word) {
+        blocked.push(word.to_string());
+    }
+    conn.execute(
+        "update wiki_entries set aliases = ?2, blocked = ?3, updated_at = ?4 where uid = ?1",
+        params![
+            uid,
+            to_json(&aliases, "[]"),
+            to_json(&blocked, "[]"),
+            super::db::now_ms()
+        ],
+    )?;
+    let novel_id: i64 = conn.query_row(
+        "select novel_id from wiki_entries where uid = ?1",
+        [uid],
+        |r| r.get(0),
+    )?;
+    // The translation's names table no longer finds the entry by that word.
+    let _ = index_names(conn, None, novel_id, WIKI_LANG);
+    Ok(by_uid(conn, uid)?.expect("unlinked entry"))
+}
+
+/// Lets words unlinked before (`unlink`) be an entry's aliases again: the user wrote
+/// them back themselves.
+pub fn unblock(conn: &Connection, uid: &str, words: &[String]) -> rusqlite::Result<()> {
+    let Some(e) = by_uid(conn, uid)? else {
+        return Ok(());
+    };
+    let blocked: Vec<String> = e
+        .blocked
+        .iter()
+        .filter(|b| !is_blocked(words, b))
+        .cloned()
+        .collect();
+    if blocked.len() != e.blocked.len() {
+        conn.execute(
+            "update wiki_entries set blocked = ?2 where uid = ?1",
+            params![uid, to_json(&blocked, "[]")],
+        )?;
+    }
+    Ok(())
+}
+
+/// Writes the wiki in Vietnamese only, as older versions let the AI leave it: relations
+/// kept as English codes ("ally_of", "other") become a type or "liên quan đến", and the
+/// original names in notes and descriptions ("Seol-Hwi") the entries' Vietnamese ones.
+/// Once, as the library file is brought up to date (db.rs). Returns the rows changed.
+pub fn tidy_vi_all(conn: &Connection) -> rusqlite::Result<usize> {
+    let mut stmt = conn.prepare("select distinct novel_id from wiki_entries")?;
+    let books: Vec<i64> = stmt
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut changed = 0;
+    for b in books {
+        let all = entries(conn, b)?;
+        let mut stmt = conn.prepare(
+            "select uid, kind, labels, note from wiki_relations where novel_id = ?1 and deleted = 0",
+        )?;
+        let rels: Vec<(String, String, String, String)> = stmt
+            .query_map([b], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        for (uid, kind, labels, note) in rels {
+            let mut labels: BTreeMap<String, String> =
+                serde_json::from_str(&labels).unwrap_or_default();
+            let mut new_kind = kind.clone();
+            if !REL_TYPES.contains(&kind.as_str()) {
+                let shown = labels
+                    .get(WIKI_LANG)
+                    .cloned()
+                    .unwrap_or_else(|| kind.clone());
+                if let Some(t) = rel_type(&shown) {
+                    new_kind = t.to_string();
+                    labels.clear();
+                } else if english_rel(&shown) {
+                    labels.insert(WIKI_LANG.to_string(), REL_VI_OTHER.to_string());
+                }
+            }
+            let new_note = names_in_vi(&all, &note);
+            let labels_json = to_json(&labels, "{}");
+            // A type the pair already has keeps the old row as it is.
+            let done = conn.execute(
+                "update or ignore wiki_relations set kind = ?2, labels = ?3, note = ?4
+                 where uid = ?1 and (kind <> ?2 or labels <> ?3 or note <> ?4)",
+                params![uid, new_kind, labels_json, new_note],
+            )?;
+            changed += done;
+        }
+        for e in &all {
+            let Some(sum) = e.summaries.get(WIKI_LANG) else {
+                continue;
+            };
+            let fixed = names_in_vi(&all, sum);
+            if &fixed != sum {
+                let mut summaries = e.summaries.clone();
+                summaries.insert(WIKI_LANG.to_string(), fixed);
+                conn.execute(
+                    "update wiki_entries set summaries = ?2 where uid = ?1",
+                    params![e.uid, to_json(&summaries, "{}")],
+                )?;
+                changed += 1;
+            }
+        }
+    }
+    Ok(changed)
+}
+
+/// Takes out of every entry the aliases that are only a piece of its longer name ("Minh"
+/// of "Cố Tông Minh"), which older versions let merges and the AI add; once, as the
+/// library file is brought up to date (db.rs). Returns the entries changed.
+pub fn drop_pieces_all(conn: &Connection) -> rusqlite::Result<usize> {
+    let mut stmt = conn.prepare(&format!("select {ENTRY_COLS} from wiki_entries e"))?;
+    let all: Vec<Entry> = stmt
+        .query_map([], entry_row)?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut changed = 0;
+    for e in all {
+        let kept = kept_aliases(&e.aliases, &e.name, &e.names, &e.blocked);
+        if kept != e.aliases {
+            conn.execute(
+                "update wiki_entries set aliases = ?2 where uid = ?1",
+                params![e.uid, to_json(&kept, "[]")],
+            )?;
+            // Nor does the translation's names table find it by them any more.
+            conn.execute(
+                "delete from wiki_names where entry_uid = ?1 and raw <> ?2
+                   and raw not in (select value from json_each(?3))",
+                params![e.uid, e.name, to_json(&kept, "[]")],
+            )?;
+            changed += 1;
+        }
+    }
+    Ok(changed)
+}
+
 /// Adds (or, from the user, brings back) a relation; returns its uid, or None when the
 /// user removed it before and the AI asks again. `kind` is a relation type, or free
 /// words written in `lang`.
@@ -912,7 +1208,8 @@ fn relate(
     by_user: bool,
 ) -> rusqlite::Result<Option<String>> {
     let typed = rel_type(kind);
-    let kind = typed.unwrap_or(kind.trim());
+    let kept = rel_kind_in(kind, lang);
+    let kind = kept.as_str();
     let note = note.trim();
     // A free relation is found by its words in any language.
     let kind: String = match typed {
@@ -1148,7 +1445,7 @@ pub fn tidy(conn: &Connection, novel_id: i64) -> rusqlite::Result<usize> {
             let done = conn.execute(
                 "update or ignore wiki_entries set name = ?2, names = ?3, aliases = ?4, updated_at = ?5
                  where uid = ?1",
-                params![e.uid, raw, to_json(&names, "{}"), to_json(&clean_list(aliases, raw), "[]"), super::db::now_ms()],
+                params![e.uid, raw, to_json(&names, "{}"), to_json(&kept_aliases(&aliases, raw, &names, &e.blocked), "[]"), super::db::now_ms()],
             )?;
             changes += done;
         }
@@ -1528,11 +1825,17 @@ fn find_same(
     lang: &str,
     item: &AiEntry,
 ) -> rusqlite::Result<Option<(i64, Entry, bool)>> {
+    let full = [item.name.as_str(), item.translated.as_str()];
     for alias in &item.aliases {
-        if alias.trim().chars().count() < 2 {
+        // One word of its own name ("Minh" of "Cố Tông Minh") names many others too.
+        if alias.trim().chars().count() < 2 || name_piece(alias, full) {
             continue;
         }
         if let Some(found @ (_, _, false)) = find(conn, novel_id, alias)? {
+            // A sect is not the character one of its other names is also written for.
+            if !item.kind.trim().is_empty() && kind_of(&item.kind) != found.1.kind {
+                continue;
+            }
             return Ok(Some(found));
         }
     }
@@ -1564,6 +1867,10 @@ fn upsert_ai(
     chapter: Option<i64>,
     item: AiEntry,
 ) -> rusqlite::Result<Option<String>> {
+    let mut item = item;
+    if lang == WIKI_LANG && !item.summary.trim().is_empty() {
+        item.summary = names_in_vi(&entries(conn, novel_id)?, &item.summary);
+    }
     let summary = item.summary.trim().to_string();
     let uid = upsert_ai_entry(conn, novel_id, lang, chapter, item)?;
     if let (Some(uid), Some(chapter)) = (&uid, chapter) {
@@ -1722,6 +2029,11 @@ fn relate_ai(
     if from.uid == to.uid || item.relation.trim().is_empty() {
         return Ok(Err("a relation needs two different entries and a relation"));
     }
+    let note = if lang == WIKI_LANG {
+        names_in_vi(&entries(conn, novel_id)?, &item.note)
+    } else {
+        item.note.clone()
+    };
     Ok(relate(
         conn,
         novel_id,
@@ -1729,7 +2041,7 @@ fn relate_ai(
         &to.uid,
         &item.relation,
         lang,
-        &item.note,
+        &note,
         chapter,
         false,
     )?
@@ -4190,6 +4502,288 @@ mod tests {
         let w = load(&conn, novel).unwrap();
         assert_eq!(w.entries.len(), 1);
         assert_eq!(w.entries[0].aliases, vec!["Bé Áo Xanh", "青檀"]);
+    }
+
+    #[test]
+    fn relations_and_notes_are_kept_in_vietnamese_only() {
+        let (conn, novel) = book("vi-only");
+        let a = upsert_ai(
+            &conn,
+            novel,
+            "vi",
+            Some(1),
+            ai("Ah Ryeong", "character", "A Ryeong", &[]),
+        )
+        .unwrap()
+        .unwrap();
+        let s = upsert_ai(
+            &conn,
+            novel,
+            "vi",
+            Some(1),
+            ai("Seol-Hwi", "character", "Tuyết Huy", &[]),
+        )
+        .unwrap()
+        .unwrap();
+        let d = upsert_ai(
+            &conn,
+            novel,
+            "vi",
+            Some(1),
+            ai("Dam Cheon", "character", "Đàm Thiên", &[]),
+        )
+        .unwrap()
+        .unwrap();
+        let rel = |from: &str, to: &str, kind: &str, note: &str| {
+            relate_ai(
+                &conn,
+                novel,
+                "vi",
+                Some(2),
+                &AiRelation {
+                    from: from.into(),
+                    to: to.into(),
+                    relation: kind.into(),
+                    note: note.into(),
+                },
+            )
+            .unwrap()
+            .unwrap()
+        };
+        rel(
+            "Ah Ryeong",
+            "Seol-Hwi",
+            "ally_of",
+            "Ah Ryeong khẳng định nàng sẽ ở bên Seol-Hwi.",
+        );
+        rel("Ah Ryeong", "Dam Cheon", "seeks_to_negotiate", "");
+        rel("Seol-Hwi", "Dam Cheon", "other", "");
+        let w = load(&conn, novel).unwrap();
+        let find = |f: &str, t: &str| {
+            w.relations
+                .iter()
+                .find(|r| r.from_uid == f && r.to_uid == t)
+                .unwrap()
+        };
+        assert_eq!(find(&a, &s).kind, "friend_of");
+        assert_eq!(
+            find(&a, &s).note,
+            "A Ryeong khẳng định nàng sẽ ở bên Tuyết Huy."
+        );
+        assert_eq!(find(&a, &d).kind, REL_VI_OTHER);
+        assert_eq!(
+            find(&s, &d).labels.get("vi").map(String::as_str),
+            Some(REL_VI_OTHER)
+        );
+        // Vietnamese words of the AI's own stay as they are.
+        rel("Seol-Hwi", "Ah Ryeong", "gọi là sư tổ", "");
+        let w = load(&conn, novel).unwrap();
+        assert!(w.relations.iter().any(|r| r.kind == "gọi là sư tổ"));
+    }
+
+    #[test]
+    fn older_english_relations_and_names_are_written_in_vietnamese() {
+        let (conn, novel) = book("vi-old");
+        let a = upsert_ai(
+            &conn,
+            novel,
+            "vi",
+            Some(1),
+            ai("Ah Ryeong", "character", "A Ryeong", &[]),
+        )
+        .unwrap()
+        .unwrap();
+        let s = upsert_ai(
+            &conn,
+            novel,
+            "vi",
+            Some(1),
+            ai("Seol-Hwi", "character", "Tuyết Huy", &[]),
+        )
+        .unwrap()
+        .unwrap();
+        conn.execute(
+            "insert into wiki_relations (uid, novel_id, from_uid, to_uid, kind, labels, note, updated_at)
+             values ('o1', ?1, ?2, ?3, 'allied_with', '{\"vi\":\"allied_with\"}', 'Ah Ryeong gặp Seol-Hwi.', 1),
+                    ('o2', ?1, ?3, ?2, 'other', '{}', '', 1)",
+            params![novel, a, s],
+        )
+        .unwrap();
+        assert!(tidy_vi_all(&conn).unwrap() >= 2);
+        let w = load(&conn, novel).unwrap();
+        let o1 = w.relations.iter().find(|r| r.uid == "o1").unwrap();
+        assert_eq!(
+            (o1.kind.as_str(), o1.note.as_str()),
+            ("friend_of", "A Ryeong gặp Tuyết Huy.")
+        );
+        let o2 = w.relations.iter().find(|r| r.uid == "o2").unwrap();
+        assert_eq!(o2.labels.get("vi").map(String::as_str), Some(REL_VI_OTHER));
+    }
+
+    #[test]
+    fn a_piece_of_the_name_is_never_an_alias() {
+        let (conn, novel) = book("pieces");
+        let full = ["Goo Jong-myung", "Cố Tông Minh"];
+        assert!(name_piece("Minh", full));
+        assert!(name_piece("Myung", full));
+        assert!(!name_piece("Ju Myung", full));
+        assert!(!name_piece("Mai Hoa Kiếm Tôn", full));
+        let uid = upsert_ai(
+            &conn,
+            novel,
+            "vi",
+            Some(1),
+            ai(
+                "Goo Jong-myung",
+                "character",
+                "Cố Tông Minh",
+                &["Minh", "Myung", "Mai Hoa Kiếm Tôn"],
+            ),
+        )
+        .unwrap()
+        .unwrap();
+        let e = by_uid(&conn, &uid).unwrap().unwrap();
+        assert_eq!(e.aliases, vec!["Mai Hoa Kiếm Tôn"]);
+        // A sect "Minh" the AI finds later is its own entry, not this character.
+        let sect = upsert_ai(
+            &conn,
+            novel,
+            "vi",
+            Some(2),
+            ai("Myung Branch", "faction", "Hệ Minh", &["Myung", "Minh"]),
+        )
+        .unwrap()
+        .unwrap();
+        assert_ne!(sect, uid);
+    }
+
+    #[test]
+    fn an_unlinked_word_is_not_added_back() {
+        let (conn, novel) = book("unlink");
+        let uid = upsert_ai(
+            &conn,
+            novel,
+            "vi",
+            Some(1),
+            ai(
+                "Goo Jong-myung",
+                "character",
+                "Cố Tông Minh",
+                &["Đại Thánh", "First Plum"],
+            ),
+        )
+        .unwrap()
+        .unwrap();
+        let e = unlink(&conn, &uid, "đại thánh").unwrap();
+        assert_eq!(e.aliases, vec!["First Plum"]);
+        assert_eq!(e.blocked, vec!["đại thánh"]);
+        // The AI and a merge bring it again: it stays out.
+        upsert_ai(
+            &conn,
+            novel,
+            "vi",
+            Some(2),
+            ai("Goo Jong-myung", "character", "", &["Đại Thánh"]),
+        )
+        .unwrap();
+        let other = upsert_ai(
+            &conn,
+            novel,
+            "vi",
+            Some(2),
+            ai("Đại Thánh", "character", "Đại Thánh", &[]),
+        )
+        .unwrap()
+        .unwrap();
+        let kept = merge(&conn, novel, &other, &uid, false).unwrap();
+        assert_eq!(kept.aliases, vec!["First Plum"]);
+        // Written back by the user, it is an alias again.
+        unblock(&conn, &uid, &["Đại Thánh".to_string()]).unwrap();
+        let mut input = by_uid(&conn, &uid).unwrap().unwrap();
+        input.aliases.push("Đại Thánh".into());
+        let saved = save(
+            &conn,
+            novel,
+            EntryInput {
+                uid: Some(uid.clone()),
+                kind: input.kind,
+                name: input.name,
+                names: input.names,
+                aliases: input.aliases,
+                summaries: input.summaries,
+                rank: input.rank,
+                meta: input.meta,
+            },
+        )
+        .unwrap();
+        assert_eq!(saved.aliases, vec!["First Plum", "Đại Thánh"]);
+    }
+
+    #[test]
+    fn old_pieces_go_when_the_library_is_updated() {
+        let (conn, novel) = book("pieces-old");
+        let uid = upsert_ai(
+            &conn,
+            novel,
+            "vi",
+            Some(1),
+            ai("Goo Jong-myung", "character", "Cố Tông Minh", &["Ju Myung"]),
+        )
+        .unwrap()
+        .unwrap();
+        conn.execute(
+            "update wiki_entries set aliases = '[\"Ju Myung\",\"Minh\",\"Myung\"]' where uid = ?1",
+            [&uid],
+        )
+        .unwrap();
+        assert_eq!(drop_pieces_all(&conn).unwrap(), 1);
+        assert_eq!(
+            by_uid(&conn, &uid).unwrap().unwrap().aliases,
+            vec!["Ju Myung"]
+        );
+    }
+
+    #[test]
+    fn merges_in_a_chain_end_on_the_last_entry() {
+        // a → b and c → b, then b → d: a, b and c are all d's now.
+        let (conn, novel) = book("merge-chain");
+        let mk = |n: &str| {
+            upsert_ai(&conn, novel, "vi", Some(1), ai(n, "character", n, &[]))
+                .unwrap()
+                .unwrap()
+        };
+        let (a, b, c, d) = (
+            mk("Hắc Y Nhân"),
+            mk("Lão Ma Đầu"),
+            mk("Huyết Ma"),
+            mk("Thiên Ma Vương"),
+        );
+        let sect = upsert_ai(
+            &conn,
+            novel,
+            "vi",
+            Some(1),
+            ai("Ma Giáo", "faction", "Ma Giáo", &[]),
+        )
+        .unwrap()
+        .unwrap();
+        add_relation(&conn, novel, &a, &sect, "member_of", "vi", "").unwrap();
+        merge(&conn, novel, &a, &b, true).unwrap();
+        merge(&conn, novel, &c, &b, true).unwrap();
+        let kept = merge(&conn, novel, &b, &d, true).unwrap();
+        assert_eq!(kept.aliases, vec!["Lão Ma Đầu", "Hắc Y Nhân", "Huyết Ma"]);
+        let w = load(&conn, novel).unwrap();
+        assert_eq!(w.entries.len(), 2);
+        // a's relation followed it to d.
+        assert_eq!(w.relations.len(), 1);
+        assert_eq!(w.relations[0].from_uid, d);
+        // The AI naming a or c again lands on d.
+        for n in ["Hắc Y Nhân", "Huyết Ma"] {
+            let back = upsert_ai(&conn, novel, "vi", Some(9), ai(n, "character", "", &[]))
+                .unwrap()
+                .unwrap();
+            assert_eq!(back, d);
+        }
     }
 
     #[test]
