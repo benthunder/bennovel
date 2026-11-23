@@ -2,8 +2,9 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode }
 import { ask } from '@tauri-apps/plugin-dialog';
 import { Modal } from '../components/Modal';
 import { SmartMergeSheet } from '../components/SmartMergeSheet';
+import { EntryMergeCheck, MergeIntoSheet, RetranslateSheet } from '../components/WikiNameTools';
 import { GroupedRelations, equivalentsOf, levelOf, relWords, useWikiT } from '../components/WikiPopup';
-import { CheckIcon, ChevronLeftIcon, ChevronRightIcon, PencilIcon, SparklesIcon, XIcon } from '../components/Icons';
+import { CheckIcon, ChevronLeftIcon, ChevronRightIcon, LanguagesIcon, PencilIcon, SparklesIcon, XIcon } from '../components/Icons';
 import { Checkbox, SearchField, Spinner } from '../components/ui';
 import { useI18n } from '../i18n';
 import { AI_LANGS, AiFailure, aiErrorDetail } from '../lib/ai';
@@ -11,7 +12,7 @@ import { useAsync } from '../lib/useAsync';
 import { useLayout } from '../lib/useLayout';
 import { useThrottledValue } from '../lib/useThrottledValue';
 import {
-  PROFILE_FIELDS, RAW, REL_TYPES, SKILL_FIELDS, WIKI_KINDS, WIKI_LANG, addWikiRelation, applyWikiToText, getWiki, getWikiMissing, mergeWikiEntry, removeWikiEntries, removeWikiEntry, removeWikiRelation, saveWikiEntry,
+  PROFILE_FIELDS, RAW, REL_TYPES, entryMergeFound, entryWikiMerges, orderWikiLevelsAi, setWikiLadder, SKILL_FIELDS, WIKI_KINDS, WIKI_LANG, addWikiRelation, applyWikiToText, getWiki, getWikiMissing, removeWikiEntries, removeWikiEntry, removeWikiRelation, saveWikiEntry,
   searchWiki, setWikiAuto,  translateWiki, wikiChapter, wikiLabel, wikiSummary,
   type ProfileField, type SkillField, type Wiki, type WikiEntry, type WikiKind, metaStage } from '../lib/wiki';
 import { useApp } from '../store/AppStore';
@@ -294,7 +295,7 @@ export function WikiScreen({ novelId, title }: { novelId: number; title: string;
             {shown == null ? <Spinner size={16} />
               : shown.length === 0 ? <p className="muted" style={{ fontSize: 14 }}>{t(wiki.entries.length ? 'wiki.noMatch' : 'wiki.empty')}</p>
                 : picking ? list(shown)
-                  : !term && kind === 'level' ? <Ladder wiki={wiki} lang={lang} row={row} />
+                  : !term && kind === 'level' ? <Ladder wiki={wiki} lang={lang} row={row} novelId={novelId} onChanged={() => setRev(n => n + 1)} />
                   : !term && kind === 'place' ? <MapTree wiki={wiki} card={row} />
                     : list(shown)}
           </>
@@ -346,33 +347,119 @@ function Summary({ text, children }: { text: string; children?: ReactNode }) {
   );
 }
 
+/** A ladder's levels lowest first: by rank, then the ones without one in the order the story meets them. */
+function ladderOrder(levels: WikiEntry[]) {
+  return [...levels].sort((a, b) =>
+    (a.rank ?? Infinity) - (b.rank ?? Infinity)
+    || (a.firstChapter ?? Infinity) - (b.firstChapter ?? Infinity)
+    || a.name.localeCompare(b.name));
+}
+
 /**
  * The story's whole tree of levels: each ladder (cultivation, alchemy…) with its levels
- * in order, lowest first, and what each matches in the other ladders.
+ * in order, lowest first, and what each matches in the other ladders. A level without a
+ * rank shows "?" and comes after the ranked ones, in story order. The user can order a
+ * ladder by hand (up and down, then Save) or ask the AI to put every level in its ladder
+ * and order them all; either way the levels are theirs from then on.
  */
-function Ladder({ wiki, lang, row }: { wiki: Wiki; lang: string; row: (e: WikiEntry, extra?: ReactNode) => ReactNode }) {
+function Ladder({ wiki, lang, row, novelId, onChanged }: {
+  wiki: Wiki; lang: string; row: (e: WikiEntry, extra?: ReactNode) => ReactNode;
+  novelId: number; onChanged: () => void;
+}) {
   const { t } = useI18n();
+  const app = useApp();
   const levels = wiki.entries.filter(e => e.kind === 'level');
   const systems = [...new Set(levels.map(l => l.meta?.system?.trim() ?? ''))]
     .sort((a, b) => (a ? 0 : 1) - (b ? 0 : 1) || a.localeCompare(b));
+  // The ladder being ordered by hand, with its order so far.
+  const [editing, setEditing] = useState<{ system: string; uids: string[] } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const fail = (e: unknown) => {
+    console.error(e);
+    app.showToast(e instanceof AiFailure ? `${t(e.key)} ${aiErrorDetail(e.message)}`.trim() : String(e));
+  };
+  const byUid = new Map(levels.map(l => [l.uid, l]));
+  const move = (i: number, by: number) => setEditing(ed => {
+    if (!ed) return ed;
+    const uids = [...ed.uids];
+    const j = i + by;
+    if (j < 0 || j >= uids.length) return ed;
+    [uids[i], uids[j]] = [uids[j], uids[i]];
+    return { ...ed, uids };
+  });
+  const save = async () => {
+    if (!editing || busy) return;
+    setBusy(true);
+    try {
+      await setWikiLadder(app.libKey, novelId, editing.system, editing.uids);
+      setEditing(null);
+      onChanged();
+      app.showToast(t('wiki.ladderSaved'));
+    } catch (e) {
+      fail(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const askAi = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const ladders = await orderWikiLevelsAi(app.libKey, novelId);
+      setEditing(null);
+      onChanged();
+      app.showToast(t('wiki.ladderAiDone', { n: ladders.length }));
+    } catch (e) {
+      fail(e);
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <div data-wiki-ladder-tree style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <span className="muted" style={{ fontSize: 12, flex: '1 1 180px' }}>{t('wiki.ladderHint')}</span>
+        <button type="button" className="btn btn-secondary" data-ladder-ai style={{ height: 36, padding: '0 14px', gap: 6, fontSize: 13 }} disabled={busy || !levels.length} onClick={askAi}>
+          {busy && !editing ? <Spinner size={13} /> : <SparklesIcon size={13} />}{t('wiki.ladderAi')}
+        </button>
+      </div>
       {systems.map(sys => {
-        const own = levels.filter(l => (l.meta?.system?.trim() ?? '') === sys)
-          .sort((a, b) => (a.rank ?? Infinity) - (b.rank ?? Infinity) || a.name.localeCompare(b.name));
+        const own = ladderOrder(levels.filter(l => (l.meta?.system?.trim() ?? '') === sys));
+        const mine = editing?.system === sys;
+        const shown = mine ? editing.uids.map(u => byUid.get(u)).filter((e): e is WikiEntry => !!e) : own;
         return (
           <section key={sys || '-'} data-ladder={sys}>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 6 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 15, fontWeight: 700 }}>{sys || t('wiki.ladderNoSystem')}</span>
-              <span className="muted" style={{ fontSize: 12 }}>{t('wiki.ladderCount', { n: own.length })}</span>
+              <span className="muted" style={{ fontSize: 12, flex: 1 }}>{t('wiki.ladderCount', { n: own.length })}</span>
+              {!mine && own.length > 1 && (
+                <button type="button" className="btn btn-ghost" data-ladder-edit style={{ height: 30, padding: '0 10px', fontSize: 12 }} disabled={busy || !!editing}
+                  onClick={() => setEditing({ system: sys, uids: own.map(l => l.uid) })}>{t('wiki.ladderEdit')}</button>
+              )}
+              {mine && (
+                <>
+                  <button type="button" className="btn btn-secondary" style={{ height: 30, padding: '0 10px', fontSize: 12 }} disabled={busy} onClick={() => setEditing(null)}>{t('common.cancel')}</button>
+                  <button type="button" className="btn btn-primary" data-ladder-save style={{ height: 30, padding: '0 12px', fontSize: 12 }} disabled={busy} onClick={save}>{t('wiki.ladderSave')}</button>
+                </>
+              )}
             </div>
             <ol data-wiki-ladder style={{ listStyle: 'none', margin: 0, padding: '0 0 0 14px', borderLeft: '2px solid var(--color-neutral-200)', display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {own.map((l, i) => {
+              {shown.map((l, i) => {
                 const eq = equivalentsOf(wiki, l.uid);
+                const unranked = !mine && l.rank == null;
                 return (
-                  <li key={l.uid} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span className="tag tag-neutral" style={{ fontSize: 11, flex: 'none', minWidth: 26, justifyContent: 'center' }}>{l.rank ?? i + 1}</span>
-                    {row(l, eq.length > 0 && (
+                  <li key={l.uid} data-ladder-level={l.uid} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span className="tag tag-neutral" title={unranked ? t('wiki.ladderUnranked') : undefined}
+                      style={{ fontSize: 11, flex: 'none', minWidth: 26, justifyContent: 'center', opacity: unranked ? .6 : 1 }}>{unranked ? '?' : i + 1}</span>
+                    {mine ? (
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 0, padding: '10px 12px', borderRadius: 16, background: 'var(--frost)' }}>
+                        <b style={{ flex: 1, overflowWrap: 'anywhere', fontSize: 14 }}>{wikiLabel(l, lang)}</b>
+                        <button type="button" className="icon-btn" data-ladder-up aria-label={t('wiki.ladderUp')} disabled={i === 0} onClick={() => move(i, -1)}
+                          style={{ width: 32, height: 32, transform: 'rotate(90deg)' }}><ChevronLeftIcon size={16} /></button>
+                        <button type="button" className="icon-btn" data-ladder-down aria-label={t('wiki.ladderDown')} disabled={i === shown.length - 1} onClick={() => move(i, 1)}
+                          style={{ width: 32, height: 32, transform: 'rotate(90deg)' }}><ChevronRightIcon size={16} /></button>
+                      </span>
+                    ) : row(l, eq.length > 0 && (
                       <span data-wiki-equals style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 2 }}>
                         {eq.map(e => (
                           <span key={e.uid} className="chip chip--sm" style={{ fontSize: 11, pointerEvents: 'none' }}>
@@ -462,8 +549,13 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
   const [relType, setRelType] = useState<string>(REL_TYPES[0]);
   const [relWordsIn, setRelWordsIn] = useState('');
   const [relNote, setRelNote] = useState('');
-  const [mergeInto, setMergeInto] = useState('');
   const [smart, setSmart] = useState(false);
+  const [retr, setRetr] = useState(false);
+  const [into, setInto] = useState(false);
+  // Goes up after a save, so the check looks at the book again.
+  const [checkRev, setCheckRev] = useState(0);
+  // A name kept while translating again: the wiki loads again when the sheet closes, not under it.
+  const retrDirty = useRef(false);
   const [rels, setRels] = useState(() => wiki.relations.filter(r => entry && (r.fromUid === entry.uid || r.toUid === entry.uid)));
 
   const byUid = useMemo(() => new Map(wiki.entries.map(e => [e.uid, e])), [wiki]);
@@ -496,6 +588,13 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
       });
       setSaved(e);
       onChanged();
+      // Back to step 1 with the new name: another entry written the same is offered to join it.
+      const found = entryMergeFound(await entryWikiMerges(user, novelId, e.uid).catch(() => null), e.uid);
+      if (found) {
+        setCheckRev(n => n + 1);
+        app.showToast(t('wiki.savedCheck'));
+        return;
+      }
       app.showToast(t('wiki.saved'));
       if (saved) onClose();
     } catch (e) {
@@ -537,26 +636,18 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
     onChanged();
   };
 
-  // This entry is another one written differently ("bé áo xanh" and her name): it goes into that one.
-  const merge = async () => {
-    const into = byUid.get(mergeInto);
-    if (!saved || !into || !(await ask(t('wiki.mergeAsk', { from: wikiLabel(saved, lang), into: wikiLabel(into, lang) }), { kind: 'warning' }))) return;
-    try {
-      await mergeWikiEntry(user, novelId, saved.uid, into.uid);
-      onChanged();
-      app.showToast(t('wiki.merged', { into: wikiLabel(into, lang) }));
-      onClose();
-    } catch (e) {
-      failed(e);
-    }
-  };
-
   const level = saved && saved.kind === 'character' ? levelOf(wiki, saved.uid) : null;
 
   return (
     smart && saved ? (
       <SmartMergeSheet novelId={novelId} lang={lang} entry={saved} onClose={() => setSmart(false)}
         onMerged={() => { onChanged(); onClose(); }} />
+    ) : into && saved ? (
+      <MergeIntoSheet novelId={novelId} entry={saved} entries={wiki.entries} lang={lang}
+        onClose={() => setInto(false)} onMerged={() => { onChanged(); onClose(); }} />
+    ) : retr && saved ? (
+      <RetranslateSheet novelId={novelId} lang={lang} target={{ uid: saved.uid, label: wikiLabel(saved, lang) }}
+        onClose={() => { setRetr(false); if (retrDirty.current) onChanged(); onClose(); }} onDone={() => { retrDirty.current = true; }} />
     ) : <Modal onClose={busy ? undefined : onClose}>
       <form className="dialog dialog--sheet" role="dialog" aria-modal="true" aria-label={t(saved ? 'wiki.editTitle' : 'wiki.newTitle')}
         onClick={e => e.stopPropagation()} onSubmit={submit}>
@@ -568,6 +659,26 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
         )}
         {level && (
           <div style={{ fontSize: 13 }}><b>{t('wiki.currentLevel')}:</b> {wikiLabel(level, lang)}</div>
+        )}
+        {saved && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {/* Step 1: this name looked for in the book; a merge waits for the user's tap. */}
+            <EntryMergeCheck key={checkRev} novelId={novelId} entry={saved} lang={lang}
+              onMerged={() => { onChanged(); onClose(); }} />
+            {/* The two things to do with a name: translate it again, or merge it into the entry it really is. */}
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              <button type="button" className="btn btn-secondary" data-entry-retranslate style={{ height: 36, padding: '0 14px', gap: 6, fontSize: 13 }}
+                disabled={busy} onClick={() => setRetr(true)}>
+                <LanguagesIcon size={13} />{t('wiki.retranslate')}
+              </button>
+              {others.length > 0 && (
+                <button type="button" className="btn btn-secondary" data-entry-merge-into style={{ height: 36, padding: '0 14px', fontSize: 13 }}
+                  disabled={busy} onClick={() => setInto(true)}>
+                  {t('wiki.mergeIntoBtn')}
+                </button>
+              )}
+            </div>
+          </div>
         )}
         <div>
           <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>{t('wiki.kind')}</div>
@@ -689,26 +800,6 @@ function EntrySheet({ novelId, wiki, entry, lang, onClose, onChanged }: {
             </>
           )}
         </div>
-
-        {saved && others.length > 0 && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <div style={{ fontSize: 12, fontWeight: 700, flex: 1 }}>{t('wiki.mergeTitle')}</div>
-              <button type="button" className="btn btn-secondary" data-entry-smart-merge style={{ height: 34, padding: '0 12px', gap: 6, fontSize: 13 }} disabled={busy} onClick={() => setSmart(true)}>
-                <SparklesIcon size={13} />{t('wiki.smartMerge')}
-              </button>
-            </div>
-            <div className="muted" style={{ fontSize: 12 }}>{t('wiki.mergeSub')}</div>
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-              <select className="input" style={{ height: 38, flex: '1 1 180px' }} aria-label={t('wiki.mergeInto')} value={mergeInto} onChange={e => setMergeInto(e.target.value)}>
-                <option value="">{t('wiki.mergeInto')}…</option>
-                {others.filter(e => e.kind === saved.kind).concat(others.filter(e => e.kind !== saved.kind))
-                  .map(e => <option key={e.uid} value={e.uid}>{wikiLabel(e, lang)}{e.kind !== saved.kind ? ` · ${t(`wiki.kind.${e.kind}`)}` : ''}</option>)}
-              </select>
-              <button type="button" className="btn btn-secondary" style={{ height: 38, padding: '0 14px' }} disabled={!mergeInto || busy} onClick={merge}>{t('wiki.merge')}</button>
-            </div>
-          </div>
-        )}
 
         {error && <div role="alert" style={{ fontSize: 13, color: 'var(--color-accent-700)' }}>{error}</div>}
         <div className="dialog-actions">

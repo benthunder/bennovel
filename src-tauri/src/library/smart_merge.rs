@@ -138,9 +138,12 @@ pub fn rules_for(from: &Entry, into: &Entry, others: &[Entry]) -> Vec<Rule> {
         .collect()
 }
 
-/// The pairs of the book's live entries that look like one, for the user to review.
-pub fn suggest(conn: &Connection, novel_id: i64) -> rusqlite::Result<Vec<Suggestion>> {
-    let all = wiki::entries(conn, novel_id)?;
+/// Two entries (by their place in the list) that look like one, and why.
+type Edge = (usize, usize, Reason);
+
+/// The pairs of the book's live entries that look like one, before they are put
+/// together (`to_one`). Pairs set aside (`skip`) are left out.
+fn edges(all: &[Entry], skips: &std::collections::HashSet<String>) -> Vec<Edge> {
     struct Seen {
         name: String,
         raw: String,
@@ -159,13 +162,16 @@ pub fn suggest(conn: &Connection, novel_id: i64) -> rusqlite::Result<Vec<Suggest
             }
         })
         .collect();
-    let mut out: Vec<Suggestion> = Vec::new();
+    let mut out: Vec<Edge> = Vec::new();
     for i in 0..all.len() {
         for j in i + 1..all.len() {
             let (a, b) = (&all[i], &all[j]);
-            if a.kind != b.kind || (a.source == "user" && b.source == "user") {
+            if a.kind != b.kind {
                 continue;
             }
+            // Two of the user's own entries are offered together only when they are
+            // written the same (the user named both "Lâm Động": one entry, many originals).
+            let both_user = a.source == "user" && b.source == "user";
             if a.kind == "level"
                 && !a.meta.system.is_empty()
                 && !b.meta.system.is_empty()
@@ -190,9 +196,91 @@ pub fn suggest(conn: &Connection, novel_id: i64) -> rusqlite::Result<Vec<Suggest
             } else {
                 continue;
             };
-            let (from, into) = if keep_first(a, b) { (b, a) } else { (a, b) };
+            if both_user && reason == Reason::NearName {
+                continue;
+            }
+            if skips.contains(&skip_key([a.uid.as_str(), b.uid.as_str()])) {
+                continue;
+            }
+            out.push((i, j, reason));
+        }
+    }
+    out
+}
+
+/// Puts linked entries together, many to one: each set of entries that look like one
+/// (through any of `edges`) gets one entry to keep (`keep_first` over them all), and every
+/// other entry of the set goes into it. An entry never goes into two entries, and a
+/// chain ("Seol Hwi" ~ "Seol-Hwi" ~ "Tuyết Huy") ends in one kept entry instead of
+/// pairs pointing at each other. The reason of a member is that of its own link to the
+/// kept entry, else the weakest link it has (a near name is not ticked until the user
+/// allows it). Two of the user's entries are never merged, so a set holding several
+/// keeps the first and leaves the others out; a pair set aside is left out too.
+fn to_one(
+    all: &[Entry],
+    edges: &[Edge],
+    skips: &std::collections::HashSet<String>,
+) -> Vec<Suggestion> {
+    let mut parent: Vec<usize> = (0..all.len()).collect();
+    fn root(p: &mut [usize], mut i: usize) -> usize {
+        while p[i] != i {
+            p[i] = p[p[i]];
+            i = p[i];
+        }
+        i
+    }
+    for &(a, b, _) in edges {
+        let (ra, rb) = (root(&mut parent, a), root(&mut parent, b));
+        if ra != rb {
+            parent[ra.max(rb)] = ra.min(rb);
+        }
+    }
+    let mut sets: std::collections::BTreeMap<usize, Vec<usize>> = Default::default();
+    for &(a, b, _) in edges {
+        for i in [a, b] {
+            let r = root(&mut parent, i);
+            let set = sets.entry(r).or_default();
+            if !set.contains(&i) {
+                set.push(i);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for set in sets.values() {
+        let keep = set
+            .iter()
+            .copied()
+            .reduce(|k, i| if keep_first(&all[k], &all[i]) { k } else { i })
+            .expect("a set has entries");
+        let into = &all[keep];
+        let mut members: Vec<usize> = set.iter().copied().filter(|&i| i != keep).collect();
+        members.sort_by_key(|&i| (all[i].first_chapter.unwrap_or(i64::MAX), i));
+        for m in members {
+            let from = &all[m];
+            if skips.contains(&skip_key([from.uid.as_str(), into.uid.as_str()])) {
+                continue;
+            }
+            let link = |x: usize, y: usize| {
+                edges
+                    .iter()
+                    .find(|(a, b, _)| (*a == x && *b == y) || (*a == y && *b == x))
+                    .map(|e| e.2)
+            };
+            let reason = link(m, keep).unwrap_or_else(|| {
+                edges
+                    .iter()
+                    .filter(|(a, b, _)| *a == m || *b == m)
+                    .map(|e| e.2)
+                    .max()
+                    .unwrap_or(Reason::NearName)
+                    .max(Reason::SameRaw)
+            });
+            // Two of the user's own entries only when written the same.
+            if from.source == "user" && into.source == "user" && reason == Reason::NearName {
+                continue;
+            }
             out.push(Suggestion {
-                rules: rules_for(from, into, &all),
+                rules: rules_for(from, into, all),
                 from: from.clone(),
                 into: into.clone(),
                 reason,
@@ -200,9 +288,24 @@ pub fn suggest(conn: &Connection, novel_id: i64) -> rusqlite::Result<Vec<Suggest
             });
         }
     }
+    out
+}
+
+/// The book's live entries that look like one, for the user to review: many entries
+/// into one kept entry each (`to_one`), the surest first.
+pub fn suggest(conn: &Connection, novel_id: i64) -> rusqlite::Result<Vec<Suggestion>> {
+    let all = wiki::entries(conn, novel_id)?;
     let skips = skipped(conn, novel_id)?;
-    out.retain(|p| !pair_skipped(&skips, p));
-    out.sort_by(|x, y| x.reason.cmp(&y.reason));
+    let mut out = to_one(&all, &edges(&all, &skips), &skips);
+    // The kept entry's members stay together, the surest sets first.
+    let best: HashMap<String, Reason> = out.iter().fold(HashMap::new(), |mut m, s| {
+        let r = m.entry(s.into.uid.clone()).or_insert(s.reason);
+        *r = (*r).min(s.reason);
+        m
+    });
+    out.sort_by(|x, y| {
+        (best[&x.into.uid], &x.into.uid, x.reason).cmp(&(best[&y.into.uid], &y.into.uid, y.reason))
+    });
     out.truncate(MAX);
     Ok(out)
 }
@@ -240,14 +343,9 @@ pub fn skipped(
     rows.collect()
 }
 
-/// Whether a pair was set aside.
-fn pair_skipped(skips: &std::collections::HashSet<String>, s: &Suggestion) -> bool {
-    skips.contains(&skip_key([s.from.uid.as_str(), s.into.uid.as_str()]))
-}
-
 /// An original name the translation wrote as an entry's name (or close to it).
-#[derive(Debug, Clone, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
 pub struct RawName {
     /// As the original writes it.
     pub raw: String,
@@ -366,6 +464,11 @@ fn raws_close(a: &Entry, b: &Entry) -> bool {
     raws_of(a).any(|x| raws_of(b).any(|y| raw_close(x, y) || !latin_pair(x, y)))
 }
 
+/// `raws_close` for auto merge (wiki.rs `merge_near`).
+pub(crate) fn raws_close_entries(a: &Entry, b: &Entry) -> bool {
+    raws_close(a, b)
+}
+
 /// Whether two names are both in Latin letters (so `raw_close` can judge them).
 fn latin_pair(a: &str, b: &str) -> bool {
     let latin = |s: &str| matches!(super::detect_lang(s), "en" | "vi");
@@ -426,48 +529,42 @@ pub fn for_entry(conn: &Connection, novel_id: i64, uid: &str) -> rusqlite::Resul
         }
     }
     raws.sort_by_key(|r| (!r.exact, r.entry_uid.as_deref() != Some(uid)));
-    let mut pairs: Vec<Suggestion> = suggest(conn, novel_id)?
-        .into_iter()
-        .filter(|s| s.from.uid == uid || s.into.uid == uid)
-        .collect();
+    let skips = skipped(conn, novel_id)?;
+    let mut links = edges(&all, &skips);
+    let at = |u: &str| all.iter().position(|e| e.uid == u);
+    let mine = at(uid).expect("the entry is in the list");
+    // The entries that own an original name translated as this one's name look like it too.
     for r in &raws {
-        let Some(other) = r
-            .entry_uid
-            .as_deref()
-            .and_then(|u| all.iter().find(|e| e.uid == u))
-        else {
+        let Some(o) = r.entry_uid.as_deref().and_then(at) else {
             continue;
         };
-        if other.uid == uid
+        let other = &all[o];
+        if o == mine
             || other.kind != me.kind
-            || (other.source == "user" && me.source == "user")
-            || pairs
+            || (other.source == "user" && me.source == "user" && !r.exact)
+            || skips.contains(&skip_key([uid, other.uid.as_str()]))
+            || links
                 .iter()
-                .any(|s| s.from.uid == other.uid || s.into.uid == other.uid)
+                .any(|(a, b, _)| (*a == mine && *b == o) || (*a == o && *b == mine))
         {
             continue;
         }
-        let (from, into) = if keep_first(me, other) {
-            (other, me)
+        let reason = if r.exact {
+            Reason::SameName
         } else {
-            (me, other)
+            Reason::NearName
         };
-        pairs.push(Suggestion {
-            rules: rules_for(from, into, &all),
-            from: from.clone(),
-            into: into.clone(),
-            reason: if r.exact {
-                Reason::SameName
-            } else {
-                Reason::NearName
-            },
-            note: String::new(),
-        });
+        links.push((mine.min(o), mine.max(o), reason));
     }
-    let skips = skipped(conn, novel_id)?;
+    // The set this entry is in, many into one: it may go into another entry with the rest.
+    let pairs: Vec<Suggestion> = to_one(&all, &links, &skips);
+    let kept = pairs
+        .iter()
+        .find(|s| s.from.uid == uid || s.into.uid == uid)
+        .map(|s| s.into.uid.clone());
     let pairs = pairs
         .into_iter()
-        .filter(|p| !pair_skipped(&skips, p))
+        .filter(|s| Some(&s.into.uid) == kept.as_ref())
         .collect();
     Ok(EntryMerge { raws, pairs })
 }
@@ -668,6 +765,99 @@ pub fn merge_with_rules(
     Ok((kept, added))
 }
 
+/// What "allow merge" on one entry did: the entry kept and what changed.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Allowed {
+    pub entry: Entry,
+    pub applied: Applied,
+    /// Original names taken in as the kept entry's aliases.
+    pub adopted: usize,
+}
+
+/// The user allowed the merge found for an entry (`for_entry`), many into one: every
+/// entry of `from_uids` goes into `into_uid`, and the original names `raws` the chapters
+/// translated as its name (with no entry of their own) become its aliases, their other
+/// spellings written over with its name in the translations. Nothing else is merged.
+pub fn allow(
+    conn: &Connection,
+    novel_id: i64,
+    into_uid: &str,
+    from_uids: &[String],
+    raws: &[RawName],
+) -> Result<Allowed, AiError> {
+    let picks: Vec<Pick> = from_uids
+        .iter()
+        .filter(|u| u.as_str() != into_uid)
+        .map(|u| Pick {
+            from_uid: u.clone(),
+            into_uid: into_uid.to_string(),
+        })
+        .collect();
+    let mut applied = apply(conn, novel_id, &picks)?;
+    let all = wiki::entries(conn, novel_id)?;
+    let Some(into) = all.iter().find(|e| e.uid == into_uid).cloned() else {
+        return Err(AiError::Other("wiki-entry-missing".into()));
+    };
+    let to = shown(&into).to_string();
+    let taken = |name: &str| {
+        all.iter().any(|o| {
+            o.uid != into.uid
+                && (o.name.trim() == name || o.aliases.iter().any(|a| a.trim() == name))
+        })
+    };
+    let mut aliases = into.aliases.clone();
+    let mut rules: Vec<Rule> = Vec::new();
+    let mut adopted = 0;
+    for r in raws {
+        let raw = r.raw.trim();
+        if raw.is_empty() || taken(raw) {
+            continue;
+        }
+        if raw != into.name.trim() && !aliases.iter().any(|a| a.trim() == raw) {
+            aliases.push(raw.to_string());
+            adopted += 1;
+        }
+        let tr = r.translated.trim();
+        let other_name = all.iter().any(|o| o.uid != into.uid && shown(o) == tr);
+        if !other_name
+            && safe_find(tr, &to)
+            && rule_ok(tr, &to)
+            && !rules.iter().any(|x| x.find == tr)
+        {
+            rules.push(Rule {
+                find: tr.to_string(),
+                replace: to.clone(),
+            });
+        }
+    }
+    let entry = if aliases != into.aliases {
+        wiki::save(
+            conn,
+            novel_id,
+            wiki::EntryInput {
+                uid: Some(into.uid.clone()),
+                kind: into.kind.clone(),
+                name: into.name.clone(),
+                names: into.names.clone(),
+                aliases,
+                summaries: into.summaries.clone(),
+                rank: into.rank,
+                meta: into.meta.clone(),
+            },
+        )?
+    } else {
+        into
+    };
+    applied.rules += rewrite(conn, novel_id, &rules)?;
+    wiki::index_names(conn, None, novel_id, WIKI_LANG)?;
+    Ok(Allowed {
+        entry,
+        applied,
+        adopted,
+    })
+}
+
 /// Merges the pairs the user picked from `suggest`, in order. A pair whose entry was
 /// already merged in this run follows it to where it went.
 pub fn apply(conn: &Connection, novel_id: i64, picks: &[Pick]) -> Result<Applied, AiError> {
@@ -785,6 +975,112 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn a_chain_of_names_goes_into_one_kept_entry() {
+        let (conn, novel) = book("smart-merge-chain");
+        let a = add(&conn, novel, "character", "X1", "Tuyết Huy");
+        // The same Vietnamese name as `a`.
+        let b = add(&conn, novel, "character", "Seol Hwi", "Tuyết Huy");
+        // The same original as `b`, nothing like `a`'s.
+        let c = add(&conn, novel, "character", "Seol-Hwi", "Seol Hwi");
+        let s = suggest(&conn, novel).unwrap();
+        assert_eq!(s.len(), 2, "{s:?}");
+        // One kept entry for the three: a translated name (`a` or `b`, never `c`).
+        let kept = s[0].into.uid.clone();
+        assert!(s.iter().all(|x| x.into.uid == kept), "many into one");
+        assert!(kept == a || kept == b);
+        // Each entry goes into one entry only.
+        let froms: std::collections::HashSet<&str> =
+            s.iter().map(|x| x.from.uid.as_str()).collect();
+        assert_eq!(froms.len(), 2);
+        assert!(froms.contains(c.as_str()));
+        // The entry's own check shows the whole set going into the same entry.
+        let m = for_entry(&conn, novel, &c).unwrap();
+        assert!(m.pairs.iter().all(|p| p.into.uid == kept), "{:?}", m.pairs);
+        assert_eq!(m.pairs.len(), 2);
+        let from: Vec<String> = [&a, &b, &c]
+            .into_iter()
+            .filter(|u| **u != kept)
+            .cloned()
+            .collect();
+        // Allowed: both go into the kept one.
+        let done = allow(&conn, novel, &kept, &from, &[]).unwrap();
+        assert_eq!(done.applied.merged, 2);
+        assert_eq!(wiki::entries(&conn, novel).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_name_the_user_gives_another_entry_joins_the_set_already_there() {
+        // a-a and a-b are one entry "Lâm Động" (merged by the user, so theirs).
+        let (conn, novel) = book("smart-merge-user-same");
+        let a = add(&conn, novel, "character", "a-a", "Lâm Động");
+        let ab = add(&conn, novel, "character", "a-b", "Lâm Động");
+        allow(&conn, novel, &a, &[ab], &[]).unwrap();
+        // The user then names another entry "Lâm Động" too.
+        let b = add(&conn, novel, "character", "b-b", "Lâm Đống");
+        let e = wiki::entries(&conn, novel)
+            .unwrap()
+            .into_iter()
+            .find(|e| e.uid == b)
+            .unwrap();
+        let mut names = e.names.clone();
+        names.insert("vi".into(), "Lâm Động".into());
+        save_entry(
+            &conn,
+            novel,
+            wiki::EntryInput {
+                uid: Some(b.clone()),
+                kind: e.kind,
+                name: e.name,
+                names,
+                aliases: e.aliases,
+                summaries: e.summaries,
+                rank: e.rank,
+                meta: e.meta,
+            },
+        )
+        .unwrap();
+        // Both are the user's now; still offered as one: b-b into the entry already there.
+        let m = for_entry(&conn, novel, &b).unwrap();
+        assert_eq!(m.pairs.len(), 1, "{:?}", m.pairs);
+        assert_eq!(
+            (m.pairs[0].from.uid.as_str(), m.pairs[0].into.uid.as_str()),
+            (b.as_str(), a.as_str())
+        );
+        allow(&conn, novel, &a, &[b], &[]).unwrap();
+        let all = wiki::entries(&conn, novel).unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].aliases, vec!["a-b".to_string(), "b-b".to_string()]);
+        // Two of the user's with only near names are still not offered.
+        let c = add(&conn, novel, "character", "c-c", "Lâm Đông");
+        conn.execute(
+            "update wiki_entries set source = 'user' where uid = ?1",
+            [&c],
+        )
+        .unwrap();
+        assert!(for_entry(&conn, novel, &c).unwrap().pairs.is_empty());
+    }
+
+    #[test]
+    fn allowing_takes_loose_original_names_in_as_aliases() {
+        let (conn, novel) = book("smart-merge-allow-raws");
+        let a = add(&conn, novel, "character", "Seol-Hwi", "Tuyết Huy");
+        let done = allow(
+            &conn,
+            novel,
+            &a,
+            &[],
+            &[RawName {
+                raw: "Seolhwi".into(),
+                translated: "Tuyết Hui".into(),
+                ..Default::default()
+            }],
+        )
+        .unwrap();
+        assert_eq!(done.adopted, 1);
+        assert_eq!(done.entry.aliases, vec!["Seolhwi".to_string()]);
     }
 
     #[test]
