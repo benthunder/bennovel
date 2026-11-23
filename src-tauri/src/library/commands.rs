@@ -610,6 +610,52 @@ pub async fn llm_config_set<R: Runtime>(
     .await
 }
 
+/// How many parts of a chapter go to the LLM at the same time, with its range.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiParallel {
+    pub value: usize,
+    pub default: usize,
+    pub min: usize,
+    pub max: usize,
+}
+
+fn ai_parallel_of(value: usize) -> AiParallel {
+    AiParallel {
+        value,
+        default: translate::PARALLEL_DEFAULT,
+        min: translate::PARALLEL_MIN,
+        max: translate::PARALLEL_MAX,
+    }
+}
+
+/// The "translation threads" setting (advanced settings in Profile).
+#[tauri::command]
+pub async fn ai_parallel_get<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+) -> Result<AiParallel, AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || Ok(ai_parallel_of(translate::parallel(&db::open(&path)?)?))).await
+}
+
+/// Saves it, brought into its range; the next chapter translated uses it.
+#[tauri::command]
+pub async fn ai_parallel_set<R: Runtime>(
+    app: AppHandle<R>,
+    user: String,
+    value: usize,
+) -> Result<AiParallel, AiError> {
+    let path = db_path(&app, &user)?;
+    ai_blocking(move || {
+        Ok(ai_parallel_of(translate::set_parallel(
+            &db::open(&path)?,
+            value,
+        )?))
+    })
+    .await
+}
+
 fn llm_for(conn: &rusqlite::Connection) -> Result<llm::OpenAi, AiError> {
     Ok(llm::OpenAi::new(llm::load(conn)?.ok_or(AiError::NotSet)?))
 }
