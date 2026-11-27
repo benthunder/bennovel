@@ -1,6 +1,6 @@
 [package]
 name = "bennovel"
-version = "0.34.12"
+version = "0.34.13"
 description = "BenNovel — novel reader"
 edition = "2021"
 
