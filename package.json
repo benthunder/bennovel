@@ -1,7 +1,7 @@
 {
   "name": "bennovel",
   "private": true,
-  "version": "0.34.12",
+  "version": "0.34.13",
   "type": "module",
   "scripts": {
     "predev": "node scripts/copy-tesseract.mjs",
@@ -15,6 +15,8 @@
   },
   "dependencies": {
     "@fontsource/be-vietnam-pro": "^5.3.0",
+    "@fontsource/jetbrains-mono": "^5.3.0",
+    "@fontsource/noto-serif": "^5.3.0",
     "@tauri-apps/api": "^2.12.1",
     "@tauri-apps/plugin-deep-link": "^2.6.1",
     "@tauri-apps/plugin-dialog": "^2.8.1",

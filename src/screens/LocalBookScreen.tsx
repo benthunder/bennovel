@@ -23,10 +23,11 @@ import { load, save as store } from '../lib/storage';
 import { useAsync } from '../lib/useAsync';
 import { useLayout } from '../lib/useLayout';
 import { getWiki, type Wiki, type WikiEntry } from '../lib/wiki';
-import { READER_THEMES, useApp } from '../store/AppStore';
+import { READER_FONTS, READER_THEMES, useApp } from '../store/AppStore';
 
 const GAP_PX = { tight: 6, normal: 16, airy: 28 };
-const MARGIN_PX = { narrow: 16, normal: 24, wide: 36 };
+/** Each side margin, as a share of the page width: the text takes 95%, 90% or 80% of it. */
+const MARGIN_PCT = { narrow: 2.5, normal: 5, wide: 10 };
 
 const NO_GLOSSARY = {};
 const NO_RULES: ReplaceRule[] = [];
@@ -562,7 +563,7 @@ export function LocalBookScreen({ book, place, path, live: liveStart }: { book: 
       </ReaderChrome>
 
       <div ref={scrollRef} className="nx-scroll" onScroll={onScroll} onClick={immersive.onTap}
-        style={{ position: 'relative', flex: 1, overflowY: 'auto', overflowAnchor: 'none', padding: `${chromeH + lay.readerPadTop}px ${MARGIN_PX[p.margin]}px 40px`, fontFamily: theme.font }}>
+        style={{ position: 'relative', flex: 1, overflowY: 'auto', overflowAnchor: 'none', padding: `${chromeH + lay.readerPadTop}px ${MARGIN_PCT[p.margin]}% 40px`, fontFamily: p.font === 'theme' ? theme.font : READER_FONTS[p.font] }}>
         <div ref={contentRef} style={{ maxWidth: lay.readerMax, margin: '0 auto' }}>
           {/* Stands in for the parts dropped above, at their height. */}
           <div aria-hidden style={{ height: [...dropped.current].reduce((sum, [i, h]) => (i < span[0] ? sum + h : sum), 0) }} />

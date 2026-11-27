@@ -601,7 +601,7 @@ const FORMAT_RULES: &str = "Keep every paragraph as its own paragraph, separated
 fn grammar_rules(lang: &str) -> &'static str {
     match lang {
         "vi" => "Write correct, natural Vietnamese sentences, never word-for-word. Rebuild every sentence in Vietnamese order: subject, then verb, then object (\"Hắn nói với nàng\", not \"Hắn đối với nàng nói\"); the noun comes before what describes it and the owner comes last (\"thanh kiếm sắc bén của hắn\", not \"hắn sắc bén kiếm\"); time and place usually open or close the sentence, not sit between subject and verb. Prefer pure Vietnamese words over clumsy Sino-Vietnamese ones when the meaning is the same, but keep cultivation terms, titles and names in Hán Việt. A person, sect or place of a Korean, Chinese or Japanese story takes its Hán Việt reading even when the source is an English translation that romanizes it (Seol-Hwi → Tuyết Huy, Ah Ryeong → A Linh, Hye Un → Huệ Vân; the wiki's names, when given, come first): never leave a Latin romanization in the Vietnamese, and write each name the same way every time. Use pronouns that fit who speaks to whom (ta, ngươi, hắn, nàng, huynh, muội, sư phụ…) and keep them consistent.",
-        _ => "Write correct, natural English sentences, never word-for-word. Rebuild every sentence in English order: subject, then verb, then object; put adjectives before nouns and time or place phrases at the start or end of the sentence; use the right tense (mostly past tense for narration), articles and pronouns (he, she, they), and split sentences that run on.",
+        _ => "Write correct, natural English sentences, never word-for-word. Rebuild every sentence in English order: subject, then verb, then object; put adjectives before nouns and time or place phrases at the start or end of the sentence; use the right tense (mostly past tense for narration), articles and pronouns (he, she, they), and split sentences that run on. Tell proper nouns from common nouns: write a name (capitalised, as the names list gives it) only where the original writes that exact name; translate common nouns, titles and ways of calling someone (the old man, master, the boy, the sword, the sect…) with their ordinary meaning in lower case, never as a name and never replaced by a character's name, even when it is clear who is meant; a word capitalised only because it opens a sentence is not a name.",
     }
 }
 
@@ -695,6 +695,7 @@ LUẬT CHUNG
 4. Từ ngữ: dùng từ thuần Việt khi cùng nghĩa với từ Hán Việt vụng; giữ Hán Việt cho tên riêng, danh hiệu, cảnh giới, chiêu thức và thuật ngữ của truyện.
 5. Xưng hô: chọn theo quan hệ, tuổi tác, vai vế và giọng của từng cặp nhân vật, giữ nhất quán.
 6. Giữ nội dung: không thêm, không tóm tắt, không bỏ ý; tên riêng và thuật ngữ dịch nhất quán.
+7. Tên riêng và danh từ chung: tên riêng là tên đúng của một người, nơi, thế lực, vật phẩm hay chiêu thức cụ thể; chỉ viết tên riêng (viết hoa từng chữ, theo danh sách tên riêng nếu có) ở chỗ bản gốc viết đúng tên đó. Danh từ chung, danh xưng và cách gọi (ông lão, sư phụ, thiếu niên, cô gái, thanh kiếm, ngọn núi, tông môn…) dịch theo nghĩa thường, viết thường, không viết hoa như tên và không thay bằng tên nhân vật, kể cả khi đoán được là ai. Một từ viết hoa chỉ vì đứng đầu câu không phải tên riêng.
 
 VĂN PHONG: {style}
 
@@ -716,6 +717,7 @@ LUẬT CHUNG
 6. Xưng hô: chọn theo quan hệ, tuổi tác, vai vế và giọng của từng cặp nhân vật, giữ nhất quán suốt truyện.
 7. Giữ nội dung: không thêm tình tiết, cảm xúc hay chi tiết mới; không tóm tắt; không bỏ ý.
 8. Giữ tên riêng đúng như danh sách tên riêng bên dưới (nếu có).
+9. Tên riêng và danh từ chung: tên riêng là tên đúng của một người, nơi, thế lực, vật phẩm hay chiêu thức cụ thể; chỉ viết tên riêng (viết hoa từng chữ) ở chỗ bản gốc viết đúng tên đó. Danh từ chung, danh xưng và cách gọi (ông lão, sư phụ, thiếu niên, cô gái, thanh kiếm, ngọn núi, tông môn…) viết theo nghĩa thường, viết thường, không viết hoa như tên và không thay bằng tên nhân vật, kể cả khi đoán được là ai. Một từ viết hoa chỉ vì đứng đầu câu không phải tên riêng.
 
 VĂN PHONG: {style}
 

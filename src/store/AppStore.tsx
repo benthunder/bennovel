@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { load, save } from '../lib/storage';
 import type { ContentLang, User } from '../data/types';
 import { useI18n, useT } from '../i18n';
@@ -28,9 +28,19 @@ export interface ReaderPrefs {
   theme: ReaderTheme;
   lineH: number;
   gap: 'tight' | 'normal' | 'airy';
+  /** Side margins, as a share of the page: the text takes 95%, 90% or 80% of its width. */
   margin: 'narrow' | 'normal' | 'wide';
   align: 'left' | 'justify';
+  /** The chapter's face: 'theme' keeps the background's own (serif on e-ink, else sans). */
+  font: ReaderFont;
 }
+export type ReaderFont = 'theme' | 'sans' | 'serif' | 'mono';
+/** Font stacks for the reader's faces; the bundled ones carry Vietnamese diacritics. */
+export const READER_FONTS: Record<Exclude<ReaderFont, 'theme'>, string> = {
+  sans: "'Be Vietnam Pro', system-ui, sans-serif",
+  serif: "'Noto Serif', Literata, Georgia, 'Times New Roman', serif",
+  mono: "'JetBrains Mono', ui-monospace, 'Roboto Mono', 'Noto Sans Mono', Menlo, Consolas, monospace"
+};
 export interface ReaderThemeStyle {
   /** CSS background (may include a texture). */
   bg: string;
@@ -65,7 +75,7 @@ export const READER_THEMES: Record<ReaderTheme, ReaderThemeStyle> = {
   }
 };
 
-export const DEFAULT_READER_PREFS: ReaderPrefs = { fontSize: 18, theme: 'paper', lineH: 1.75, gap: 'normal', margin: 'normal', align: 'left' };
+export const DEFAULT_READER_PREFS: ReaderPrefs = { fontSize: 18, theme: 'paper', lineH: 1.75, gap: 'normal', margin: 'normal', align: 'left', font: 'theme' };
 
 /** The imported book read last, so Continue can reopen it. */
 export interface LocalLast {
@@ -233,7 +243,9 @@ function useAppState() {
   const [libKey] = useState(() => libraryUser(load<User | null>('user', null)));
   /** Reading language saved on the device. null = ask on each new book. */
   const [contentLang, setContentLang] = useStored<ContentLang | null>('defaultLang', null);
-  const [readerPrefs, setReaderPrefs] = useStored<ReaderPrefs>('readerPrefs', DEFAULT_READER_PREFS);
+  const [storedReaderPrefs, setReaderPrefs] = useStored<ReaderPrefs>('readerPrefs', DEFAULT_READER_PREFS);
+  // Settings saved before a field existed take its default.
+  const readerPrefs = useMemo(() => ({ ...DEFAULT_READER_PREFS, ...storedReaderPrefs }), [storedReaderPrefs]);
   const [localLast, setLocalLast] = useStored<LocalLast | null>('localLast', null);
   /** The wiki shows relations of no known type ("liên quan đến", the AI's own words) too. */
   const [wikiUnknownRels, setWikiUnknownRels] = useStored<boolean>('wikiUnknownRels', false);
