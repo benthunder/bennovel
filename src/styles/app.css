@@ -50,6 +50,10 @@ input[type='range'] { accent-color: var(--color-accent); width: 100%; }
 }
 
 .screen { position: absolute; inset: 0; overflow-y: auto; scrollbar-width: none; }
+/* Nothing scrolls sideways on a phone: a long word, link, file name or row of dashes from a
+   book wraps instead of widening the page, and the scrolling panels clip whatever is left. */
+.app { overflow-wrap: break-word; }
+.screen, .nx-scroll, .dialog--sheet, .ai-dock__list, .ai-draft { overflow-x: hidden; }
 .screen::-webkit-scrollbar, .nx-scroll::-webkit-scrollbar { display: none; }
 .nx-scroll { scrollbar-width: none; }
 .screen--tabbed { padding-top: calc(var(--safe-top) + 10px); padding-bottom: calc(var(--nav-h) + 32px); }

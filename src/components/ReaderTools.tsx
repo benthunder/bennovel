@@ -3,7 +3,7 @@ import { ask } from '@tauri-apps/plugin-dialog';
 import { DICTIONARY, DICT_SUGGEST, TRANSLATE_STYLES } from '../data/mock';
 import { CONTENT_LANG_INFO, CONTENT_LANGS, type ContentLang, type ContentLangInfo, type DictEntry, type GlossaryTerm, type ReplaceRule, type TranslateStyle } from '../data/types';
 import { useI18n } from '../i18n';
-import { DEFAULT_READER_PREFS, READER_THEMES, useApp, type ReaderPrefs } from '../store/AppStore';
+import { DEFAULT_READER_PREFS, READER_FONTS, READER_THEMES, useApp, type ReaderFont, type ReaderPrefs } from '../store/AppStore';
 import { AiPrefsFields } from './AiPrefsFields';
 import { BookIcon, SparklesIcon, XIcon } from './Icons';
 import { DEFAULT_STYLE, getAiPrefs, setAiPrefs, type AiPrefs } from '../lib/ai';
@@ -14,6 +14,8 @@ export type ToolsTab = 'reading' | 'replace' | 'ai';
 export interface Translation { lang: ContentLang; style: TranslateStyle; dict: boolean }
 
 const FONT_MIN = 14, FONT_MAX = 26;
+/** How much of the page width the text takes at each margin. */
+const MARGIN_TEXT = { narrow: 95, normal: 90, wide: 80 };
 
 /**
  * Reading settings and the (simulated) AI dictionary / translator.
@@ -92,6 +94,22 @@ function ReadingTab() {
         </div>
       </div>
       <div>
+        <Label>{t('tools.font')}</Label>
+        <div role="radiogroup" aria-label={t('tools.font')} style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 8 }}>
+          {(['theme', 'sans', 'serif', 'mono'] as ReaderFont[]).map(f => (
+            <button key={f} role="radio" aria-checked={p.font === f} data-reader-font={f} onClick={() => set({ font: f })}
+              style={{
+                display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2, minWidth: 0, padding: '8px 4px', borderRadius: 14, cursor: 'pointer',
+                border: `2px solid ${p.font === f ? 'var(--color-accent)' : 'var(--color-border, color-mix(in srgb, var(--color-text) 14%, transparent))'}`,
+                background: p.font === f ? 'color-mix(in srgb, var(--color-accent) 12%, transparent)' : 'none', color: 'var(--color-text)'
+              }}>
+              <span style={{ fontFamily: f === 'theme' ? READER_THEMES[p.theme].font ?? READER_FONTS.sans : READER_FONTS[f], fontSize: 20, lineHeight: 1.2 }}>Aă</span>
+              <span style={{ fontSize: 11, fontWeight: 600 }}>{t(`font.${f}`)}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+      <div>
         <Label>{t('tools.background')}</Label>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: 8, justifyItems: 'center' }}>
           {(Object.keys(READER_THEMES) as (keyof typeof READER_THEMES)[]).map(k => (
@@ -113,7 +131,7 @@ function ReadingTab() {
       </div>
       <div>
         <Label>{t('tools.margins')}</Label>
-        <Segmented value={p.margin} onChange={margin => set({ margin })} options={(['narrow', 'normal', 'wide'] as const).map(v => ({ label: t(`margin.${v}`), value: v }))} />
+        <Segmented value={p.margin} onChange={margin => set({ margin })} options={(['narrow', 'normal', 'wide'] as const).map(v => ({ label: `${t(`margin.${v}`)} · ${MARGIN_TEXT[v]}%`, value: v }))} />
       </div>
       <div>
         <Label>{t('tools.alignment')}</Label>
