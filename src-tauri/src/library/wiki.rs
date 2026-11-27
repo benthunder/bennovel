@@ -670,13 +670,26 @@ fn entry_line(e: &Entry, shown: &str, vi: bool) -> String {
         }
     }
     let mut s = format!("- {shown} ({kind})");
-    if !e.aliases.is_empty() {
+    let (generic, names): (Vec<&str>, Vec<&str>) = e
+        .aliases
+        .iter()
+        .map(String::as_str)
+        .partition(|a| generic_alias(a, e));
+    if !names.is_empty() {
         let w = if vi {
             "tên gọi khác"
         } else {
             "also called"
         };
-        s.push_str(&format!("; {w}: {}", e.aliases.join(", ")));
+        s.push_str(&format!("; {w}: {}", names.join(", ")));
+    }
+    if !generic.is_empty() {
+        let w = if vi {
+            "đôi khi được gọi chung là"
+        } else {
+            "sometimes referred to as"
+        };
+        s.push_str(&format!("; {w}: {}", generic.join(", ")));
     }
     if e.kind == "character" && !m.level.is_empty() {
         let w = if vi { "cảnh giới" } else { "level" };
@@ -1641,6 +1654,64 @@ fn proper_noun(name: &str, translated: &str) -> bool {
     }
 }
 
+/// Common Chinese ways of calling someone (master, old man, young lady…): the script has
+/// no capitals to tell them from a name.
+const GENERIC_CJK: &[&str] = &[
+    "师父",
+    "师傅",
+    "师尊",
+    "老者",
+    "老头",
+    "老头子",
+    "老人",
+    "老夫",
+    "少年",
+    "少女",
+    "青年",
+    "前辈",
+    "大人",
+    "公子",
+    "小姐",
+    "姑娘",
+    "师兄",
+    "师姐",
+    "师弟",
+    "师妹",
+    "掌门",
+    "宗主",
+    "长老",
+    "小子",
+    "那人",
+    "此人",
+    "男子",
+    "女子",
+    "在下",
+    "本座",
+    "老祖",
+    "主人",
+];
+
+/// Whether an alias of `e` is a common word or a description ("the old man", "Sư phụ",
+/// "bé áo xanh", 师父) rather than a name. The AI is told to keep such ways of calling
+/// someone as aliases, but the same words name anyone else in the book: they never find
+/// the entry in a text and the prompt shows them apart, so the translation does not turn
+/// every "old man" into this one's name. An alias built on the entry's own name
+/// ("Động thiếu" of "Lâm Động", 动少 of 林动) is a name.
+pub(crate) fn generic_alias(alias: &str, e: &Entry) -> bool {
+    let a = alias.trim();
+    let names: Vec<&str> = std::iter::once(e.name.as_str())
+        .chain(e.names.values().map(String::as_str))
+        .collect();
+    match capitalised_name(a) {
+        Some(true) => false,
+        Some(false) => {
+            let own: Vec<String> = names.iter().flat_map(|n| name_words(n)).collect();
+            !name_words(a).iter().any(|w| own.contains(w))
+        }
+        None => GENERIC_CJK.contains(&a) && !a.chars().any(|c| names.iter().any(|n| n.contains(c))),
+    }
+}
+
 /// Whether a name ends in a part number in brackets, as a chapter's title split over
 /// several chapters does ("Those Who Leave Must Return (2)"): no name is written so.
 fn numbered(name: &str) -> bool {
@@ -2147,7 +2218,8 @@ pub fn index_names(
     for e in entries(conn, novel_id)? {
         let translated = e.names.get(lang).cloned().unwrap_or_default();
         let meta = to_json(&e.meta, "{}");
-        for raw in std::iter::once(&e.name).chain(e.aliases.iter()) {
+        let aliases = e.aliases.iter().filter(|a| !generic_alias(a, &e));
+        for raw in std::iter::once(&e.name).chain(aliases) {
             keep.push((
                 raw.clone(),
                 translated.clone(),
@@ -2550,7 +2622,7 @@ pub fn recall(
         line.push_str(&entry_line(&e, &shown, vi));
         line.push('\n');
         let mut terms: Vec<String> = std::iter::once(e.name.clone())
-            .chain(e.aliases.iter().cloned())
+            .chain(e.aliases.iter().filter(|a| !generic_alias(a, &e)).cloned())
             .chain((!translated.is_empty()).then(|| translated.to_string()))
             .chain(extra.remove(uid).unwrap_or_default())
             .filter(|t| !t.trim().is_empty())
@@ -2633,9 +2705,9 @@ impl Recall {
         hits.sort_by_key(|(h, _)| std::cmp::Reverse(*h));
         hits.truncate(CONTEXT_ENTRIES);
         let mut s = String::from(if self.vi {
-            "\nDANH SÁCH TÊN RIÊNG trong đoạn này (tên gốc → tên viết trong bản tiếng Việt, loại). Luôn viết đúng như vậy; tên gọi khác của một mục chỉ người hay vật đó, giữ tên gọi khác khi văn bản dùng nó như biệt danh:\n"
+            "\nDANH SÁCH TÊN RIÊNG trong đoạn này (tên gốc → tên viết trong bản tiếng Việt, loại). Chỗ nào văn bản viết tên gốc hay tên gọi khác thì viết tên tiếng Việt đúng như vậy; giữ tên gọi khác khi văn bản dùng nó như biệt danh. Đây không phải danh sách từ cần thay: không đưa tên riêng vào chỗ văn bản không viết tên; từ thường và cách gọi chung (ông lão, sư phụ, cô gái…) luôn dịch theo nghĩa thường, kể cả khi trùng với một cách gọi ở dưới, vì có thể là người khác:\n"
         } else {
-            "\nProper nouns in this text (original → as this translation writes it, kind); always write them this way, and an alias the same as its entry's name unless the text uses it as a nickname:\n"
+            "\nProper nouns in this text (original → as this translation writes it, kind). Where the text writes a name or an alias, write it this way, and an alias the same as its entry's name unless the text uses it as a nickname. This is not a list of words to replace: never put a name where the text has none; common words and ways of calling someone (the old man, master, the girl…) are always translated with their ordinary meaning, also when one matches a way of calling below, since it may be someone else:\n"
         });
         for (_, i) in &hits {
             s.push_str(&i.line);
@@ -4194,6 +4266,42 @@ mod tests {
         assert!(names
             .iter()
             .all(|n| n.translated == "Lâm Động" && n.kind == "character"));
+    }
+
+    #[test]
+    fn a_generic_alias_does_not_bring_its_entry_into_the_prompt() {
+        let (conn, novel) = book("generic");
+        save(
+            &conn,
+            novel,
+            EntryInput {
+                uid: None,
+                kind: "character".into(),
+                name: "Baek Ho".into(),
+                names: BTreeMap::from([("vi".into(), "Bạch Hổ".into())]),
+                aliases: vec!["Elder Baek".into(), "the old man".into(), "师父".into()],
+                summaries: BTreeMap::new(),
+                rank: None,
+                meta: Default::default(),
+            },
+        )
+        .unwrap();
+        index_names(&conn, None, novel, "vi").unwrap();
+        // Another old man: the entry stays out, nothing tells the model to name him.
+        let other = "\"Do not trust the old man in the mountains,\" the innkeeper said.";
+        assert_eq!(context(&conn, novel, other, "vi").unwrap(), "");
+        assert_eq!(context(&conn, novel, "他的师父笑了。", "vi").unwrap(), "");
+        // Named, the entry comes, its ways of calling him shown apart from its names.
+        let ctx = context(&conn, novel, "Elder Baek nodded at the old man.", "vi").unwrap();
+        assert!(ctx.contains(
+            "- Baek Ho → Bạch Hổ (nhân vật); tên gọi khác: Elder Baek; đôi khi được gọi chung là: the old man, 师父\n"
+        ));
+        assert!(ctx.contains("không đưa tên riêng vào chỗ văn bản không viết tên"));
+        let e = &entries(&conn, novel).unwrap()[0];
+        assert!(generic_alias("Sư phụ", e) && generic_alias("bé áo xanh", e));
+        assert!(!generic_alias("Elder Baek", e) && !generic_alias("Mặc gia", e));
+        // Built on the entry's own name: a nickname, not a common word.
+        assert!(!generic_alias("Baek thiếu", e) && !generic_alias("Hổ ca", e));
     }
 
     fn ai(name: &str, kind: &str, translated: &str, aliases: &[&str]) -> AiEntry {
