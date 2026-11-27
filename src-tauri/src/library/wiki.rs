@@ -636,8 +636,8 @@ fn kind_vi(kind: &str) -> &str {
     }
 }
 
-/// An entry in the names list of a prompt: "- 林动 → Lâm Động (nhân vật); tên gọi khác:
-/// 动少; cảnh giới: Kim Đan, hậu kỳ", "- 金丹 → Kim Đan (cảnh giới; Luyện khí sĩ, bậc 9)".
+/// An entry in the names list of a prompt, its exact name only (no alias): "- 林动 →
+/// Lâm Động (nhân vật); cảnh giới: Kim Đan, hậu kỳ", "- 金丹 → Kim Đan (cảnh giới; Luyện khí sĩ, bậc 9)".
 fn entry_line(e: &Entry, shown: &str, vi: bool) -> String {
     let m = &e.meta;
     let stage = |vi: bool| -> String {
@@ -670,14 +670,6 @@ fn entry_line(e: &Entry, shown: &str, vi: bool) -> String {
         }
     }
     let mut s = format!("- {shown} ({kind})");
-    if !e.aliases.is_empty() {
-        let w = if vi {
-            "tên gọi khác"
-        } else {
-            "also called"
-        };
-        s.push_str(&format!("; {w}: {}", e.aliases.join(", ")));
-    }
     if e.kind == "character" && !m.level.is_empty() {
         let w = if vi { "cảnh giới" } else { "level" };
         s.push_str(&format!("; {w}: {}{}", m.level, stage(vi)));
@@ -2390,10 +2382,9 @@ const FIND_MAX: usize = 64;
 const RECALL_ENTRIES: usize = 300;
 
 /// The proper nouns a chapter names, with what the wiki knows of them, found before it
-/// is translated: by the exact names in the vector table, and also by the phrases that
-/// look like names and whose vectors (made on the device) land next to a row of it (a name the
-/// convert wrote a little differently). Each part of the chapter then gets only the
-/// names it has (`prompt`).
+/// is translated: only by an entry's own name, written exactly. Aliases and near
+/// spellings are left out. Each part of the chapter then gets only the names it has
+/// (`prompt`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Recall {
     vi: bool,
@@ -2405,7 +2396,7 @@ pub struct Recall {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Recalled {
     uid: String,
-    /// What finds the entry in a text: its names, aliases and the phrases found near it.
+    /// What finds the entry in a text: its own name and its translated name.
     terms: Vec<String>,
     line: String,
 }
@@ -2518,20 +2509,15 @@ pub fn recall(
     lang: &str,
 ) -> rusqlite::Result<Recall> {
     let vi = lang == "vi";
+    // Only the entries the text names by their own name: an alias ("the old man",
+    // "Sư phụ", a nickname) or a phrase the vector table finds close stands for anyone,
+    // and would make the translation write this entry's name where the text has none.
     let found = names_in(conn, novel_id, lang, text)?;
-    let near = near_names(conn, novel_id, lang, text, &found)?;
     let mut order: Vec<String> = Vec::new();
-    let mut extra: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for n in &found {
         if !order.contains(&n.entry_uid) {
             order.push(n.entry_uid.clone());
         }
-    }
-    for (p, n) in near {
-        if !order.contains(&n.entry_uid) {
-            order.push(n.entry_uid.clone());
-        }
-        extra.entry(n.entry_uid).or_default().push(p);
     }
     order.truncate(RECALL_ENTRIES);
     let mut items = Vec::new();
@@ -2550,9 +2536,7 @@ pub fn recall(
         line.push_str(&entry_line(&e, &shown, vi));
         line.push('\n');
         let mut terms: Vec<String> = std::iter::once(e.name.clone())
-            .chain(e.aliases.iter().cloned())
             .chain((!translated.is_empty()).then(|| translated.to_string()))
-            .chain(extra.remove(uid).unwrap_or_default())
             .filter(|t| !t.trim().is_empty())
             .collect();
         terms.dedup();
@@ -2633,9 +2617,9 @@ impl Recall {
         hits.sort_by_key(|(h, _)| std::cmp::Reverse(*h));
         hits.truncate(CONTEXT_ENTRIES);
         let mut s = String::from(if self.vi {
-            "\nDANH SÁCH TÊN RIÊNG trong đoạn này (tên gốc → tên viết trong bản tiếng Việt, loại). Luôn viết đúng như vậy; tên gọi khác của một mục chỉ người hay vật đó, giữ tên gọi khác khi văn bản dùng nó như biệt danh:\n"
+            "\nDANH SÁCH TÊN RIÊNG trong đoạn này (tên gốc → tên viết trong bản tiếng Việt, loại). Chỗ nào văn bản viết đúng tên gốc thì viết tên tiếng Việt đúng như vậy. Đây không phải danh sách từ cần thay: không đưa tên riêng vào chỗ văn bản không viết tên; biệt danh, danh xưng và cách gọi chung (ông lão, sư phụ, cô gái…) dịch theo nghĩa thường, không đổi thành tên:\n"
         } else {
-            "\nProper nouns in this text (original → as this translation writes it, kind); always write them this way, and an alias the same as its entry's name unless the text uses it as a nickname:\n"
+            "\nProper nouns in this text (original → as this translation writes it, kind). Where the text writes one of these names exactly, write it this way. This is not a list of words to replace: never put a name where the text has none; nicknames, titles and ways of calling someone (the old man, master, the girl…) are translated with their ordinary meaning, never turned into a name:\n"
         });
         for (_, i) in &hits {
             s.push_str(&i.line);
@@ -2959,7 +2943,7 @@ fn learn_rules(lang: &str, genre: &str, full: bool) -> String {
         };
         let profile = if full { VI_PROFILE } else { "." };
         return format!(
-            "Bạn ghi wiki cho một truyện đang được chuyển sang tiếng Việt. Từ văn bản dưới đây, chỉ ghi các danh từ riêng có vai trò trong truyện: tên riêng của nhân vật, địa danh, thế lực hay tông môn, vật phẩm, cảnh giới hay cấp bậc (kèm số bậc, tên thang cấp bậc và bậc nhỏ trong meta) và công pháp hay chiêu thức có tên. Không ghi danh từ chung hay từ mô tả, dù quan trọng với cảnh truyện: một nơi hay một vật chỉ được ghi khi nó có tên riêng. Tên riêng thường viết hoa; cụm không viết hoa hoặc chỉ là mô tả (người, đồ vật, nơi chốn chung chung) thì không phải tên riêng. Ghi mỗi tên trọn vẹn, đúng như văn bản gốc viết, không cắt một phần của từ hay tên dài hơn. Biệt danh, danh hiệu, cách gọi hay mô tả dùng để chỉ một nhân vật hay nơi đã có tên thì không phải mục mới: ghi vào tên gọi khác (aliases) của mục đó. Với nhân vật, ghi cảnh giới hiện tại vào meta (level, stage){profile} Ghi các quan hệ: giữa nhân vật với nhau, với thế lực, cảnh giới hiện tại, công pháp nhân vật biết, nơi nào nằm trong nơi nào; mỗi quan hệ kèm ghi chú bằng tiếng Việt về hoàn cảnh (vì sao có quan hệ đó, hai bên gọi nhau thế nào). Viết mọi tên dịch, tóm tắt, quan hệ tự do và ghi chú chỉ bằng tiếng Việt, không trộn ngôn ngữ: tên dịch (translated) của người, phái, nơi chốn trong truyện Hàn, Trung, Nhật luôn là âm Hán Việt, kể cả khi bản gốc là tiếng Anh đã phiên âm Latin (Seol-Hwi → Tuyết Huy, Ah Ryeong → A Linh, Hye Un → Huệ Vân), không bao giờ giữ phiên âm Latin; trong tóm tắt và ghi chú cũng gọi các mục bằng tên tiếng Việt đó; quan hệ là một mã trong danh sách hoặc vài chữ tiếng Việt, không bao giờ là chữ tiếng Anh. Ghi hết những gì văn bản cho biết về một mục, kể cả tình tiết về sau (không cần tránh tiết lộ nội dung), và liên kết nó với các mục liên quan; không đoán.{names}"
+            "Bạn ghi wiki cho một truyện đang được chuyển sang tiếng Việt. Từ văn bản dưới đây, chỉ ghi các danh từ riêng có vai trò trong truyện: tên riêng của nhân vật, địa danh, thế lực hay tông môn, vật phẩm, cảnh giới hay cấp bậc (kèm số bậc, tên thang cấp bậc và bậc nhỏ trong meta) và công pháp hay chiêu thức có tên. Không ghi danh từ chung hay từ mô tả, dù quan trọng với cảnh truyện: một nơi hay một vật chỉ được ghi khi nó có tên riêng. Tên riêng thường viết hoa; cụm không viết hoa hoặc chỉ là mô tả (người, đồ vật, nơi chốn chung chung) thì không phải tên riêng. Một từ viết hoa chỉ vì đứng đầu câu, hay một danh xưng chung (sư phụ, trưởng lão, ông lão, thiếu niên) thì không phải tên riêng; tên dịch (translated) phải là tên riêng viết hoa từng chữ, không phải từ mô tả. Ghi mỗi tên trọn vẹn, đúng như văn bản gốc viết, không cắt một phần của từ hay tên dài hơn. Biệt danh, danh hiệu, cách gọi hay mô tả dùng để chỉ một nhân vật hay nơi đã có tên thì không phải mục mới: ghi vào tên gọi khác (aliases) của mục đó. Với nhân vật, ghi cảnh giới hiện tại vào meta (level, stage){profile} Ghi các quan hệ: giữa nhân vật với nhau, với thế lực, cảnh giới hiện tại, công pháp nhân vật biết, nơi nào nằm trong nơi nào; mỗi quan hệ kèm ghi chú bằng tiếng Việt về hoàn cảnh (vì sao có quan hệ đó, hai bên gọi nhau thế nào). Viết mọi tên dịch, tóm tắt, quan hệ tự do và ghi chú chỉ bằng tiếng Việt, không trộn ngôn ngữ: tên dịch (translated) của người, phái, nơi chốn trong truyện Hàn, Trung, Nhật luôn là âm Hán Việt, kể cả khi bản gốc là tiếng Anh đã phiên âm Latin (Seol-Hwi → Tuyết Huy, Ah Ryeong → A Linh, Hye Un → Huệ Vân), không bao giờ giữ phiên âm Latin; trong tóm tắt và ghi chú cũng gọi các mục bằng tên tiếng Việt đó; quan hệ là một mã trong danh sách hoặc vài chữ tiếng Việt, không bao giờ là chữ tiếng Anh. Ghi hết những gì văn bản cho biết về một mục, kể cả tình tiết về sau (không cần tránh tiết lộ nội dung), và liên kết nó với các mục liên quan; không đoán.{names}"
         );
     }
     let l = super::translate::lang_name(lang);
@@ -2970,7 +2954,7 @@ fn learn_rules(lang: &str, genre: &str, full: bool) -> String {
     };
     let profile = if full { EN_PROFILE } else { "." };
     format!(
-        "You keep the wiki of a novel being translated into {l}. From the chapter below, record only proper nouns that matter to the story: the names of specific characters, places, factions or sects, items, levels (ranks, cultivation realms, each with its rank number, its ladder and stage in meta) and skills (named techniques, martial arts, spells). Never record a common noun or a generic word, however important to the scene (mountain, river, sword, city, sect, spirit energy, núi, sông, kiếm, thành, linh khí, tông môn): a place or thing is kept only under its own name. Write each name whole and exactly as the original text writes it, never a piece of a longer word or name (not a surname cut out of another word). A nickname, title, epithet or description that stands for a character or place already named (\"the girl in green\", \"bé áo xanh\", \"the old man\", \"Sư phụ\" for one person) is not a new entry: put it in that entry's aliases. For a character, put its current level in meta (level, stage){profile} Record the relationships: between characters, with factions, a character's current level, the skills a character has, which place lies in which (the map), each with a note in {l} on the circumstances (how it came about, what one calls the other). Write every translated name, summary, free relation and note in {l} only, never mixing languages. In Vietnamese, the translated name of a person, sect or place of a Korean, Chinese or Japanese story is always its Sino-Vietnamese (Hán-Việt) reading, also when the original is an English translation that romanizes it (Seol-Hwi → Tuyết Huy, Ah Ryeong → A Linh, Hye Un → Huệ Vân), never the Latin romanization; summaries and notes call entries by those names; a relation is one of the codes or a few {l} words, never English words. Record all the chapter shows about an entry, later events included (spoilers are fine), and link it to the others it involves; do not guess.{names}"
+        "You keep the wiki of a novel being translated into {l}. From the chapter below, record only proper nouns that matter to the story: the names of specific characters, places, factions or sects, items, levels (ranks, cultivation realms, each with its rank number, its ladder and stage in meta) and skills (named techniques, martial arts, spells). Never record a common noun or a generic word, however important to the scene (mountain, river, sword, city, sect, spirit energy, núi, sông, kiếm, thành, linh khí, tông môn): a place or thing is kept only under its own name. A word capitalised only because it opens a sentence, or a generic title (master, elder, the old man, the boy), is not a name; the translated name must be a capitalised name, never a description. Write each name whole and exactly as the original text writes it, never a piece of a longer word or name (not a surname cut out of another word). A nickname, title, epithet or description that stands for a character or place already named (\"the girl in green\", \"bé áo xanh\", \"the old man\", \"Sư phụ\" for one person) is not a new entry: put it in that entry's aliases. For a character, put its current level in meta (level, stage){profile} Record the relationships: between characters, with factions, a character's current level, the skills a character has, which place lies in which (the map), each with a note in {l} on the circumstances (how it came about, what one calls the other). Write every translated name, summary, free relation and note in {l} only, never mixing languages. In Vietnamese, the translated name of a person, sect or place of a Korean, Chinese or Japanese story is always its Sino-Vietnamese (Hán-Việt) reading, also when the original is an English translation that romanizes it (Seol-Hwi → Tuyết Huy, Ah Ryeong → A Linh, Hye Un → Huệ Vân), never the Latin romanization; summaries and notes call entries by those names; a relation is one of the codes or a few {l} words, never English words. Record all the chapter shows about an entry, later events included (spoilers are fine), and link it to the others it involves; do not guess.{names}"
     )
 }
 
@@ -4181,9 +4165,9 @@ mod tests {
         )
         .unwrap();
         index_names(&conn, None, novel, "vi").unwrap();
-        let ctx = context(&conn, novel, "动少 看着 林琅天。", "vi").unwrap();
+        let ctx = context(&conn, novel, "林动 看着 林琅天。", "vi").unwrap();
         // Names only, no descriptions: raw → translated (kind).
-        assert!(ctx.contains("- 林动 → Lâm Động (nhân vật); tên gọi khác: 动少\n"));
+        assert!(ctx.contains("- 林动 → Lâm Động (nhân vật)\n"));
         assert!(!ctx.contains("Nhân vật chính"));
         assert!(ctx.contains("林琅天 là kẻ thù của Lâm Động (Tranh ngôi gia chủ.)"));
         assert!(!ctx.contains("炎城"));
@@ -4194,6 +4178,41 @@ mod tests {
         assert!(names
             .iter()
             .all(|n| n.translated == "Lâm Động" && n.kind == "character"));
+    }
+
+    #[test]
+    fn only_an_entrys_exact_name_brings_it_into_the_prompt() {
+        let (conn, novel) = book("exact");
+        save(
+            &conn,
+            novel,
+            EntryInput {
+                uid: None,
+                kind: "character".into(),
+                name: "Baek Ho".into(),
+                names: BTreeMap::from([("vi".into(), "Bạch Hổ".into())]),
+                aliases: vec!["Elder Baek".into(), "the old man".into(), "师父".into()],
+                summaries: BTreeMap::new(),
+                rank: None,
+                meta: Default::default(),
+            },
+        )
+        .unwrap();
+        index_names(&conn, None, novel, "vi").unwrap();
+        // Another old man, a nickname, a near spelling: the entry stays out.
+        let other = "\"Do not trust the old man in the mountains,\" the innkeeper said.";
+        assert_eq!(context(&conn, novel, other, "vi").unwrap(), "");
+        assert_eq!(context(&conn, novel, "他的师父笑了。", "vi").unwrap(), "");
+        assert_eq!(
+            context(&conn, novel, "Elder Baek nodded.", "vi").unwrap(),
+            ""
+        );
+        assert_eq!(context(&conn, novel, "Baek-ho nodded.", "vi").unwrap(), "");
+        // Named exactly, the entry comes with its name only, no alias.
+        let ctx = context(&conn, novel, "Baek Ho nodded at the old man.", "vi").unwrap();
+        assert!(ctx.contains("- Baek Ho → Bạch Hổ (nhân vật)\n"));
+        assert!(!ctx.contains("the old man,") && !ctx.contains("Elder Baek"));
+        assert!(ctx.contains("không đưa tên riêng vào chỗ văn bản không viết tên"));
     }
 
     fn ai(name: &str, kind: &str, translated: &str, aliases: &[&str]) -> AiEntry {
@@ -4902,7 +4921,7 @@ mod tests {
     }
 
     #[test]
-    fn each_part_gets_the_names_it_has_found_through_the_vector_table() {
+    fn each_part_gets_only_the_names_it_writes_exactly() {
         let (conn, novel) = book("find");
         upsert_ai(
             &conn,
@@ -4924,17 +4943,16 @@ mod tests {
         .unwrap();
         let llm = Embedder(Mutex::new(0));
         index_names(&conn, Some(&llm), novel, "vi").unwrap();
-        // The convert wrote the city with a capital T: no exact match, but the vector
-        // table finds it.
+        // The convert wrote the city with a capital T: not its exact name, so it is
+        // left out, as is a nickname.
         let text = "Lâm Động đi vào Vương Thành.\n\nĐộng thiếu ngồi xuống.";
-        // The vectors are made on the device: no model is needed to find it.
         let r = recall(&conn, None, novel, text, "vi").unwrap();
         let all = r.prompt(text);
-        assert!(all.contains("- Vương thành → Vương thành (địa danh)"));
-        assert!(all.contains("- Lâm Động → Lâm Động (nhân vật); tên gọi khác: Động thiếu"));
-        // A part only gets the names it has, an alias finding its entry.
-        let second = r.prompt("Động thiếu ngồi xuống.");
-        assert!(second.contains("Lâm Động") && !second.contains("Vương thành"));
+        assert!(!all.contains("Vương thành"));
+        assert!(all.contains("- Lâm Động → Lâm Động (nhân vật)\n"));
+        assert!(!all.contains("Động thiếu"));
+        // A part only gets the names it writes exactly.
+        assert_eq!(r.prompt("Động thiếu ngồi xuống."), "");
         assert_eq!(r.prompt("Không ai cả."), "");
         assert_eq!(
             name_phrases("Lâm Động đi vào Vương Thành. Hắn cười."),
