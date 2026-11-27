@@ -617,10 +617,12 @@ impl DbBook {
         let mut chapters = chapters;
         // Books imported before page ranges were stored take them from the original
         // once, so a backup carries them.
+        // Those books were cut by page count, so an original now cut by its
+        // bookmarks (named sections) does not match their chapters.
         if let Some(pages) = original
             .as_ref()
             .map(|o| o.sections())
-            .filter(|s| s.len() == chapters.len())
+            .filter(|s| s.len() == chapters.len() && s.iter().all(|s| s.label.is_none()))
         {
             if chapters.iter().any(|c| c.3.is_none()) {
                 let mut set =
