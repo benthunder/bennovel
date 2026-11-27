@@ -10,6 +10,15 @@ import '@fontsource/be-vietnam-pro/latin-500.css';
 import '@fontsource/be-vietnam-pro/latin-600.css';
 import '@fontsource/be-vietnam-pro/latin-700.css';
 import '@fontsource/be-vietnam-pro/latin-800.css';
+// Reader faces (serif and mono), with full Vietnamese diacritics; the app's sans is Be Vietnam Pro.
+import '@fontsource/noto-serif/vietnamese-400.css';
+import '@fontsource/noto-serif/vietnamese-700.css';
+import '@fontsource/noto-serif/latin-400.css';
+import '@fontsource/noto-serif/latin-700.css';
+import '@fontsource/jetbrains-mono/vietnamese-400.css';
+import '@fontsource/jetbrains-mono/vietnamese-700.css';
+import '@fontsource/jetbrains-mono/latin-400.css';
+import '@fontsource/jetbrains-mono/latin-700.css';
 import './styles/organic.css';
 import './styles/app.css';
 import './styles/motion.css';
