@@ -12,6 +12,9 @@ struct Part {
     /// Byte range in the file's text, when only part of it belongs here.
     range: Option<(usize, usize)>,
     label: Option<String>,
+    /// Whole spine files that follow and belong to the same chapter (files the TOC
+    /// does not point to, such as the second half of a chapter split in two).
+    more: Vec<usize>,
 }
 
 /// A TOC entry: the file it points to (path in the ZIP), its #fragment and title.
@@ -146,12 +149,23 @@ fn extract_big<Z: Read + Seek, R: Read + Seek>(
     sink.title = doc.get_title();
     let mut buf = vec![0u8; 64 * 1024];
     let mut inline_pictures = 0usize;
+    let has_toc = !by_spine.is_empty();
+    let merge = toc_is_by_chapter(doc.spine.len(), &by_spine);
+    let mut in_chapter = false;
     for i in 0..doc.spine.len() {
         let Some(path) = spine_path(doc, i) else {
             continue;
         };
         let entries = by_spine.remove(&i).unwrap_or_default();
-        sink.start_section(entries.first().map(|e| e.label.as_str()));
+        match entries.first() {
+            Some(e) => {
+                sink.start_section(Some(&e.label));
+                in_chapter = true;
+            }
+            // A file the TOC skips continues the chapter before it.
+            None if merge && in_chapter => {}
+            None => sink.start_section(None),
+        }
         let labels: HashMap<String, String> = entries
             .iter()
             .skip(1)
@@ -169,8 +183,8 @@ fn extract_big<Z: Read + Seek, R: Read + Seek>(
             }
             err = match b {
                 Block::Text(t) => sink.paragraph(&t),
-                // Without TOC anchors in this file, its headings start the chapters.
-                Block::Heading(t) if labels.is_empty() => sink.chapter(&t),
+                // Without a TOC, headings start the chapters.
+                Block::Heading(t) if !has_toc => sink.chapter(&t),
                 Block::Heading(t) => sink.paragraph(&t),
                 Block::Anchor(id) => {
                     sink.start_section(labels.get(&id).map(String::as_str));
@@ -488,16 +502,31 @@ fn nav_entries(html: &str, path: &str) -> Vec<TocEntry> {
     out
 }
 
+/// Whether the TOC lists chapters (not only a few volumes or parts): it points into
+/// at least two files and one in four spine files. Only then are the files it skips
+/// joined to the chapter before them.
+fn toc_is_by_chapter(spine: usize, by_spine: &HashMap<usize, Vec<TocEntry>>) -> bool {
+    by_spine.len() >= 2 && by_spine.len() * 4 >= spine
+}
+
 /// Sections in spine order. A file the TOC points into at several anchors is cut
 /// at those anchors, each piece named by its entry; any other file is one section,
-/// named by the first entry pointing into it.
+/// named by the first entry pointing into it. When the TOC lists chapters, a file it
+/// does not point to is joined to the chapter before it.
 fn parts<R: Read + Seek>(
     doc: &mut EpubDoc<R>,
     mut by_spine: HashMap<usize, Vec<TocEntry>>,
 ) -> Vec<Part> {
-    let mut parts = Vec::with_capacity(doc.spine.len());
+    let merge = toc_is_by_chapter(doc.spine.len(), &by_spine);
+    let mut parts: Vec<Part> = Vec::with_capacity(doc.spine.len());
     for i in 0..doc.spine.len() {
         let entries = by_spine.remove(&i).unwrap_or_default();
+        if entries.is_empty() && merge {
+            if let Some(last) = parts.last_mut().filter(|p| p.label.is_some()) {
+                last.more.push(i);
+                continue;
+            }
+        }
         if entries.len() >= 2 {
             let idref = doc.spine[i].idref.clone();
             if let Some((html, _)) = doc.get_resource_str(&idref) {
@@ -507,6 +536,7 @@ fn parts<R: Read + Seek>(
                         spine: i,
                         range: Some(range),
                         label: Some(label),
+                        more: Vec::new(),
                     }));
                     continue;
                 }
@@ -516,6 +546,7 @@ fn parts<R: Read + Seek>(
             spine: i,
             range: None,
             label: entries.into_iter().next().map(|e| e.label),
+            more: Vec::new(),
         });
     }
     parts
@@ -664,19 +695,23 @@ impl<R: Read + Seek + Send> BookSource for EpubBook<R> {
     fn load(&mut self, index: usize) -> Result<Section, BookError> {
         let part = self.parts.get(index).ok_or(BookError::NoSection(index))?;
         let range = part.range;
-        let (html, chapter) = self.spine_text(part.spine)?;
-        let text = match range {
-            Some((start, end)) => html.get(start..end.min(html.len())).unwrap_or_default(),
-            None => &html,
-        };
-        // Picture links are relative to the chapter file; keys are paths in the ZIP.
-        Ok(Section {
-            index,
-            paragraphs: html_to_paragraphs(text, |src| {
+        let files: Vec<usize> = std::iter::once(part.spine)
+            .chain(part.more.iter().copied())
+            .collect();
+        let mut paragraphs = Vec::new();
+        for (n, spine) in files.into_iter().enumerate() {
+            let (html, chapter) = self.spine_text(spine)?;
+            let text = match range.filter(|_| n == 0) {
+                Some((start, end)) => html.get(start..end.min(html.len())).unwrap_or_default(),
+                None => &html,
+            };
+            // Picture links are relative to the chapter file; keys are paths in the ZIP.
+            paragraphs.extend(html_to_paragraphs(text, |src| {
                 (!src.contains("://") && !src.starts_with("data:"))
                     .then(|| image::resolve(&chapter, src))
-            }),
-        })
+            }));
+        }
+        Ok(Section { index, paragraphs })
     }
 
     fn image(&mut self, key: &str) -> Result<Image, BookError> {
@@ -796,6 +831,50 @@ pub(crate) mod tests {
             labels(&book),
             vec![Some("Chương 1".into()), Some("Chương 2".into())]
         );
+    }
+
+    #[test]
+    fn files_the_toc_skips_join_the_chapter_before() {
+        let ncx = r#"<?xml version="1.0"?><ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1"><navMap><navPoint id="n1" playOrder="1"><navLabel><text>Chương 1</text></navLabel><content src="c1.xhtml"/></navPoint><navPoint id="n2" playOrder="2"><navLabel><text>Chương 2</text></navLabel><content src="c2.xhtml"/></navPoint></navMap></ncx>"#;
+        let item = |id: &str| {
+            format!(r#"<item id="{id}" href="{id}.xhtml" media-type="application/xhtml+xml"/>"#)
+        };
+        let manifest = format!(
+            r#"<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>{}{}{}{}{}"#,
+            item("cover"),
+            item("c1"),
+            item("c1b"),
+            item("c2"),
+            item("c2b")
+        );
+        let page = |t: &str| format!("<html><body><h2>{t}</h2><p>{t}</p></body></html>");
+        let epub = build(&[
+            (
+                "OEBPS/content.opf",
+                &opf(
+                    "2.0",
+                    "<dc:title>T</dc:title>",
+                    &manifest,
+                    r#" toc="ncx"><itemref idref="cover"/><itemref idref="c1"/><itemref idref="c1b"/><itemref idref="c2"/><itemref idref="c2b"/>"#,
+                ),
+            ),
+            ("OEBPS/toc.ncx", ncx),
+            ("OEBPS/cover.xhtml", &page("Bìa")),
+            ("OEBPS/c1.xhtml", &page("Một")),
+            ("OEBPS/c1b.xhtml", &page("Một tiếp")),
+            ("OEBPS/c2.xhtml", &page("Hai")),
+            ("OEBPS/c2b.xhtml", &page("Hai tiếp")),
+        ]);
+        let mut book = EpubBook::open(Cursor::new(epub)).unwrap();
+        assert_eq!(
+            labels(&book),
+            vec![None, Some("Chương 1".into()), Some("Chương 2".into())]
+        );
+        assert_eq!(
+            book.load(1).unwrap().paragraphs,
+            vec!["Một", "Một", "Một tiếp", "Một tiếp"]
+        );
+        assert_eq!(book.load(2).unwrap().paragraphs.len(), 4);
     }
 
     #[test]
